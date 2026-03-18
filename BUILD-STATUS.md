@@ -29,13 +29,13 @@
 | P1a.5 | 10/10 | Markdown writer. YAML frontmatter, 0600 perms, collision handling. |
 | P1a.6 | 10/10 | CLI: 9 commands (record, stop, status, search, list, process, setup, logs, devices). |
 | P1a.7 | 10/10 | Config with compiled-in defaults. TOML override. Partial merge. |
-| P1a.8 | 10/10 | Model download from HuggingFace via curl. |
+| P1a.8 | 10/10 | Model download from HuggingFace. |
 | P1a.9 | 10/10 | README.md + LICENSE (MIT) + CONTRIBUTING.md. |
 | P1a.10 | 10/10 | Git repo. GitHub: github.com/silverstein/minutes. |
 | P1a.11 | 10/10 | Folder watcher: notify, settle delay, lock file, move processed/failed. |
 | P1a.12 | 10/10 | Memo template: type: memo, source: voice-memo. |
 | P1a.14 | 10/10 | Structured JSON logging + pipeline step logging. |
-| P1a.16 | 10/10 | 58 tests (50 unit + 8 integration). |
+| P1a.16 | 10/10 | 73 tests (57 unit + 8 integration + 2 whisper + 8 MCP). |
 
 ## Phase 1b: Intelligence Layer — COMPLETE (core)
 | Bead | Score | Summary |
@@ -69,9 +69,12 @@
 |------|--------|
 | Launchd watcher plist | Done (dev.getminutes.watcher.plist) |
 | GitHub repo | Live: github.com/silverstein/minutes |
-| Tests | 58 (50 unit + 8 integration), all passing |
+| Tests | 73 (57 unit + 8 integration + 2 whisper + 8 MCP), all passing |
 | Clippy | Clean |
-| Release build | In progress |
+| Release build | 6.7MB binary |
+| GitHub | github.com/silverstein/minutes — v0.1.0 tagged |
+| Homebrew | brew tap silverstein/tap && brew install minutes |
+| CI | GitHub Actions (local commit, needs workflow-scoped push) |
 
 ## Remaining (nice-to-haves for future sessions)
 - P1b.2: Speaker-to-name mapping (calendar attendees → speaker labels)
