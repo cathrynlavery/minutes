@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (no whisper)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --no-default-features
+
+      - name: Test (unit + integration, no whisper)
+        run: cargo test -p minutes-core --no-default-features
+
+      - name: Clippy
+        run: cargo clippy --all --no-default-features -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+  mcp:
+    name: MCP Server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install MCP dependencies
+        working-directory: crates/mcp
+        run: npm install
+
+      - name: TypeScript check
+        working-directory: crates/mcp
+        run: npx tsc --noEmit
