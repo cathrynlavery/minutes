@@ -10,21 +10,21 @@
 ### Chunk 1: Scaffold + Core Pipeline (P1a.0-6)
 | Bead | Status | Score | Notes |
 |------|--------|-------|-------|
-| P1a.0 | NOT STARTED | - | MCPB research blocker |
-| P1a.1 | NOT STARTED | - | Rust workspace scaffold |
-| P1a.2 | NOT STARTED | - | Audio capture (BlackHole + cpal) |
-| P1a.3 | NOT STARTED | - | WAV file writing |
-| P1a.4 | NOT STARTED | - | whisper.cpp + symphonia format conversion |
-| P1a.5 | NOT STARTED | - | Markdown output (0600 perms) |
-| P1a.6 | NOT STARTED | - | CLI (record, stop, status) + PID + signal handling |
+| P1a.0 | NOT STARTED | - | MCPB research blocker — do before Phase 2 |
+| P1a.1 | DONE | 10/10 | Cargo workspace: `core` (lib) + `cli` (bin). 10 modules in core. |
+| P1a.2 | PLACEHOLDER | 4/10 | Creates placeholder WAV. Real cpal+BlackHole capture not yet wired. |
+| P1a.3 | DONE | 10/10 | WAV writing via hound. Temp WAV cleanup on pipeline completion. |
+| P1a.4 | PLACEHOLDER | 3/10 | Pipeline placeholder returns fake transcript. whisper-rs + symphonia not yet integrated. |
+| P1a.5 | DONE | 10/10 | Markdown writer: YAML frontmatter, 0600 perms, collision handling, memo/meeting templates, no-speech marker. 5 tests. |
+| P1a.6 | DONE | 9/10 | CLI: record, stop, status, search, list, process, setup, logs. PID lifecycle. Signal handling (Ctrl-C). JSON output for MCPB. Missing: real audio capture blocks full 10/10. |
 
 ### Chunk 2: Config + Infrastructure (P1a.7-8, P1a.14-15)
 | Bead | Status | Score | Notes |
 |------|--------|-------|-------|
-| P1a.7 | NOT STARTED | - | Config file with defaults |
-| P1a.8 | NOT STARTED | - | Model download (minutes setup) |
-| P1a.14 | NOT STARTED | - | Structured logging |
-| P1a.15 | NOT STARTED | - | Test fixtures |
+| P1a.7 | DONE | 10/10 | Config with compiled-in defaults, optional TOML file, partial merge. 4 tests. |
+| P1a.8 | PARTIAL | 5/10 | `minutes setup --list` works. Actual model download not implemented (prints manual instructions). |
+| P1a.14 | PARTIAL | 5/10 | Tracing subscriber initialized. JSON log file rotation and `minutes logs` command wired but log file writing not yet active. |
+| P1a.15 | NOT STARTED | - | Test fixtures (5s WAV, mock data) |
 
 ### Chunk 3: Watcher + Voice Memos (P1a.11-13, P1a.12)
 | Bead | Status | Score | Notes |
