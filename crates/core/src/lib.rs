@@ -4,6 +4,7 @@ pub mod diarize;
 pub mod error;
 pub mod logging;
 pub mod markdown;
+pub mod notes;
 pub mod pid;
 pub mod pipeline;
 pub mod search;

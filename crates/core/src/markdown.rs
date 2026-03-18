@@ -48,6 +48,8 @@ pub struct Frontmatter {
     pub calendar_event: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 /// Result of writing a meeting/memo to disk.
@@ -64,6 +66,7 @@ pub fn write(
     frontmatter: &Frontmatter,
     transcript: &str,
     summary: Option<&str>,
+    user_notes: Option<&str>,
     config: &Config,
 ) -> Result<WriteResult, MarkdownError> {
     let output_dir = match frontmatter.r#type {
@@ -97,6 +100,17 @@ pub fn write(
             "To retry with a different model:\n`minutes process {} --model large-v3`\n\n",
             path.display()
         ));
+    }
+
+    if let Some(notes) = user_notes {
+        content.push_str("## Notes\n\n");
+        for line in notes.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                content.push_str(&format!("- {}\n", trimmed));
+            }
+        }
+        content.push('\n');
     }
 
     content.push_str("## Transcript\n\n");
@@ -191,6 +205,7 @@ mod tests {
             attendees: vec![],
             calendar_event: None,
             people: vec![],
+            context: None,
         }
     }
 
@@ -238,7 +253,7 @@ mod tests {
         };
 
         let fm = test_frontmatter();
-        let result = write(&fm, "Hello world transcript", None, &config).unwrap();
+        let result = write(&fm, "Hello world transcript", None, None, &config).unwrap();
 
         assert!(result.path.exists());
         assert_eq!(result.word_count, 3);
@@ -263,7 +278,7 @@ mod tests {
             ..test_frontmatter()
         };
 
-        let result = write(&fm, "Voice memo text", None, &config).unwrap();
+        let result = write(&fm, "Voice memo text", None, None, &config).unwrap();
         assert!(result.path.to_str().unwrap().contains("memos"));
     }
 
@@ -280,7 +295,7 @@ mod tests {
             ..test_frontmatter()
         };
 
-        let result = write(&fm, "", None, &config).unwrap();
+        let result = write(&fm, "", None, None, &config).unwrap();
         let content = fs::read_to_string(&result.path).unwrap();
         assert!(content.contains("No speech detected"));
         assert!(content.contains("minutes process"));

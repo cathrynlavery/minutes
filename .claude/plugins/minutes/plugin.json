@@ -6,7 +6,8 @@
     { "name": "record", "path": "skills/record/SKILL.md" },
     { "name": "search", "path": "skills/search/SKILL.md" },
     { "name": "list", "path": "skills/list/SKILL.md" },
-    { "name": "recap", "path": "skills/recap/SKILL.md" }
+    { "name": "recap", "path": "skills/recap/SKILL.md" },
+    { "name": "note", "path": "skills/note/SKILL.md" }
   ],
   "agents": [
     { "name": "meeting-analyst", "path": "agents/meeting-analyst.md" }

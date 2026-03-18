@@ -514,6 +514,120 @@ settle_delay_ms = 2000       # Wait for file size to stabilize before processing
 
 **Exit criteria**: `claude plugin add minutes` → `/minutes record` works → meeting context appears in Claude Code sessions → `/minutes search "pricing"` returns results.
 
+### Phase 2c: Notetaking — "What you thought was important"
+
+**Goal**: Let users annotate recordings with plain-text notes from any interface. Notes feed into the LLM summarizer as high-signal context, producing better summaries. Users never need to know markdown — they just type.
+
+**Core insight**: The transcript captures *what was said*. Notes capture *what mattered*. When the LLM sees both, the summary is dramatically better — it knows which parts of a 45-minute meeting the user actually cared about.
+
+#### How it works
+
+```
+DURING RECORDING:
+
+  User types/says:  "Sarah wants $399 not $499"
+       │
+       ├── CLI:      minutes note "Sarah wants $399 not $499"
+       ├── Claude:   "note that Sarah wants $399"  →  add_note MCP tool
+       ├── Tauri:    types in note field  →  calls minutes note
+       └── Dispatch: "add a note about pricing"  →  add_note MCP tool
+       │
+       ▼
+  ~/.minutes/current-notes.md:
+       [4:23] Sarah wants $399 not $499
+       [12:10] Logan agreed with Sarah
+
+ON STOP:
+
+  Pipeline reads:
+    current.wav       →  transcript
+    current-notes.md  →  user notes (timestamped)
+    current-context   →  pre-meeting context (from --context flag)
+       │
+       ▼
+  LLM prompt includes:
+    "The user marked these moments as important during the meeting.
+     Weight them heavily in the summary:
+     [4:23] Sarah wants $399 not $499
+     [12:10] Logan agreed with Sarah"
+       │
+       ▼
+  Better summary. Notes appear in ## Notes section of output.
+```
+
+#### Pre-meeting context
+
+```bash
+minutes record --title "1:1 with Logan" \
+  --context "Discuss Q2 pricing. Follow up on $499 decision. Logan was hesitant last time."
+```
+
+The `--context` flag stores text in `~/.minutes/current-context.txt`. The pipeline passes it to the LLM: "Before the meeting, the user noted this context: [text]". This produces summaries that understand *why* the meeting happened.
+
+For voice memos: `minutes process idea.m4a --note "Had this idea while driving — about onboarding redesign"`
+
+#### Post-meeting annotation
+
+```bash
+minutes note --meeting ~/meetings/2026-03-17-pricing-call.md "Follow-up: Sarah agreed via email on Mar 18"
+```
+
+Appends to the existing file's `## Notes` section. Timestamped with the annotation time, not the recording time.
+
+#### Plain-text input, always
+
+Users type plain text. Never markdown. The system adds the timestamp prefix and formats into markdown behind the scenes. In the Tauri app, notes render visually (not as raw markdown). In Claude, notes render naturally in conversation.
+
+#### Tasks
+
+| Task | Description | Beads ID |
+|------|-------------|----------|
+| P2c.1 | `notes.rs` module: read/write `~/.minutes/current-notes.md`, timestamp calculation from recording start, append with atomic write | TBD |
+| P2c.2 | `minutes note "text"` CLI command: check recording in progress, calculate timestamp, append to current-notes.md | TBD |
+| P2c.3 | `--context "text"` flag on `minutes record`: saves to `~/.minutes/current-context.txt`, included in frontmatter | TBD |
+| P2c.4 | `--note "text"` flag on `minutes process`: adds context for voice memos being processed | TBD |
+| P2c.5 | Pipeline integration: read notes + context files, pass to LLM summarizer as high-priority context, include `## Notes` section in markdown output | TBD |
+| P2c.6 | LLM prompt update: instruct summarizer to weight user notes heavily, cross-reference notes with transcript timestamps | TBD |
+| P2c.7 | `--meeting <path>` flag on `minutes note`: append post-meeting annotations to existing files | TBD |
+| P2c.8 | `add_note` MCP tool: calls `minutes note` for Claude Desktop/Cowork/Dispatch | TBD |
+| P2c.9 | `/minutes note` Claude Code skill | TBD |
+| P2c.10 | Tauri note input: text field visible during recording, lines auto-timestamped, rendered visually (not raw markdown) | TBD |
+
+**Exit criteria**: `minutes record` → type `minutes note "important point"` in another terminal → `minutes stop` → markdown has `## Notes` section with timestamped notes → LLM summary references the noted moments.
+
+#### Output example
+
+```
+---
+title: Pricing Discussion with Sarah
+type: meeting
+date: 2026-03-17T14:00:00
+duration: 42m
+context: "Discuss Q2 pricing, follow up on $499 minimum decision"
+---
+
+## Summary
+- Sarah proposed lowering advisor pricing from $499 to $399/mo
+- Logan supported the lower price point
+- Compromise: run a pricing experiment with 10 advisors at $399
+
+## Notes
+- [4:23] Sarah wants $399 not $499
+- [12:10] Logan agreed with Sarah
+- [28:00] Compromise: experiment at $399
+- [Mar 18, post-meeting] Sarah confirmed via email she's on board
+
+## Decisions
+- [x] Run pricing experiment at $399 with 10 advisors
+
+## Action Items
+- [ ] @mat: Set up $399 pricing tier by Friday
+- [ ] @sarah: Identify 10 advisors for the experiment
+
+## Transcript
+[0:00] So let's talk about the pricing for advisors...
+```
+
 ### Phase 3: Tauri Menu Bar App (Week 3-4) — "Granola-like UX"
 
 **Goal**: Calendar-aware menu bar app. Suggests recording 2 min before meetings. Granola UX, open-source.
@@ -524,7 +638,7 @@ settle_delay_ms = 2000       # Wait for file size to stabilize before processing
 | P3.2 | Calendar polling (macOS EventKit or ical) | TBD |
 | P3.3 | Meeting suggestion notification (2 min before) | TBD |
 | P3.4 | Recording indicator (menu bar icon glow/badge) | TBD |
-| P3.5 | Minimal web UI: meeting list, transcript viewer, settings | TBD |
+| P3.5 | Minimal web UI: meeting list, transcript viewer, settings, **note input field during recording** | TBD |
 | P3.6 | Auto-start on login (launchd integration) | TBD |
 | P3.7 | First-run onboarding (permissions, model download, LLM config) | TBD |
 | P3.8 | Homebrew cask formula | TBD |

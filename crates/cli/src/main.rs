@@ -23,6 +23,20 @@ enum Commands {
         /// Optional title for this recording
         #[arg(short, long)]
         title: Option<String>,
+
+        /// Pre-meeting context (what this meeting is about)
+        #[arg(short, long)]
+        context: Option<String>,
+    },
+
+    /// Add a note to the current recording
+    Note {
+        /// The note text
+        text: String,
+
+        /// Annotate an existing meeting file instead of the current recording
+        #[arg(short, long)]
+        meeting: Option<PathBuf>,
     },
 
     /// Stop recording and process the audio
@@ -68,6 +82,10 @@ enum Commands {
         /// Content type: meeting or memo
         #[arg(short = 't', long, default_value = "memo")]
         content_type: String,
+
+        /// Optional context note (e.g., "idea about onboarding while driving")
+        #[arg(short = 'n', long)]
+        note: Option<String>,
 
         /// Optional title
         #[arg(long)]
@@ -119,7 +137,8 @@ fn main() -> Result<()> {
     let config = Config::load();
 
     match cli.command {
-        Commands::Record { title } => cmd_record(title, &config),
+        Commands::Record { title, context } => cmd_record(title, context, &config),
+        Commands::Note { text, meeting } => cmd_note(&text, meeting.as_deref()),
         Commands::Stop => cmd_stop(&config),
         Commands::Status => cmd_status(),
         Commands::Search {
@@ -135,8 +154,19 @@ fn main() -> Result<()> {
         Commands::Process {
             path,
             content_type,
+            note,
             title,
-        } => cmd_process(&path, &content_type, title.as_deref(), &config),
+        } => {
+            // Save note as context for the pipeline
+            if let Some(ref n) = note {
+                minutes_core::notes::save_context(n)?;
+            }
+            let result = cmd_process(&path, &content_type, title.as_deref(), &config);
+            if note.is_some() {
+                minutes_core::notes::cleanup();
+            }
+            result
+        }
         Commands::Watch { dir } => cmd_watch(dir.as_deref(), &config),
         Commands::Devices => cmd_devices(),
         Commands::Setup { model, list } => cmd_setup(&model, list),
@@ -144,14 +174,40 @@ fn main() -> Result<()> {
     }
 }
 
-fn cmd_record(title: Option<String>, config: &Config) -> Result<()> {
+fn cmd_note(text: &str, meeting: Option<&Path>) -> Result<()> {
+    if let Some(meeting_path) = meeting {
+        // Post-meeting annotation
+        minutes_core::notes::annotate_meeting(meeting_path, text)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        eprintln!("Note added to {}", meeting_path.display());
+    } else {
+        // Note during active recording
+        match minutes_core::notes::add_note(text) {
+            Ok(line) => eprintln!("{}", line),
+            Err(e) => anyhow::bail!("{}", e),
+        }
+    }
+    Ok(())
+}
+
+fn cmd_record(title: Option<String>, context: Option<String>, config: &Config) -> Result<()> {
     // Ensure directories exist
     config.ensure_dirs()?;
 
     // Check if already recording
     minutes_core::pid::create().map_err(|e| anyhow::anyhow!("{}", e))?;
 
+    // Save recording start time (for timestamping notes)
+    minutes_core::notes::save_recording_start()?;
+
+    // Save pre-meeting context if provided
+    if let Some(ref ctx) = context {
+        minutes_core::notes::save_context(ctx)?;
+        eprintln!("Context saved: {}", ctx);
+    }
+
     eprintln!("Recording... (press Ctrl-C or run `minutes stop` to finish)");
+    eprintln!("  Tip: add notes with `minutes note \"your note\"` in another terminal");
 
     // Set up stop flag for signal handler
     let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -181,6 +237,7 @@ fn cmd_record(title: Option<String>, config: &Config) -> Result<()> {
 
     // Clean up
     minutes_core::pid::remove().ok();
+    minutes_core::notes::cleanup(); // Remove notes + context + recording-start files
     if wav_path.exists() {
         std::fs::remove_file(&wav_path).ok();
     }

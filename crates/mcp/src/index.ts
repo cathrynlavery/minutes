@@ -305,6 +305,35 @@ server.tool(
   }
 );
 
+// ── Tool: add_note ───────────────────────────────────────────
+
+server.tool(
+  "add_note",
+  "Add a note to the current recording. Notes are timestamped and included in the meeting summary. If no recording is active, annotate an existing meeting file with --meeting.",
+  {
+    text: z.string().describe("The note text (plain text, no markdown needed)"),
+    meeting_path: z
+      .string()
+      .optional()
+      .describe("Path to an existing meeting file to annotate (for post-meeting notes)"),
+  },
+  async ({ text, meeting_path }) => {
+    try {
+      const args = ["note", text];
+      if (meeting_path) args.push("--meeting", meeting_path);
+
+      const { stdout, stderr } = await runMinutes(args);
+      return {
+        content: [{ type: "text" as const, text: stderr || stdout || "Note added." }],
+      };
+    } catch (error: any) {
+      return {
+        content: [{ type: "text" as const, text: `Note failed: ${error.message}` }],
+      };
+    }
+  }
+);
+
 // ── Start server ────────────────────────────────────────────
 
 async function main() {

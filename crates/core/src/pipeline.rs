@@ -3,6 +3,7 @@ use crate::diarize;
 use crate::error::MinutesError;
 use crate::logging;
 use crate::markdown::{self, ContentType, Frontmatter, OutputStatus, WriteResult};
+use crate::notes;
 use crate::summarize;
 use crate::transcribe;
 use chrono::Local;
@@ -87,10 +88,24 @@ pub fn process(
         transcript
     };
 
+    // Read user notes and pre-meeting context (if any)
+    let user_notes = notes::read_notes();
+    let pre_context = notes::read_context();
+
     // Step 3: Summarize (optional — depends on config.summarization.engine)
+    // Pass user notes to the summarizer as high-priority context
     let summary: Option<String> = if config.summarization.engine != "none" {
         tracing::info!(step = "summarize", "generating summary");
-        summarize::summarize(&transcript, config).map(|s| summarize::format_summary(&s))
+        let transcript_with_notes = if let Some(ref n) = user_notes {
+            format!(
+                "USER NOTES (these moments were marked as important — weight them heavily):\n{}\n\n\
+                 TRANSCRIPT:\n{}",
+                n, transcript
+            )
+        } else {
+            transcript.clone()
+        };
+        summarize::summarize(&transcript_with_notes, config).map(|s| summarize::format_summary(&s))
     } else {
         None
     };
@@ -115,11 +130,18 @@ pub fn process(
         attendees: vec![],
         calendar_event: None,
         people: vec![],
+        context: pre_context,
     };
 
     tracing::info!(step = "write", "writing markdown");
     let step_start = std::time::Instant::now();
-    let result = markdown::write(&frontmatter, &transcript, summary.as_deref(), config)?;
+    let result = markdown::write(
+        &frontmatter,
+        &transcript,
+        summary.as_deref(),
+        user_notes.as_deref(),
+        config,
+    )?;
     let write_ms = step_start.elapsed().as_millis() as u64;
     logging::log_step(
         "write",
