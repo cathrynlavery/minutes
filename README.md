@@ -86,6 +86,8 @@ Stable vs preview channels and rollback expectations live in
 [docs/RELEASE-CHANNELS.md](/Users/silverbook/Sites/minutes/docs/RELEASE-CHANNELS.md).
 Reproducible release-note generation lives in
 [docs/RELEASE-NOTES.md](/Users/silverbook/Sites/minutes/docs/RELEASE-NOTES.md).
+The current auto-update evaluation and recommendation live in
+[docs/AUTO-UPDATE-EVALUATION.md](/Users/silverbook/Sites/minutes/docs/AUTO-UPDATE-EVALUATION.md).
 
 ### Troubleshooting
 

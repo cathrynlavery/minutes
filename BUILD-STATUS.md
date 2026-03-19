@@ -83,6 +83,7 @@
 | Signed macOS release pipeline | Done (`.github/workflows/release-macos.yml` + `docs/RELEASE-MACOS.md`) |
 | Release channel policy | Done (`docs/RELEASE-CHANNELS.md`) |
 | Reproducible release notes | Done (`scripts/release_notes.sh` + `docs/RELEASE-NOTES.md`) |
+| Auto-update evaluation | Done (`docs/AUTO-UPDATE-EVALUATION.md`) |
 
 ## Bugs Fixed (2026-03-18 session)
 | Bug | Impact | Fix |
