@@ -168,7 +168,7 @@ where
     let duration = estimate_duration(audio_path);
     let auto_title = title
         .map(String::from)
-        .unwrap_or_else(|| generate_title(&transcript));
+        .unwrap_or_else(|| generate_title(&transcript, pre_context.as_deref()));
 
     let frontmatter = Frontmatter {
         title: auto_title,
@@ -240,19 +240,146 @@ fn estimate_duration(audio_path: &Path) -> String {
     }
 }
 
-/// Generate a title from the first few words of the transcript.
-fn generate_title(transcript: &str) -> String {
-    let first_line = transcript
-        .lines()
-        .find(|line| {
-            let trimmed = line.trim();
-            !trimmed.is_empty() && !trimmed.starts_with('[')
+/// Generate a smart title from either the user-provided context or transcript.
+fn generate_title(transcript: &str, pre_context: Option<&str>) -> String {
+    if let Some(context) = pre_context.and_then(title_from_context) {
+        return finalize_title(context);
+    }
+
+    if let Some(transcript_title) = title_from_transcript(transcript) {
+        return finalize_title(transcript_title);
+    }
+
+    "Untitled Recording".into()
+}
+
+fn title_from_context(context: &str) -> Option<String> {
+    let cleaned = normalize_space(context);
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let lower = cleaned.to_lowercase();
+    let generic = [
+        "meeting",
+        "recording",
+        "memo",
+        "voice memo",
+        "call",
+        "conversation",
+        "note",
+    ];
+    if generic.contains(&lower.as_str()) {
+        return None;
+    }
+
+    Some(to_display_title(&cleaned))
+}
+
+fn title_from_transcript(transcript: &str) -> Option<String> {
+    let first_line = transcript.lines().find_map(clean_transcript_line)?;
+    let stripped = strip_lead_in_phrase(&first_line);
+    let candidate = normalize_space(&stripped);
+
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(to_display_title(&candidate))
+    }
+}
+
+fn clean_transcript_line(line: &str) -> Option<String> {
+    let mut remaining = line.trim();
+
+    while let Some(rest) = remaining.strip_prefix('[') {
+        let bracket_end = rest.find(']')?;
+        remaining = rest[bracket_end + 1..].trim();
+    }
+
+    let cleaned = normalize_space(remaining);
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn strip_lead_in_phrase(line: &str) -> String {
+    let cleaned = normalize_space(line);
+    let lower = cleaned.to_lowercase();
+    let prefixes = [
+        "we need to discuss ",
+        "let's talk about ",
+        "lets talk about ",
+        "let's discuss ",
+        "lets discuss ",
+        "i just had an idea about ",
+        "i had an idea about ",
+        "this is about ",
+        "today we're talking about ",
+        "today we are talking about ",
+        "we're talking about ",
+        "we are talking about ",
+        "we should talk about ",
+        "we should discuss ",
+        "i want to talk about ",
+        "i want to discuss ",
+    ];
+
+    for prefix in prefixes {
+        if lower.starts_with(prefix) {
+            return cleaned[prefix.len()..].trim().to_string();
+        }
+    }
+
+    cleaned
+}
+
+fn normalize_space(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn to_display_title(text: &str) -> String {
+    let trimmed = text
+        .trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .split(['.', '!', '?', '\n'])
+        .next()
+        .unwrap_or("")
+        .trim();
+
+    let stopwords = [
+        "a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to",
+        "with",
+    ];
+
+    trimmed
+        .split_whitespace()
+        .enumerate()
+        .map(|(idx, word)| {
+            let lower = word.to_lowercase();
+            let is_edge = idx == 0;
+            if word.chars().any(|c| c.is_ascii_digit())
+                || word
+                    .chars()
+                    .all(|c| !c.is_ascii_lowercase() || !c.is_ascii_uppercase())
+                    && word.chars().filter(|c| c.is_ascii_uppercase()).count() > 1
+            {
+                word.to_string()
+            } else if !is_edge && stopwords.contains(&lower.as_str()) {
+                lower
+            } else {
+                let mut chars = lower.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
         })
-        .unwrap_or("Untitled Recording");
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
-    let words: Vec<&str> = first_line.split_whitespace().take(8).collect();
-    let title = words.join(" ");
-
+fn finalize_title(title: String) -> String {
     if title.chars().count() > 60 {
         let truncated: String = title.chars().take(57).collect();
         format!("{}...", truncated)
@@ -389,15 +516,28 @@ mod tests {
     #[test]
     fn generate_title_takes_first_words() {
         let transcript = "We need to discuss the new pricing strategy for Q2";
-        let title = generate_title(transcript);
-        assert_eq!(title, "We need to discuss the new pricing strategy");
+        let title = generate_title(transcript, None);
+        assert_eq!(title, "The New Pricing Strategy for Q2");
     }
 
     #[test]
-    fn generate_title_skips_speaker_labels() {
-        let transcript = "[0:00] We need to discuss pricing";
-        // Lines starting with [ are skipped for title generation
-        let title = generate_title(transcript);
+    fn generate_title_strips_timestamps_and_speaker_labels() {
+        let transcript = "[SPEAKER_0 0:00] let's talk about API launch timeline for Q2";
+        let title = generate_title(transcript, None);
+        assert_eq!(title, "Advisor Pricing for Q2");
+    }
+
+    #[test]
+    fn generate_title_prefers_context_when_available() {
+        let transcript = "Okay so I just had an idea about onboarding";
+        let title = generate_title(transcript, Some("Q2 pricing discussion with Alex"));
+        assert_eq!(title, "Q2 Pricing Discussion with Alex");
+    }
+
+    #[test]
+    fn generate_title_falls_back_when_only_timestamps_exist() {
+        let transcript = "[0:00]";
+        let title = generate_title(transcript, None);
         assert_eq!(title, "Untitled Recording");
     }
 
