@@ -35,26 +35,29 @@ while IFS=$'\t' read -r sha subject; do
   [[ -z "$sha" ]] && continue
 
   paths="$(git diff-tree --no-commit-id --name-only -r "$sha")"
-  bucket="other"
+  line="- ${subject} (\`${sha:0:7}\`)"
+  matched=0
 
   if grep -q '^crates/cli/' <<<"$paths"; then
-    bucket="cli"
-  elif grep -q '^tauri/' <<<"$paths"; then
-    bucket="desktop"
-  elif grep -q '^crates/mcp/' <<<"$paths"; then
-    bucket="mcp"
-  elif grep -q '^crates/core/' <<<"$paths"; then
-    bucket="core"
+    echo "$line" >> "$cli_file"
+    matched=1
+  fi
+  if grep -q '^tauri/' <<<"$paths"; then
+    echo "$line" >> "$desktop_file"
+    matched=1
+  fi
+  if grep -q '^crates/mcp/' <<<"$paths"; then
+    echo "$line" >> "$mcp_file"
+    matched=1
+  fi
+  if grep -q '^crates/core/' <<<"$paths"; then
+    echo "$line" >> "$core_file"
+    matched=1
   fi
 
-  line="- ${subject} (\`${sha:0:7}\`)"
-  case "$bucket" in
-    cli) echo "$line" >> "$cli_file" ;;
-    desktop) echo "$line" >> "$desktop_file" ;;
-    mcp) echo "$line" >> "$mcp_file" ;;
-    core) echo "$line" >> "$core_file" ;;
-    *) echo "$line" >> "$other_file" ;;
-  esac
+  if [[ "$matched" -eq 0 ]]; then
+    echo "$line" >> "$other_file"
+  fi
 done < <(git log --reverse --pretty=format:'%H%x09%s' "${from_ref}..${to_ref}")
 
 count_lines() {
