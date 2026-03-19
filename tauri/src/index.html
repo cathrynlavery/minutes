@@ -1334,7 +1334,7 @@
       <div class="about-controls">
         <div class="about-controls-group">
           <div class="about-controls-copy">
-            Opt-in global shortcut for quick-thought capture. Minutes starts a quick thought when idle, then stops the active capture on the next press.
+            Opt-in global shortcut for quick-thought capture. Hold to record a short thought, or tap to lock recording hands-free and tap again to stop.
           </div>
           <select class="shortcut-select" id="select-hotkey-shortcut"></select>
           <div class="about-controls-meta" id="hotkey-status">Off by default. If the shortcut is already owned by another app, Minutes leaves it disabled.</div>
@@ -1671,7 +1671,7 @@
       localStorage.setItem('minutes.globalHotkeyEnabled', enabled ? 'true' : 'false');
       setHotkeyStatus(
         enabled
-          ? `Enabled for ${hotkeyShortcut}. Press once to start a quick thought, then again to stop the active capture.`
+          ? `Enabled for ${hotkeyShortcut}. Hold to record, or tap to lock and tap again to stop.`
           : 'Off by default. If another app already owns the shortcut, Minutes leaves it disabled.',
         false
       );

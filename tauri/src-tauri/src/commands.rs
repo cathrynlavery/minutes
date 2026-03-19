@@ -3,7 +3,7 @@ use std::cmp::Reverse;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tauri::Manager;
 
 pub struct AppState {
@@ -15,6 +15,8 @@ pub struct AppState {
     pub completion_notifications_enabled: Arc<AtomicBool>,
     pub global_hotkey_enabled: Arc<AtomicBool>,
     pub global_hotkey_shortcut: Arc<Mutex<String>>,
+    pub hotkey_runtime: Arc<Mutex<HotkeyRuntime>>,
+    pub discard_short_hotkey_capture: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -75,11 +77,28 @@ pub struct HotkeySettings {
     pub choices: Vec<HotkeyChoice>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotkeyCaptureStyle {
+    Hold,
+    Locked,
+}
+
+#[derive(Debug, Default)]
+pub struct HotkeyRuntime {
+    pub key_down: bool,
+    pub key_down_started_at: Option<Instant>,
+    pub active_capture: Option<HotkeyCaptureStyle>,
+    pub recording_started_at: Option<Instant>,
+    pub hold_generation: u64,
+}
+
 const HOTKEY_CHOICES: [(&str, &str); 3] = [
     ("CmdOrCtrl+Shift+M", "Cmd/Ctrl + Shift + M"),
     ("CmdOrCtrl+Shift+J", "Cmd/Ctrl + Shift + J"),
     ("CmdOrCtrl+Shift+T", "Cmd/Ctrl + Shift + T"),
 ];
+const HOTKEY_HOLD_THRESHOLD_MS: u64 = 300;
+const HOTKEY_MIN_DURATION_MS: u64 = 400;
 
 pub fn default_hotkey_shortcut() -> &'static str {
     HOTKEY_CHOICES[0].0
@@ -124,6 +143,21 @@ fn current_hotkey_settings(state: &AppState) -> HotkeySettings {
         shortcut,
         choices: hotkey_choices(),
     }
+}
+
+fn clear_hotkey_runtime(runtime: &Arc<Mutex<HotkeyRuntime>>) {
+    if let Ok(mut current) = runtime.lock() {
+        current.key_down = false;
+        current.key_down_started_at = None;
+        current.active_capture = None;
+        current.recording_started_at = None;
+    }
+}
+
+fn should_discard_hotkey_capture(started_at: Option<Instant>, now: Instant) -> bool {
+    started_at
+        .map(|started| now.duration_since(started).as_millis() < HOTKEY_MIN_DURATION_MS as u128)
+        .unwrap_or(false)
 }
 
 fn preserve_failed_capture(wav_path: &std::path::Path, config: &Config) -> Option<PathBuf> {
@@ -717,6 +751,8 @@ pub fn start_recording(
     processing_stage: Arc<Mutex<Option<String>>>,
     latest_output: Arc<Mutex<Option<OutputNotice>>>,
     completion_notifications_enabled: Arc<AtomicBool>,
+    hotkey_runtime: Option<Arc<Mutex<HotkeyRuntime>>>,
+    discard_short_hotkey_capture: Option<Arc<AtomicBool>>,
     mode: CaptureMode,
 ) {
     recording.store(true, Ordering::Relaxed);
@@ -743,57 +779,38 @@ pub fn start_recording(
     match minutes_core::capture::record_to_wav(&wav_path, stop_flag, &config) {
         Ok(()) => {
             recording.store(false, Ordering::Relaxed);
-            processing.store(true, Ordering::Relaxed);
-            match minutes_core::pipeline::process_with_progress(
-                &wav_path,
-                mode.content_type(),
-                None,
-                &config,
-                |stage| {
-                    let label = stage_label(stage, mode);
-                    set_processing_stage(&processing_stage, Some(label));
-                    let _ = minutes_core::pid::set_processing_status(Some(label), Some(mode));
-                },
-            ) {
-                Ok(result) => {
-                    remove_current_wav = true;
-                    let detail = match mode {
-                        CaptureMode::Meeting => "Saved meeting markdown",
-                        CaptureMode::QuickThought => "Saved quick thought memo",
-                    };
-                    let notice = OutputNotice {
-                        kind: "saved".into(),
-                        title: result.title.clone(),
-                        path: result.path.display().to_string(),
-                        detail: detail.into(),
-                    };
-                    set_latest_output(&latest_output, Some(notice.clone()));
-                    maybe_show_completion_notification(
-                        &app_handle,
-                        &completion_notifications_enabled,
-                        &notice,
-                    );
-                    eprintln!(
-                        "Saved {}: {} ({} words)",
-                        mode.noun(),
-                        result.path.display(),
-                        result.word_count
-                    );
-                }
-                Err(e) => {
-                    if let Some(saved) = preserve_failed_capture(&wav_path, &config) {
+            let should_discard = discard_short_hotkey_capture
+                .as_ref()
+                .map(|flag| flag.swap(false, Ordering::Relaxed))
+                .unwrap_or(false);
+            if should_discard {
+                remove_current_wav = true;
+                eprintln!("Discarded short {} capture.", mode.noun());
+            } else {
+                processing.store(true, Ordering::Relaxed);
+            }
+            if !should_discard {
+                match minutes_core::pipeline::process_with_progress(
+                    &wav_path,
+                    mode.content_type(),
+                    None,
+                    &config,
+                    |stage| {
+                        let label = stage_label(stage, mode);
+                        set_processing_stage(&processing_stage, Some(label));
+                        let _ = minutes_core::pid::set_processing_status(Some(label), Some(mode));
+                    },
+                ) {
+                    Ok(result) => {
+                        remove_current_wav = true;
                         let detail = match mode {
-                            CaptureMode::Meeting => {
-                                "Processing failed, but the raw meeting capture was preserved."
-                            }
-                            CaptureMode::QuickThought => {
-                                "Processing failed, but the raw quick thought capture was preserved."
-                            }
+                            CaptureMode::Meeting => "Saved meeting markdown",
+                            CaptureMode::QuickThought => "Saved quick thought memo",
                         };
                         let notice = OutputNotice {
-                            kind: "preserved-capture".into(),
-                            title: "Raw capture preserved".into(),
-                            path: saved.display().to_string(),
+                            kind: "saved".into(),
+                            title: result.title.clone(),
+                            path: result.path.display().to_string(),
                             detail: detail.into(),
                         };
                         set_latest_output(&latest_output, Some(notice.clone()));
@@ -803,16 +820,46 @@ pub fn start_recording(
                             &notice,
                         );
                         eprintln!(
-                            "Pipeline error: {}. Raw audio preserved at {}",
-                            e,
-                            saved.display()
+                            "Saved {}: {} ({} words)",
+                            mode.noun(),
+                            result.path.display(),
+                            result.word_count
                         );
-                    } else {
-                        eprintln!(
-                            "Pipeline error: {}. Raw audio left at {}",
-                            e,
-                            wav_path.display()
-                        );
+                    }
+                    Err(e) => {
+                        if let Some(saved) = preserve_failed_capture(&wav_path, &config) {
+                            let detail = match mode {
+                                CaptureMode::Meeting => {
+                                    "Processing failed, but the raw meeting capture was preserved."
+                                }
+                                CaptureMode::QuickThought => {
+                                    "Processing failed, but the raw quick thought capture was preserved."
+                                }
+                            };
+                            let notice = OutputNotice {
+                                kind: "preserved-capture".into(),
+                                title: "Raw capture preserved".into(),
+                                path: saved.display().to_string(),
+                                detail: detail.into(),
+                            };
+                            set_latest_output(&latest_output, Some(notice.clone()));
+                            maybe_show_completion_notification(
+                                &app_handle,
+                                &completion_notifications_enabled,
+                                &notice,
+                            );
+                            eprintln!(
+                                "Pipeline error: {}. Raw audio preserved at {}",
+                                e,
+                                saved.display()
+                            );
+                        } else {
+                            eprintln!(
+                                "Pipeline error: {}. Raw audio left at {}",
+                                e,
+                                wav_path.display()
+                            );
+                        }
                     }
                 }
             }
@@ -861,39 +908,29 @@ pub fn start_recording(
     minutes_core::pid::clear_processing_status().ok();
     minutes_core::pid::clear_recording_metadata().ok();
     recording.store(false, Ordering::Relaxed);
+    if let Some(runtime) = hotkey_runtime {
+        clear_hotkey_runtime(&runtime);
+    }
 }
 
-pub fn handle_global_hotkey(app: &tauri::AppHandle) {
+fn spawn_hotkey_recording(app: &tauri::AppHandle, style: HotkeyCaptureStyle) {
     let state = app.state::<AppState>();
-    if !state.global_hotkey_enabled.load(Ordering::Relaxed) {
-        return;
-    }
-
-    if recording_active(&state.recording) {
-        if let Err(err) = request_stop(&state.recording, &state.stop_flag) {
-            show_user_notification(
-                "Quick thought",
-                &format!("Could not stop recording: {}", err),
-            );
-        }
-        return;
-    }
-
-    if minutes_core::pid::status().processing || state.processing.load(Ordering::Relaxed) {
-        show_user_notification(
-            "Quick thought",
-            "Minutes is still processing the previous capture. Finish that first.",
-        );
-        return;
-    }
-
     state.recording.store(true, Ordering::Relaxed);
+    if let Ok(mut runtime) = state.hotkey_runtime.lock() {
+        runtime.active_capture = Some(style);
+        runtime.recording_started_at = Some(Instant::now());
+    }
+    state
+        .discard_short_hotkey_capture
+        .store(false, Ordering::Relaxed);
     let rec = state.recording.clone();
     let stop = state.stop_flag.clone();
     let processing = state.processing.clone();
     let processing_stage = state.processing_stage.clone();
     let latest_output = state.latest_output.clone();
     let completion_notifications_enabled = state.completion_notifications_enabled.clone();
+    let hotkey_runtime = state.hotkey_runtime.clone();
+    let discard_short_hotkey_capture = state.discard_short_hotkey_capture.clone();
     let app_handle = app.clone();
     let app_done = app.clone();
     crate::update_tray_state(app, true);
@@ -906,10 +943,136 @@ pub fn handle_global_hotkey(app: &tauri::AppHandle) {
             processing_stage,
             latest_output,
             completion_notifications_enabled,
+            Some(hotkey_runtime),
+            Some(discard_short_hotkey_capture),
             CaptureMode::QuickThought,
         );
         crate::update_tray_state(&app_done, false);
     });
+}
+
+pub fn handle_global_hotkey_event(
+    app: &tauri::AppHandle,
+    shortcut_state: tauri_plugin_global_shortcut::ShortcutState,
+) {
+    let state = app.state::<AppState>();
+    if !state.global_hotkey_enabled.load(Ordering::Relaxed) {
+        return;
+    }
+
+    match shortcut_state {
+        tauri_plugin_global_shortcut::ShortcutState::Pressed => {
+            if minutes_core::pid::status().processing || state.processing.load(Ordering::Relaxed) {
+                show_user_notification(
+                    "Quick thought",
+                    "Minutes is still processing the previous capture. Finish that first.",
+                );
+                return;
+            }
+
+            let generation = {
+                let mut runtime = match state.hotkey_runtime.lock() {
+                    Ok(runtime) => runtime,
+                    Err(_) => return,
+                };
+                if runtime.key_down {
+                    return;
+                }
+                runtime.key_down = true;
+                runtime.key_down_started_at = Some(Instant::now());
+                runtime.hold_generation = runtime.hold_generation.wrapping_add(1);
+                runtime.hold_generation
+            };
+
+            let recording = state.recording.clone();
+            let processing = state.processing.clone();
+            let runtime = state.hotkey_runtime.clone();
+            let app_handle = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(HOTKEY_HOLD_THRESHOLD_MS));
+                let should_start_hold = {
+                    let runtime = match runtime.lock() {
+                        Ok(runtime) => runtime,
+                        Err(_) => return,
+                    };
+                    runtime.key_down
+                        && runtime.hold_generation == generation
+                        && runtime.active_capture.is_none()
+                        && !recording.load(Ordering::Relaxed)
+                        && !processing.load(Ordering::Relaxed)
+                        && !minutes_core::pid::status().recording
+                };
+                if should_start_hold {
+                    spawn_hotkey_recording(&app_handle, HotkeyCaptureStyle::Hold);
+                }
+            });
+        }
+        tauri_plugin_global_shortcut::ShortcutState::Released => {
+            let now = Instant::now();
+            let (active_capture, recording_started_at, was_short_tap) = {
+                let mut runtime = match state.hotkey_runtime.lock() {
+                    Ok(runtime) => runtime,
+                    Err(_) => return,
+                };
+                let pressed_at = runtime.key_down_started_at;
+                runtime.key_down = false;
+                runtime.key_down_started_at = None;
+                let was_short_tap = pressed_at
+                    .map(|pressed| {
+                        now.duration_since(pressed).as_millis() < HOTKEY_HOLD_THRESHOLD_MS as u128
+                    })
+                    .unwrap_or(false);
+                (
+                    runtime.active_capture,
+                    runtime.recording_started_at,
+                    was_short_tap,
+                )
+            };
+
+            if let Some(_style) = active_capture {
+                if should_discard_hotkey_capture(recording_started_at, now) {
+                    state
+                        .discard_short_hotkey_capture
+                        .store(true, Ordering::Relaxed);
+                }
+                if let Ok(mut runtime) = state.hotkey_runtime.lock() {
+                    runtime.active_capture = None;
+                    runtime.recording_started_at = None;
+                }
+                if let Err(err) = request_stop(&state.recording, &state.stop_flag) {
+                    show_user_notification(
+                        "Quick thought",
+                        &format!("Could not stop recording: {}", err),
+                    );
+                }
+                return;
+            }
+
+            if !was_short_tap {
+                return;
+            }
+
+            if recording_active(&state.recording) {
+                if let Err(err) = request_stop(&state.recording, &state.stop_flag) {
+                    show_user_notification(
+                        "Quick thought",
+                        &format!("Could not stop recording: {}", err),
+                    );
+                }
+                return;
+            }
+
+            if minutes_core::pid::status().processing || state.processing.load(Ordering::Relaxed) {
+                show_user_notification(
+                    "Quick thought",
+                    "Minutes is still processing the previous capture. Finish that first.",
+                );
+                return;
+            }
+
+            spawn_hotkey_recording(app, HotkeyCaptureStyle::Locked);
+        }
+    }
 }
 
 #[tauri::command]
@@ -940,6 +1103,8 @@ pub fn cmd_start_recording(
             processing_stage,
             latest_output,
             completion_notifications_enabled,
+            None,
+            None,
             capture_mode,
         );
         crate::update_tray_state(&app_done, false);
@@ -1444,6 +1609,21 @@ mod tests {
     #[test]
     fn validate_hotkey_shortcut_rejects_unknown_values() {
         assert!(validate_hotkey_shortcut("CmdOrCtrl+Shift+P").is_err());
+    }
+
+    #[test]
+    fn short_hotkey_capture_is_discarded() {
+        let started = Instant::now() - std::time::Duration::from_millis(200);
+        assert!(should_discard_hotkey_capture(Some(started), Instant::now()));
+    }
+
+    #[test]
+    fn long_hotkey_capture_is_kept() {
+        let started = Instant::now() - std::time::Duration::from_millis(450);
+        assert!(!should_discard_hotkey_capture(
+            Some(started),
+            Instant::now()
+        ));
     }
 
     #[test]

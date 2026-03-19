@@ -72,6 +72,8 @@ fn main() {
     let global_hotkey_enabled = Arc::new(AtomicBool::new(false));
     let global_hotkey_shortcut =
         Arc::new(Mutex::new(commands::default_hotkey_shortcut().to_string()));
+    let hotkey_runtime = Arc::new(Mutex::new(commands::HotkeyRuntime::default()));
+    let discard_short_hotkey_capture = Arc::new(AtomicBool::new(false));
     let recording_clone = recording.clone();
     let stop_clone = stop_flag.clone();
 
@@ -79,9 +81,7 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        commands::handle_global_hotkey(app);
-                    }
+                    commands::handle_global_hotkey_event(app, event.state());
                 })
                 .build(),
         )
@@ -95,6 +95,8 @@ fn main() {
             completion_notifications_enabled: completion_notifications_enabled.clone(),
             global_hotkey_enabled: global_hotkey_enabled.clone(),
             global_hotkey_shortcut: global_hotkey_shortcut.clone(),
+            hotkey_runtime: hotkey_runtime.clone(),
+            discard_short_hotkey_capture: discard_short_hotkey_capture.clone(),
         })
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
@@ -215,6 +217,8 @@ fn main() {
                                     processing_stage,
                                     latest_output,
                                     completion_notifications_enabled,
+                                    None,
+                                    None,
                                     minutes_core::CaptureMode::Meeting,
                                 );
                                 ri.set_text("Start Recording").ok();
@@ -254,6 +258,8 @@ fn main() {
                                     processing_stage,
                                     latest_output,
                                     completion_notifications_enabled,
+                                    None,
+                                    None,
                                     minutes_core::CaptureMode::QuickThought,
                                 );
                                 ri.set_text("Start Recording").ok();

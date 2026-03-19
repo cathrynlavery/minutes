@@ -54,30 +54,18 @@ Behavior:
 - second valid tap stops recording
 - there is no hidden intermediate session restart
 
-### 3. Double-tap promotion
-
-Use case:
-- user begins a quick capture but decides mid-gesture to continue hands-free
-
-Behavior:
-- first quick tap starts a short decision window
-- second tap within the double-tap window promotes the same active recording
-  into locked mode
-- promotion must not create a second recording or duplicate start sound
-
 ## Timing Rules
 
 These values are intentionally conservative defaults and should remain
 configurable later.
 
 - `minimumKeyTime`: `300ms`
-- `doubleTapWindow`: `500ms`
 - `minDuration`: `400ms`
 
 Interpretation:
 
 - Release before `minimumKeyTime`:
-  - candidate for tap/double-tap behavior
+  - candidate for tap-to-lock behavior
 - Release after `minimumKeyTime`:
   - treated as hold-to-record
 - Total captured audio shorter than `minDuration`:
@@ -149,7 +137,6 @@ The app should explain hotkeys in outcome terms, not implementation terms.
 Good:
 - "Hold to capture a quick thought"
 - "Tap again to stop"
-- "Double-tap to keep recording hands-free"
 
 Bad:
 - "Modifier event promotion"
@@ -175,4 +162,3 @@ Hotkey implementation is not ready until:
 - readiness/permission messaging is honest
 - conflicts with tray/CLI/MCP sessions are handled cleanly
 - recovery behavior remains intact
-
