@@ -177,7 +177,7 @@ async function checkRecordingStatus() {
   try {
     const result = await app.callServerTool({ name: "get_status", arguments: {} });
     const text = result.content?.map((c: any) => ("text" in c ? c.text : "")).join("") || "";
-    const isRecording = text.includes("in progress");
+    const isRecording = text.includes("in progress") && !text.includes("No recording");
 
     const banner = $("recording-banner");
     if (isRecording) {
