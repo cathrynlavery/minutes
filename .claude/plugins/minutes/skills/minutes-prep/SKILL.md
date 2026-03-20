@@ -12,9 +12,53 @@ Interactive meeting preparation that searches your entire conversation history w
 
 This is a multi-phase interactive flow, not a single command. Walk the user through each phase using AskUserQuestion, pushing back on vague answers.
 
+### Phase 0: Calendar auto-detect (optional, runs first)
+
+Before asking who the user is meeting with, check if upcoming meetings are available from any calendar source. Try these in order — use the first that works:
+
+**1. Google Calendar MCP** (best — most Minutes users have Claude + MCP):
+If `mcp__claude_ai_Google_Calendar__gcal_list_events` is available, query today's remaining events:
+```
+gcal_list_events(
+  timeMin: "<now ISO>",
+  timeMax: "<end of day ISO>",
+  timeZone: "America/Los_Angeles",
+  condenseEventDetails: false
+)
+```
+This returns attendees, event titles, and times. Parse the results to find the next upcoming meeting with other people (skip all-day events and events with no attendees).
+
+**2. `gog` CLI** (if installed):
+```bash
+gog calendar list --today --json -a <account> 2>/dev/null
+```
+
+**3. Apple Calendar (osascript)** (every Mac, zero install):
+```bash
+osascript -e 'tell application "Calendar" to get {summary, start date} of (every event of every calendar whose start date >= (current date) and start date < ((current date) + 1 * days))'
+```
+
+**4. None available** — skip to Phase 1 and ask manually.
+
+**If upcoming meetings are found:**
+Present via AskUserQuestion: "I see you have these meetings coming up today:
+- [time] — [title] with [attendees]
+- [time] — [title] with [attendees]
+
+Which one are you prepping for?"
+
+Options: list each meeting + "None of these — I want to prep for something else"
+
+If the user picks a meeting, auto-populate the person name and skip Phase 1. Pull attendee names from the calendar event directly.
+
+**If no upcoming meetings or calendar unavailable:**
+Silently skip to Phase 1. Don't error or apologize — just ask manually.
+
 ### Phase 1: Who are you meeting with?
 
-Ask via AskUserQuestion: "Who are you meeting with?"
+If Phase 0 already identified the person, skip this phase.
+
+Otherwise, ask via AskUserQuestion: "Who are you meeting with?"
 
 **If the answer is specific** (a name like "Alex" or "Case"):
 → Search all past meetings:
@@ -125,6 +169,9 @@ End with three beats:
 
 ## Gotchas
 
+- **Calendar auto-detect is best-effort** — If no calendar source is available, silently fall back to asking manually. Never error or nag the user about calendar setup. The Google Calendar MCP (`gcal.mcp.claude.com/mcp`) is the recommended source for Claude users.
+- **Calendar attendee names may differ from meeting transcript names** — Calendar says "Alex Chen (sarah@company.com)" but transcripts say "Alex" or "SPEAKER_0". Match on first name.
+- **Skip all-day events and solo events** — Only show events with 2+ attendees as prep candidates. All-day events and events where the user is the only attendee aren't meetings.
 - **Push back on vague answers** — This is the most important pattern. Vague prep = useless prep. "Everyone" → "Name one person." "Catch up" → "What would you regret not discussing?"
 - **First-name slug for prep files** — Use `sarah` not `sarah-chen`. Transcript attendees are often abbreviated. Debrief matches on first name.
 - **Zero past meetings is not an error** — It's a first meeting. Adjust the flow, don't apologize.

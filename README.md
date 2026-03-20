@@ -221,7 +221,7 @@ No `ANTHROPIC_API_KEY`. No extra cost. Just your Claude subscription doing what 
 │   ├── Core: /minutes record, search, list, note, verify, setup, cleanup
 │   └── Interactive: /minutes prep, debrief, recap, weekly
 ├── 1 agent: meeting-analyst (cross-meeting intelligence)
-└── 1 hook: post-recording alerts (project tagging + decision conflicts + overdue items)
+└── 2 hooks: post-recording alerts + proactive meeting reminders
 ```
 
 **Meeting lifecycle skills** — inspired by [gstack](https://github.com/garrytan/gstack)'s interactive skill pattern:
@@ -312,7 +312,7 @@ minutes/
 ├── crates/cli/     CLI binary — 12 commands
 ├── crates/mcp/     MCP server — 8 tools for Claude Desktop
 ├── tauri/          Menu bar app — system tray, recording UI, singleton AI Assistant
-└── .claude/plugins/minutes/   Claude Code plugin — 11 skills + 1 agent + 1 hook
+└── .claude/plugins/minutes/   Claude Code plugin — 11 skills + 1 agent + 2 hooks
 ```
 
 Single `minutes-core` library shared by CLI, MCP server, and Tauri app. Zero code duplication.

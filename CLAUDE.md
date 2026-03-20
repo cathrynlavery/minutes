@@ -65,7 +65,7 @@ minutes/
 │   ├── cli/                   # CLI binary — 12 commands
 │   └── mcp/                   # MCP server — 8 tools for Claude Desktop
 ├── tauri/                     # Tauri v2 menu bar app + singleton AI Assistant
-├── .claude/plugins/minutes/   # Claude Code plugin — 11 skills + 1 agent + 1 hook
+├── .claude/plugins/minutes/   # Claude Code plugin — 11 skills + 1 agent + 2 hooks
 └── tests/integration/         # Integration tests (including real whisper tests)
 ```
 
@@ -132,4 +132,5 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 - **Interactive meeting lifecycle**: `/minutes prep` → record → `/minutes debrief` → `/minutes weekly` with skill chaining via `.prep.md` files
 - **Conversational summarization**: Claude reads transcripts via MCP, no API key needed
 - **Auto-tagging + alerts**: PostToolUse hook tags meetings with git repo, checks for decision conflicts, surfaces overdue action items
+- **Proactive reminders**: SessionStart hook checks calendar for upcoming meetings and nudges `/minutes prep`
 - **Desktop assistant**: Tauri AI Assistant is a singleton session that can switch focus into a selected meeting without spawning parallel assistant workspaces
