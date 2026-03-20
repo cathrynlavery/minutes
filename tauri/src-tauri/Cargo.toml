@@ -15,6 +15,9 @@ minutes-core = { path = "../../crates/core" }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 libc = "0.2"
+portable-pty = "0.9"
+base64 = "0.22"
+tauri-plugin-pty = "0.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

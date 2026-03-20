@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
 mod commands;
+mod context;
+mod pty;
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
@@ -39,6 +41,40 @@ fn show_note_window(app: &tauri::AppHandle) {
         .center()
         .focused(true)
         .build();
+}
+
+pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &str) {
+    // Use session_id as the window label (must be unique)
+    let label = session_id.replace(':', "-");
+    if let Some(win) = app.get_webview_window(&label) {
+        win.set_title(title).ok();
+        win.show().ok();
+        win.set_focus().ok();
+        app.emit_to(
+            &label,
+            &format!("terminal:title:{}", session_id),
+            title.to_string(),
+        )
+        .ok();
+        return;
+    }
+    // Pass session_id via a fragment so terminal.html can read it
+    let url = format!("terminal.html#{}", session_id);
+    let url_log = url.clone();
+    match WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+        .title(title)
+        .inner_size(900.0, 600.0)
+        .min_inner_size(600.0, 400.0)
+        .center()
+        .focused(true)
+        .build()
+    {
+        Ok(_) => eprintln!("[terminal] window created: label={} url={}", label, url_log),
+        Err(e) => eprintln!(
+            "[terminal] window creation FAILED: {} (label={}, url={})",
+            e, label, url_log
+        ),
+    }
 }
 
 /// Update tray to reflect recording state
@@ -99,9 +135,13 @@ fn main() {
             global_hotkey_shortcut: global_hotkey_shortcut.clone(),
             hotkey_runtime: hotkey_runtime.clone(),
             discard_short_hotkey_capture: discard_short_hotkey_capture.clone(),
+            pty_manager: Arc::new(Mutex::new(pty::PtyManager::default())),
         })
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
+
+            // Clean up stale terminal workspaces from previous sessions
+            context::cleanup_stale_workspaces();
 
             // Create main window on launch
             show_main_window(app.handle());
@@ -151,6 +191,8 @@ fn main() {
                 true,
                 None::<&str>,
             )?;
+            let assistant_item =
+                MenuItem::with_id(app, "assistant", "AI Assistant", true, None::<&str>)?;
             let sep2 = MenuItem::with_id(app, "sep2", "──────────", false, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Minutes", true, None::<&str>)?;
 
@@ -164,6 +206,7 @@ fn main() {
                     &stop_item,
                     &sep,
                     &note_item,
+                    &assistant_item,
                     &list_item,
                     &paste_summary_item,
                     &paste_transcript_item,
@@ -302,6 +345,21 @@ fn main() {
                         "note" => {
                             show_note_window(app);
                         }
+                        "assistant" => {
+                            let pty_mgr = app.state::<commands::AppState>().pty_manager.clone();
+                            let app_handle = app.clone();
+                            std::thread::spawn(move || {
+                                if let Err(err) = commands::spawn_terminal(
+                                    &app_handle,
+                                    &pty_mgr,
+                                    "assistant",
+                                    None,
+                                    None,
+                                ) {
+                                    commands::show_user_notification("AI Assistant", &err);
+                                }
+                            });
+                        }
                         "list" => {
                             let meetings_dir =
                                 dirs::home_dir().unwrap_or_default().join("meetings");
@@ -334,12 +392,16 @@ fn main() {
                             }
                         }
                         "quit" => {
+                            // Kill all PTY sessions before exiting
+                            if let Ok(mut mgr) =
+                                app.state::<commands::AppState>().pty_manager.lock()
+                            {
+                                mgr.kill_all();
+                            }
                             if commands::recording_active(&recording) {
                                 if commands::request_stop(&recording, &stop).is_err() {
                                     return;
                                 }
-                                // Wait in a background thread so we do not block the tray event loop.
-                                // Exiting happens only after the recording pipeline actually finishes.
                                 std::thread::spawn(|| {
                                     commands::wait_for_recording_shutdown_forever();
                                     std::process::exit(0);
@@ -358,11 +420,19 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Hide main window on close instead of quitting (app stays in tray)
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
+                    // Hide main window on close instead of quitting (app stays in tray)
                     api.prevent_close();
                     window.hide().ok();
+                } else if window.label() == crate::pty::ASSISTANT_SESSION_ID {
+                    // Assistant window closed — kill the singleton PTY session.
+                    let session_id = crate::pty::ASSISTANT_SESSION_ID.to_string();
+                    if let Some(state) = window.try_state::<commands::AppState>() {
+                        if let Ok(mut mgr) = state.pty_manager.lock() {
+                            mgr.kill_session(&session_id);
+                        }
+                    }
                 }
             }
         })
@@ -385,6 +455,12 @@ fn main() {
             commands::cmd_needs_setup,
             commands::cmd_download_model,
             commands::cmd_upcoming_meetings,
+            commands::cmd_spawn_terminal,
+            commands::cmd_pty_input,
+            commands::cmd_pty_resize,
+            commands::cmd_pty_kill,
+            commands::cmd_list_agents,
+            commands::cmd_terminal_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running minutes app");

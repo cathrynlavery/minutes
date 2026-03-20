@@ -14,7 +14,7 @@ Walk the user through first-time Minutes setup, step by step.
 
 Run the verify skill's script to see what's already done:
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/verify/scripts/verify-setup.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/minutes-verify/scripts/verify-setup.sh"
 ```
 
 Skip any steps that already pass.
@@ -61,13 +61,13 @@ For in-person conversations, the built-in mic works fine. For Zoom/Meet/Teams:
 4. Set the Multi-Output Device as system output
 5. Set BlackHole as Minutes' input (or system default input)
 
-See `record/references/audio-devices.md` for the full guide.
+See `minutes-record/references/audio-devices.md` for the full guide.
 
 ### 6. Verify
 
 Run verify again to confirm everything passes:
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/verify/scripts/verify-setup.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/minutes-verify/scripts/verify-setup.sh"
 ```
 
 ### 7. Test recording

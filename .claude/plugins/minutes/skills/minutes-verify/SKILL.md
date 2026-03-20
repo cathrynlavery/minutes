@@ -13,7 +13,7 @@ Run a health check on the Minutes installation to confirm everything is working.
 Run the verification script included with this skill:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/verify/scripts/verify-setup.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/minutes-verify/scripts/verify-setup.sh"
 ```
 
 The script checks each component and outputs a pass/fail status for each. Read the output and report results to the user.

@@ -217,10 +217,19 @@ No `ANTHROPIC_API_KEY`. No extra cost. Just your Claude subscription doing what 
 ### Claude Code (Plugin)
 ```
 .claude/plugins/minutes/
-├── 5 skills: /minutes record, search, list, recap, note
+├── 8 skills: /minutes record, search, list, recap, note, verify, setup, cleanup
 ├── 1 agent: meeting-analyst (cross-meeting intelligence)
 └── 1 hook: auto-tags meetings with current git repo
 ```
+
+### Minutes Desktop Assistant
+
+The Tauri menu bar app includes a built-in AI Assistant window backed by the
+same local meeting artifacts. It runs as a singleton assistant session:
+
+- `AI Assistant` opens or focuses the persistent assistant window
+- `Discuss with AI` reuses that same assistant and switches its active meeting focus
+- General assistant instructions live in `CLAUDE.md`; meeting-specific focus is written to `CURRENT_MEETING.md`
 
 ### Cowork / Dispatch
 MCP tools are automatically available in Cowork. From your phone via Dispatch: *"Start recording"* → Mac captures → Claude processes → summary on your phone.
@@ -273,6 +282,10 @@ engine = "builtin"        # builtin (regex) or qmd (semantic)
 [watch]
 paths = ["~/.minutes/inbox"]
 settle_delay_ms = 2000    # iCloud sync safety delay
+
+[assistant]
+agent = "claude"          # CLI launched by the Tauri AI Assistant
+agent_args = []           # Optional extra args, e.g. ["--dangerously-skip-permissions"]
 ```
 
 ## Architecture
@@ -282,8 +295,8 @@ minutes/
 ├── crates/core/    12 Rust modules — the engine (shared by all interfaces)
 ├── crates/cli/     CLI binary — 12 commands
 ├── crates/mcp/     MCP server — 8 tools for Claude Desktop
-├── tauri/          Menu bar app — system tray, dark-mode UI
-└── .claude/plugins/minutes/   Claude Code plugin — 5 skills + 1 agent
+├── tauri/          Menu bar app — system tray, recording UI, singleton AI Assistant
+└── .claude/plugins/minutes/   Claude Code plugin — 8 skills + 1 agent + 1 hook
 ```
 
 Single `minutes-core` library shared by CLI, MCP server, and Tauri app. Zero code duplication.

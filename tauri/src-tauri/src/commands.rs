@@ -1,5 +1,6 @@
 use minutes_core::{CaptureMode, Config, ContentType};
 use std::cmp::Reverse;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,7 @@ pub struct AppState {
     pub global_hotkey_shortcut: Arc<Mutex<String>>,
     pub hotkey_runtime: Arc<Mutex<HotkeyRuntime>>,
     pub discard_short_hotkey_capture: Arc<AtomicBool>,
+    pub pty_manager: Arc<Mutex<crate::pty::PtyManager>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -76,6 +78,11 @@ pub struct HotkeySettings {
     pub enabled: bool,
     pub shortcut: String,
     pub choices: Vec<HotkeyChoice>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TerminalInfo {
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +400,8 @@ fn latest_saved_artifact_path(
         content_type: None,
         since: None,
         attendee: None,
+        intent_kind: None,
+        owner: None,
     };
     let latest = minutes_core::search::search("", &config, &filters)
         .map_err(|e| e.to_string())?
@@ -759,6 +768,7 @@ fn scan_recovery_items(config: &Config) -> Vec<RecoveryItem> {
 }
 
 /// Start recording in a background thread.
+#[allow(clippy::too_many_arguments)]
 pub fn start_recording(
     app_handle: tauri::AppHandle,
     recording: Arc<AtomicBool>,
@@ -1218,6 +1228,8 @@ pub fn cmd_list_meetings(limit: Option<usize>) -> serde_json::Value {
         content_type: None,
         since: None,
         attendee: None,
+        intent_kind: None,
+        owner: None,
     };
     match minutes_core::search::search("", &config, &filters) {
         Ok(results) => {
@@ -1235,6 +1247,8 @@ pub fn cmd_search(query: String) -> serde_json::Value {
         content_type: None,
         since: None,
         attendee: None,
+        intent_kind: None,
+        owner: None,
     };
     match minutes_core::search::search(&query, &config, &filters) {
         Ok(results) => serde_json::to_value(&results).unwrap_or(serde_json::json!([])),
@@ -1469,6 +1483,243 @@ pub fn cmd_download_model(model: String) -> Result<String, String> {
         .unwrap_or(0);
 
     Ok(format!("Downloaded '{}' model ({} MB)", model, size))
+}
+
+// ── Terminal / AI Assistant commands ──────────────────────────
+
+fn meeting_title_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.replace('-', " "))
+        .unwrap_or_else(|| "Meeting Discussion".into())
+}
+
+fn terminal_title_for_mode(mode: &str, meeting_path: Option<&str>) -> Result<String, String> {
+    match mode {
+        "assistant" => Ok("Minutes Assistant".into()),
+        "meeting" => Ok(format!(
+            "Discussing: {}",
+            meeting_title_from_path(meeting_path.ok_or("meeting_path required for meeting mode")?)
+        )),
+        other => Err(format!(
+            "Unknown mode: {}. Use 'meeting' or 'assistant'.",
+            other
+        )),
+    }
+}
+
+fn sync_workspace_for_mode(
+    workspace: &Path,
+    config: &Config,
+    mode: &str,
+    meeting_path: Option<&str>,
+) -> Result<(), String> {
+    crate::context::write_assistant_context(workspace, config)?;
+
+    match mode {
+        "assistant" => crate::context::clear_active_meeting_context(workspace),
+        "meeting" => {
+            let path = meeting_path.ok_or("meeting_path required for meeting mode")?;
+            let meeting = PathBuf::from(path);
+            minutes_core::notes::validate_meeting_path(&meeting, &config.output_dir)?;
+            crate::context::write_active_meeting_context(workspace, &meeting, config)
+        }
+        other => Err(format!(
+            "Unknown mode: {}. Use 'meeting' or 'assistant'.",
+            other
+        )),
+    }
+}
+
+fn is_shell_command(command: &str) -> bool {
+    matches!(
+        Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(command),
+        "bash" | "zsh" | "sh" | "fish"
+    )
+}
+
+fn context_switch_prompt(command: &str, mode: &str, title: &str) -> String {
+    let plain_text = match mode {
+        "meeting" => format!(
+            "Minutes changed focus to {title}. Read CURRENT_MEETING.md and CLAUDE.md, then help with that meeting."
+        ),
+        _ => "Minutes cleared the active meeting focus. Resume general assistant mode and reread CLAUDE.md if needed."
+            .into(),
+    };
+
+    if is_shell_command(command) {
+        format!("cat <<'__MINUTES__'\n{plain_text}\n__MINUTES__\n")
+    } else {
+        format!("{plain_text}\n")
+    }
+}
+
+/// Resolve an agent name or path to an executable.
+///
+/// Accepts either:
+/// - A bare command name ("claude", "codex", "bash") — searched in common PATH dirs
+/// - An absolute path ("/usr/local/bin/my-agent") — used directly if it exists
+///
+/// This is intentionally open: users can set `assistant.agent` to any binary
+/// they want, including wrapper scripts or custom agent CLIs.
+pub fn find_agent_binary(name: &str) -> Option<PathBuf> {
+    // If it's an absolute path, check it directly
+    let as_path = PathBuf::from(name);
+    if as_path.is_absolute() && as_path.exists() {
+        return Some(as_path);
+    }
+
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let search_dirs = [
+        home.join(".cargo/bin"),
+        home.join(".local/bin"),
+        home.join(".npm-global/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+    ];
+    for dir in &search_dirs {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Shared spawn logic used by both cmd_spawn_terminal and the tray menu handler.
+/// Returns (session_id, window_title) on success.
+pub fn spawn_terminal(
+    app: &tauri::AppHandle,
+    pty_manager: &std::sync::Arc<Mutex<crate::pty::PtyManager>>,
+    mode: &str,
+    meeting_path: Option<&str>,
+    agent_override: Option<&str>,
+) -> Result<(String, String), String> {
+    let config = Config::load();
+    let title = terminal_title_for_mode(mode, meeting_path)?;
+    let workspace = crate::context::create_workspace(&config)?;
+    sync_workspace_for_mode(&workspace, &config, mode, meeting_path)?;
+
+    let mut manager = pty_manager.lock().map_err(|_| "PTY manager lock failed")?;
+
+    if manager.assistant_session_id().is_some() {
+        manager.set_session_title(crate::pty::ASSISTANT_SESSION_ID, title.clone())?;
+        if let Some(command) = manager.session_command(crate::pty::ASSISTANT_SESSION_ID) {
+            let prompt = context_switch_prompt(&command, mode, &title);
+            manager.write_input(crate::pty::ASSISTANT_SESSION_ID, prompt.as_bytes())?;
+        }
+    } else {
+        let agent_name = agent_override.unwrap_or(&config.assistant.agent);
+        let agent_bin = find_agent_binary(agent_name)
+            .ok_or_else(|| {
+                format!(
+                    "'{}' not found. Install it or set a different agent in ~/.config/minutes/config.toml under [assistant].",
+                    agent_name
+                )
+            })?;
+
+        manager.spawn(
+            crate::pty::SpawnConfig {
+                session_id: crate::pty::ASSISTANT_SESSION_ID.into(),
+                app_handle: app.clone(),
+                command: agent_bin.to_str().unwrap_or(agent_name).to_string(),
+                args: config.assistant.agent_args.clone(),
+                cwd: workspace.clone(),
+                context_dir: workspace.clone(),
+                title: title.clone(),
+            },
+            120,
+            30,
+        )?;
+    }
+
+    drop(manager);
+
+    crate::show_terminal_window(app, crate::pty::ASSISTANT_SESSION_ID, &title);
+
+    Ok((crate::pty::ASSISTANT_SESSION_ID.into(), title))
+}
+
+#[tauri::command]
+pub fn cmd_spawn_terminal(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    mode: String,
+    meeting_path: Option<String>,
+    agent: Option<String>,
+) -> Result<String, String> {
+    let (session_id, _) = spawn_terminal(
+        &app,
+        &state.pty_manager,
+        &mode,
+        meeting_path.as_deref(),
+        agent.as_deref(),
+    )?;
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub fn cmd_pty_input(
+    state: tauri::State<AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    let mut manager = state.pty_manager.lock().map_err(|_| "Lock failed")?;
+    manager.write_input(&session_id, data.as_bytes())
+}
+
+#[tauri::command]
+pub fn cmd_pty_resize(
+    state: tauri::State<AppState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let manager = state.pty_manager.lock().map_err(|_| "Lock failed")?;
+    manager.resize(&session_id, cols, rows)
+}
+
+#[tauri::command]
+pub fn cmd_pty_kill(state: tauri::State<AppState>, session_id: String) -> Result<(), String> {
+    let mut manager = state.pty_manager.lock().map_err(|_| "Lock failed")?;
+    manager.kill_session(&session_id);
+    Ok(())
+}
+
+/// Well-known agent CLIs to check for in cmd_list_agents.
+const WELL_KNOWN_AGENTS: &[&str] = &["claude", "codex", "bash", "zsh"];
+
+#[tauri::command]
+pub fn cmd_list_agents() -> serde_json::Value {
+    let agents: Vec<serde_json::Value> = WELL_KNOWN_AGENTS
+        .iter()
+        .filter_map(|name| {
+            find_agent_binary(name).map(|path| {
+                serde_json::json!({
+                    "name": name,
+                    "path": path.display().to_string(),
+                })
+            })
+        })
+        .collect();
+    serde_json::json!(agents)
+}
+
+#[tauri::command]
+pub fn cmd_terminal_info(state: tauri::State<AppState>, session_id: String) -> TerminalInfo {
+    let title = state
+        .pty_manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.session_title(&session_id))
+        .unwrap_or_else(|| "Minutes Assistant".into());
+    TerminalInfo { title }
 }
 
 #[cfg(test)]

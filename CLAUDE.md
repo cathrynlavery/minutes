@@ -22,6 +22,23 @@ cargo run --bin minutes -- record    # Start recording
 cargo run --bin minutes -- stop      # Stop and process
 ```
 
+## Full Build (CLI + Tauri App)
+
+```bash
+./scripts/build.sh                   # Builds everything and installs CLI
+# Or manually:
+export CXXFLAGS="-I$(xcrun --show-sdk-path)/usr/include/c++/v1"
+cargo build --release -p minutes-cli           # CLI binary
+cargo tauri build --bundles app                # Tauri .app bundle
+cp target/release/minutes ~/.local/bin/minutes # Install CLI
+open target/release/bundle/macos/Minutes.app   # Launch app
+```
+
+**IMPORTANT**: After any code change, you must rebuild BOTH the CLI and the Tauri app:
+- CLI changes: `cargo build --release -p minutes-cli && cp target/release/minutes ~/.local/bin/minutes`
+- Tauri changes: `cargo tauri build --bundles app` then relaunch Minutes.app
+- Both: `./scripts/build.sh`
+
 ## Project Structure
 
 ```
@@ -47,8 +64,8 @@ minutes/
 │   │   └── error.rs           # Per-module error types (thiserror)
 │   ├── cli/                   # CLI binary — 12 commands
 │   └── mcp/                   # MCP server — 8 tools for Claude Desktop
-├── tauri/                     # Tauri v2 menu bar app
-├── .claude/plugins/minutes/   # Claude Code plugin — 5 skills + 1 agent + 1 hook
+├── tauri/                     # Tauri v2 menu bar app + singleton AI Assistant
+├── .claude/plugins/minutes/   # Claude Code plugin — 8 skills + 1 agent + 1 hook
 └── tests/integration/         # Integration tests (including real whisper tests)
 ```
 
@@ -90,6 +107,8 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 - Claude summarizes via MCP when the user asks (no API key needed)
 - Optional automated summarization via Ollama (local) or cloud LLMs
 - Config at `~/.config/minutes/config.toml` (optional, compiled defaults work)
+- Tauri assistant uses a singleton workspace at `~/.minutes/assistant/`
+- `CLAUDE.md` holds general assistant instructions; `CURRENT_MEETING.md` is the active meeting focus for "Discuss with AI"
 - Meetings: `~/meetings/` | Voice memos: `~/meetings/memos/`
 - `0600` permissions on all output (sensitive content)
 - PID file + flock for recording state (`~/.minutes/recording.pid`)
@@ -108,6 +127,7 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 ## Claude Ecosystem Integration
 
 - **MCP Server**: 8 tools for Claude Desktop / Cowork / Dispatch
-- **Claude Code Plugin**: 5 skills + meeting-analyst agent + PostToolUse hook
+- **Claude Code Plugin**: 8 skills + meeting-analyst agent + PostToolUse hook
 - **Conversational summarization**: Claude reads transcripts via MCP, no API key needed
 - **Auto-tagging**: PostToolUse hook adds git repo name to meeting frontmatter
+- **Desktop assistant**: Tauri AI Assistant is a singleton session that can switch focus into a selected meeting without spawning parallel assistant workspaces

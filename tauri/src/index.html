@@ -687,6 +687,8 @@
 
     .about-card {
       width: min(520px, 100%);
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
       background: linear-gradient(180deg, rgba(22, 32, 50, 0.96), rgba(16, 24, 38, 0.96));
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 20px;
@@ -777,9 +779,11 @@
       line-height: 1.45;
     }
 
-    .toggle-btn {
-      width: auto;
-      min-width: 94px;
+    .about-controls .toggle-btn {
+      width: auto !important;
+      min-width: 56px;
+      max-width: 72px;
+      flex-shrink: 0;
     }
 
     .shortcut-select {
@@ -1058,7 +1062,7 @@
 
     .footer-actions {
       display: grid;
-      grid-template-columns: 1.35fr 1fr;
+      grid-template-columns: 1.35fr 1fr 1fr;
       gap: 10px;
     }
 
@@ -1233,6 +1237,7 @@
     <div class="footer-actions">
       <button class="btn btn-primary" id="btn-record">Start Recording</button>
       <button class="btn btn-secondary" id="btn-quick-thought">Quick Thought</button>
+      <button class="btn btn-secondary" id="btn-assistant">AI Assistant</button>
     </div>
   </div>
 
@@ -1245,6 +1250,7 @@
           <div class="detail-meta" id="detail-meta"></div>
         </div>
         <div class="detail-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-discuss-ai">Discuss with AI</button>
           <button class="btn btn-secondary btn-sm" id="btn-open-external">Open in Editor</button>
           <button class="btn btn-secondary btn-sm" id="btn-detail-close">Close</button>
         </div>
@@ -2465,6 +2471,24 @@
         await invoke('cmd_open_file', { path: currentMeetingPath });
       } catch (e) {
         console.error('Open external:', e);
+      }
+    });
+
+    // ── AI Assistant / Discuss ──
+    document.getElementById('btn-assistant').addEventListener('click', async () => {
+      try {
+        await invoke('cmd_spawn_terminal', { mode: 'assistant' });
+      } catch (e) {
+        console.error('Assistant:', e);
+      }
+    });
+
+    document.getElementById('btn-discuss-ai').addEventListener('click', async () => {
+      if (!currentMeetingPath) return;
+      try {
+        await invoke('cmd_spawn_terminal', { mode: 'meeting', meetingPath: currentMeetingPath });
+      } catch (e) {
+        console.error('Discuss:', e);
       }
     });
 

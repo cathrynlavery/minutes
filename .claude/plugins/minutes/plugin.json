@@ -3,14 +3,14 @@
   "version": "0.1.0",
   "description": "Conversation memory for AI assistants — record, transcribe, search meetings and voice memos",
   "skills": [
-    { "name": "record", "path": "skills/record/SKILL.md" },
-    { "name": "search", "path": "skills/search/SKILL.md" },
-    { "name": "list", "path": "skills/list/SKILL.md" },
-    { "name": "recap", "path": "skills/recap/SKILL.md" },
-    { "name": "note", "path": "skills/note/SKILL.md" },
-    { "name": "verify", "path": "skills/verify/SKILL.md" },
-    { "name": "setup", "path": "skills/setup/SKILL.md" },
-    { "name": "cleanup", "path": "skills/cleanup/SKILL.md" }
+    { "name": "minutes-record", "path": "skills/minutes-record/SKILL.md" },
+    { "name": "minutes-search", "path": "skills/minutes-search/SKILL.md" },
+    { "name": "minutes-list", "path": "skills/minutes-list/SKILL.md" },
+    { "name": "minutes-recap", "path": "skills/minutes-recap/SKILL.md" },
+    { "name": "minutes-note", "path": "skills/minutes-note/SKILL.md" },
+    { "name": "minutes-verify", "path": "skills/minutes-verify/SKILL.md" },
+    { "name": "minutes-setup", "path": "skills/minutes-setup/SKILL.md" },
+    { "name": "minutes-cleanup", "path": "skills/minutes-cleanup/SKILL.md" }
   ],
   "agents": [
     { "name": "meeting-analyst", "path": "agents/meeting-analyst.md" }

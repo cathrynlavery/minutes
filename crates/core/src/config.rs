@@ -19,6 +19,7 @@ pub struct Config {
     pub daily_notes: DailyNotesConfig,
     pub security: SecurityConfig,
     pub watch: WatchConfig,
+    pub assistant: AssistantConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +76,22 @@ pub struct WatchConfig {
     pub settle_delay_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AssistantConfig {
+    pub agent: String,
+    pub agent_args: Vec<String>,
+}
+
+impl Default for AssistantConfig {
+    fn default() -> Self {
+        Self {
+            agent: "claude".into(),
+            agent_args: vec![],
+        }
+    }
+}
+
 // ── Defaults ─────────────────────────────────────────────────
 
 fn home_dir() -> PathBuf {
@@ -96,6 +113,7 @@ impl Default for Config {
             daily_notes: DailyNotesConfig::default(),
             security: SecurityConfig::default(),
             watch: WatchConfig::default(),
+            assistant: AssistantConfig::default(),
         }
     }
 }
