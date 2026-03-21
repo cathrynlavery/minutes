@@ -31,6 +31,7 @@ pub struct TranscriptionConfig {
     pub model: String,
     pub model_path: PathBuf,
     pub min_words: usize,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +183,7 @@ impl Default for TranscriptionConfig {
             model: "small".into(),
             model_path: minutes_dir().join("models"),
             min_words: 3,
+            language: None,
         }
     }
 }
@@ -402,6 +404,46 @@ model = "large-v3"
         assert_eq!(config.transcription.min_words, 3);
         assert_eq!(config.diarization.engine, "none");
         assert!(!config.daily_notes.enabled);
+    }
+
+    #[test]
+    fn default_language_is_none() {
+        let config = Config::default();
+        assert_eq!(config.transcription.language, None);
+    }
+
+    #[test]
+    fn language_can_be_set_from_toml() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+language = "es"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert_eq!(config.transcription.language, Some("es".into()));
+    }
+
+    #[test]
+    fn omitted_language_defaults_to_none() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+model = "tiny"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert_eq!(config.transcription.language, None);
     }
 
     #[test]

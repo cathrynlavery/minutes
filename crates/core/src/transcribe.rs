@@ -92,7 +92,7 @@ fn transcribe_with_whisper(
         whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
 
     params.set_n_threads(num_cpus());
-    params.set_language(Some("en"));
+    params.set_language(config.transcription.language.as_deref());
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
@@ -466,6 +466,7 @@ mod tests {
                 model: "nonexistent".into(),
                 model_path: PathBuf::from("/tmp/no-such-dir"),
                 min_words: 10,
+                language: Some("en".into()),
             },
             ..Config::default()
         };

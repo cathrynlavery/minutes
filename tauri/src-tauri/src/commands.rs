@@ -2111,6 +2111,7 @@ mod tests {
                 model: "small".into(),
                 model_path: dir.path().join("models"),
                 min_words: 3,
+                language: Some("en".into()),
             },
             ..Config::default()
         };
