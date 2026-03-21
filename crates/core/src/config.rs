@@ -183,7 +183,7 @@ impl Default for TranscriptionConfig {
             model: "small".into(),
             model_path: minutes_dir().join("models"),
             min_words: 3,
-            language: Some("en".into()),
+            language: None,
         }
     }
 }
