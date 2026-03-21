@@ -892,6 +892,8 @@ This is a one-liner to implement — should ship immediately.
 
 ## PARA Integration (for QMD/Obsidian users)
 
+**Status**: Vault sync shipped (PR #4, v0.3.0). Three strategies: symlink, copy, direct. CLI: `minutes vault setup/status/unlink/sync`. Tauri NSOpenPanel integration tracked in issue #5.
+
 Meetings and memos become first-class PARA entities:
 
 ```
@@ -937,23 +939,23 @@ Phase 1 is split into two milestones to de-risk the hardest part (audio capture)
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| **P1a.0** | **BLOCKER: MCPB native binary research.** Can an MCPB package bundle a Rust binary? Is there a postinstall hook? Test with a hello-world `.mcpb` that shells out to a native binary. If MCPB can't bundle binaries, Phase 2 architecture must change. **Spend 2 hours on this in week 1, not week 2.** | TBD |
-| P1a.1 | Rust project scaffold (cargo workspace: `core`, `cli`) | TBD |
-| P1a.2 | Audio capture via BlackHole virtual audio device + `cpal` crate (NOT ScreenCaptureKit — see note below) | TBD |
-| P1a.3 | WAV file writing (capture → save to temp .wav, clean up temp WAV after transcription) | TBD |
-| P1a.4 | whisper.cpp integration via `whisper-rs` crate (batch transcription of .wav → text). **Audio format conversion**: use `symphonia` crate to decode .m4a/.mp3/.ogg → WAV before transcription (whisper-rs only reads WAV natively). Handle empty transcripts: save markdown with `[No speech detected]` marker + `status: no-speech` in frontmatter. Minimum word threshold: 10 (configurable). | TBD |
-| P1a.5 | Markdown output with YAML frontmatter (title, date, duration, raw transcript). **File permissions: `0600`** (owner read/write only — transcripts contain sensitive content). | TBD |
-| P1a.6 | CLI interface: `minutes record` (start), `minutes stop` (stop + transcribe + save), **`minutes status`** (is recording in progress? duration so far?). See IPC Protocol below. | TBD |
-| P1a.7 | Config file (`~/.config/minutes/config.toml` — output dir, whisper model path, search engine, watch settings) | TBD |
-| P1a.8 | Model download helper: `minutes setup` — downloads whisper `small` model by default (466MB, best quality/size tradeoff). `minutes setup --model large-v3` for best quality (3.1GB). `minutes setup --list` shows all available models with sizes. | TBD |
-| P1a.9 | README, LICENSE (MIT), .gitignore, basic docs, CONTRIBUTING.md | TBD |
-| P1a.10 | Git init, GitHub repo creation | TBD |
-| P1a.11 | Folder watcher mode: `minutes watch <dir>` — watches a folder for new audio files (.m4a, .wav, .mp3), runs each through the transcription pipeline automatically. See Watch Protocol below for dedup, settle delay, and locking. | TBD |
-| P1a.12 | Memo-specific frontmatter template (`type: memo`, no attendees/calendar, `source:` field for origin tracking) | TBD |
+| **P1a.0** | **BLOCKER: MCPB native binary research.** Can an MCPB package bundle a Rust binary? Is there a postinstall hook? Test with a hello-world `.mcpb` that shells out to a native binary. If MCPB can't bundle binaries, Phase 2 architecture must change. **Spend 2 hours on this in week 1, not week 2.** | **DONE** |
+| P1a.1 | Rust project scaffold (cargo workspace: `core`, `cli`) | **DONE** |
+| P1a.2 | Audio capture via BlackHole virtual audio device + `cpal` crate (NOT ScreenCaptureKit — see note below) | **DONE** |
+| P1a.3 | WAV file writing (capture → save to temp .wav, clean up temp WAV after transcription) | **DONE** |
+| P1a.4 | whisper.cpp integration via `whisper-rs` crate (batch transcription of .wav → text). **Audio format conversion**: use `symphonia` crate to decode .m4a/.mp3/.ogg → WAV before transcription (whisper-rs only reads WAV natively). Handle empty transcripts: save markdown with `[No speech detected]` marker + `status: no-speech` in frontmatter. Minimum word threshold: 10 (configurable). | **DONE** |
+| P1a.5 | Markdown output with YAML frontmatter (title, date, duration, raw transcript). **File permissions: `0600`** (owner read/write only — transcripts contain sensitive content). | **DONE** |
+| P1a.6 | CLI interface: `minutes record` (start), `minutes stop` (stop + transcribe + save), **`minutes status`** (is recording in progress? duration so far?). See IPC Protocol below. | **DONE** |
+| P1a.7 | Config file (`~/.config/minutes/config.toml` — output dir, whisper model path, search engine, watch settings) | **DONE** |
+| P1a.8 | Model download helper: `minutes setup` — downloads whisper `small` model by default (466MB, best quality/size tradeoff). `minutes setup --model large-v3` for best quality (3.1GB). `minutes setup --list` shows all available models with sizes. | **DONE** |
+| P1a.9 | README, LICENSE (MIT), .gitignore, basic docs, CONTRIBUTING.md | **DONE** |
+| P1a.10 | Git init, GitHub repo creation | **DONE** |
+| P1a.11 | Folder watcher mode: `minutes watch <dir>` — watches a folder for new audio files (.m4a, .wav, .mp3), runs each through the transcription pipeline automatically. See Watch Protocol below for dedup, settle delay, and locking. | **DONE** |
+| P1a.12 | Memo-specific frontmatter template (`type: memo`, no attendees/calendar, `source:` field for origin tracking) | **DONE** |
 | P1a.13 | Apple Shortcut: "Save to Minutes" — downloadable `.shortcut` file that adds a share sheet action on iPhone to save audio to `iCloud Drive/minutes-inbox/`, which syncs to Mac and gets picked up by `minutes watch` | TBD |
-| P1a.14 | Structured logging: JSON lines to `~/.minutes/logs/minutes.log`, daily rotation (7 days). Every pipeline step logs file, step, duration, outcome. `minutes logs` command to tail. `minutes logs --errors` to filter. `--verbose` CLI flag for stderr debug output. | TBD |
-| P1a.15 | Test fixtures: 5-second WAV in `tests/fixtures/` (~800KB), mock data for transcript/diarization/summary parsing. Integration test runs full pipeline on fixture. | TBD |
-| P1a.16 | Edge case test pass: every error variant in `error.rs` has at least one test. Covers: partial config merge, filename collisions, settle delay, lock files, special chars in search, no-speech template, 0600 permissions, auto-create output dir, move-to-failed, wrong extension skip. | TBD |
+| P1a.14 | Structured logging: JSON lines to `~/.minutes/logs/minutes.log`, daily rotation (7 days). Every pipeline step logs file, step, duration, outcome. `minutes logs` command to tail. `minutes logs --errors` to filter. `--verbose` CLI flag for stderr debug output. | **DONE** |
+| P1a.15 | Test fixtures: 5-second WAV in `tests/fixtures/` (~800KB), mock data for transcript/diarization/summary parsing. Integration test runs full pipeline on fixture. | **DONE** |
+| P1a.16 | Edge case test pass: every error variant in `error.rs` has at least one test. Covers: partial config merge, filename collisions, settle delay, lock files, special chars in search, no-speech template, 0600 permissions, auto-create output dir, move-to-failed, wrong extension skip. | **DONE** |
 
 **Exit criteria**: `minutes record` → talk for 2 minutes → `minutes stop` → markdown file appears in `~/meetings/` with raw transcript. AND: drop a voice memo .m4a into a watched folder → markdown appears in `~/meetings/memos/`. No AI, no diarization — just reliable local capture + transcription.
 
@@ -1056,13 +1058,13 @@ minutes record (PID file exists but process dead)
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| P1b.1 | Speaker diarization integration (see Diarization Decision below) | TBD |
-| P1b.2 | Speaker-to-name mapping (calendar attendees → speaker labels) | TBD |
-| P1b.3 | LLM summarization module — pluggable: Claude API, Ollama, OpenAI. **Map-reduce chunking** for transcripts exceeding context window: chunk by time/speaker turn, summarize each chunk, produce final summary from chunk summaries. If no LLM configured → skip gracefully, save transcript-only markdown. | TBD |
-| P1b.4 | Summary template system (configurable output: decisions, action items, key points) | TBD |
-| P1b.5 | Calendar integration (ical file parsing for meeting context + attendees) | TBD |
-| P1b.6 | CLI: `minutes list` (list recent meetings) and `minutes search <query>` (full-text search) | TBD |
-| P1b.7 | End-to-end test: record real meeting → diarized transcript + AI summary → markdown | TBD |
+| P1b.1 | Speaker diarization integration (see Diarization Decision below) | **DONE** (pyannote subprocess) |
+| P1b.2 | Speaker-to-name mapping (calendar attendees → speaker labels) | **DONE** (calendar + LLM extraction) |
+| P1b.3 | LLM summarization module — pluggable: Claude API, Ollama, OpenAI. **Map-reduce chunking** for transcripts exceeding context window: chunk by time/speaker turn, summarize each chunk, produce final summary from chunk summaries. If no LLM configured → skip gracefully, save transcript-only markdown. | **DONE** (agent/ollama/ureq) |
+| P1b.4 | Summary template system (configurable output: decisions, action items, key points) | **DONE** (structured extraction) |
+| P1b.5 | Calendar integration (ical file parsing for meeting context + attendees) | **DONE** (macOS EventKit via helper) |
+| P1b.6 | CLI: `minutes list` (list recent meetings) and `minutes search <query>` (full-text search) | **DONE** |
+| P1b.7 | End-to-end test: record real meeting → diarized transcript + AI summary → markdown | **DONE** |
 
 **Exit criteria**: Record a real meeting → get diarized transcript with speaker names + AI-generated summary with decisions and action items → saved as searchable markdown.
 
@@ -1137,14 +1139,14 @@ settle_delay_ms = 2000       # Wait for file size to stabilize before processing
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| P2.1 | MCPB scaffold (manifest.json, Node.js MCP server) | TBD |
-| P2.2 | MCP tool: `start_recording` (spawns Rust binary) | TBD |
-| P2.3 | MCP tool: `stop_recording` (triggers pipeline) | TBD |
-| P2.4 | MCP tool: `list_meetings` (reads meeting store) | TBD |
-| P2.5 | MCP tool: `search_meetings` (full-text + frontmatter query) | TBD |
-| P2.6 | MCP tool: `get_transcript` (returns specific meeting) | TBD |
-| P2.7 | Package as .mcpb, test install in Claude Desktop | TBD |
-| P2.8 | README for MCPB distribution | TBD |
+| P2.1 | MCPB scaffold (manifest.json, Node.js MCP server) | **DONE** |
+| P2.2 | MCP tool: `start_recording` (spawns Rust binary) | **DONE** |
+| P2.3 | MCP tool: `stop_recording` (triggers pipeline) | **DONE** |
+| P2.4 | MCP tool: `list_meetings` (reads meeting store) | **DONE** |
+| P2.5 | MCP tool: `search_meetings` (full-text + frontmatter query) | **DONE** |
+| P2.6 | MCP tool: `get_transcript` (returns specific meeting) | **DONE** |
+| P2.7 | Package as .mcpb, test install in Claude Desktop | **DONE** |
+| P2.8 | README for MCPB distribution | **DONE** |
 
 **Exit criteria**: Install extension in Claude Desktop → record meeting → ask Claude about it → Claude answers from transcript.
 
@@ -1154,16 +1156,16 @@ settle_delay_ms = 2000       # Wait for file size to stabilize before processing
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| P2b.1 | Plugin scaffold: `plugin.json` manifest with name, version, description, components | TBD |
-| P2b.2 | Skill: `/minutes record` — start/stop recording with hotkey awareness | TBD |
-| P2b.3 | Skill: `/minutes search <query>` — search past meetings from terminal, render results in chat | TBD |
-| P2b.4 | Skill: `/minutes list` — list recent meetings with summaries, attendees, dates | TBD |
-| P2b.5 | Skill: `/minutes recap` — summarize today's meetings into a digest | TBD |
-| P2b.6 | Agent: `meeting-analyst` — subagent for cross-meeting intelligence queries ("what did X say about Y?") | TBD |
-| P2b.7 | Hook: `SessionStart` — inject recent meeting context if meetings exist from today | TBD |
-| P2b.8 | Hook: `PostToolUse` — auto-tag meetings with current project/repo context when recording stops | TBD |
-| P2b.9 | MCP server config in plugin (`.mcp.json`) — reuse MCPB's MCP tools within Claude Code | TBD |
-| P2b.10 | Plugin README + install instructions (`claude plugin add minutes`) | TBD |
+| P2b.1 | Plugin scaffold: `plugin.json` manifest with name, version, description, components | **DONE** |
+| P2b.2 | Skill: `/minutes record` — start/stop recording with hotkey awareness | **DONE** |
+| P2b.3 | Skill: `/minutes search <query>` — search past meetings from terminal, render results in chat | **DONE** |
+| P2b.4 | Skill: `/minutes list` — list recent meetings with summaries, attendees, dates | **DONE** |
+| P2b.5 | Skill: `/minutes recap` — summarize today's meetings into a digest | **DONE** (as `/minutes weekly`) |
+| P2b.6 | Agent: `meeting-analyst` — subagent for cross-meeting intelligence queries ("what did X say about Y?") | **DONE** |
+| P2b.7 | Hook: `SessionStart` — inject recent meeting context if meetings exist from today | **DONE** |
+| P2b.8 | Hook: `PostToolUse` — auto-tag meetings with current project/repo context when recording stops | **DONE** |
+| P2b.9 | MCP server config in plugin (`.mcp.json`) — reuse MCPB's MCP tools within Claude Code | **DONE** |
+| P2b.10 | Plugin README + install instructions (`claude plugin add minutes`) | **DONE** |
 
 **Plugin structure:**
 ```
@@ -1259,16 +1261,16 @@ Users type plain text. Never markdown. The system adds the timestamp prefix and 
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| P2c.1 | `notes.rs` module: read/write `~/.minutes/current-notes.md`, timestamp calculation from recording start, append with atomic write | TBD |
-| P2c.2 | `minutes note "text"` CLI command: check recording in progress, calculate timestamp, append to current-notes.md | TBD |
-| P2c.3 | `--context "text"` flag on `minutes record`: saves to `~/.minutes/current-context.txt`, included in frontmatter | TBD |
-| P2c.4 | `--note "text"` flag on `minutes process`: adds context for voice memos being processed | TBD |
-| P2c.5 | Pipeline integration: read notes + context files, pass to LLM summarizer as high-priority context, include `## Notes` section in markdown output | TBD |
-| P2c.6 | LLM prompt update: instruct summarizer to weight user notes heavily, cross-reference notes with transcript timestamps | TBD |
-| P2c.7 | `--meeting <path>` flag on `minutes note`: append post-meeting annotations to existing files | TBD |
-| P2c.8 | `add_note` MCP tool: calls `minutes note` for Claude Desktop/Cowork/Dispatch | TBD |
-| P2c.9 | `/minutes note` Claude Code skill | TBD |
-| P2c.10 | Tauri note input: text field visible during recording, lines auto-timestamped, rendered visually (not raw markdown) | TBD |
+| P2c.1 | `notes.rs` module: read/write `~/.minutes/current-notes.md`, timestamp calculation from recording start, append with atomic write | **DONE** |
+| P2c.2 | `minutes note "text"` CLI command: check recording in progress, calculate timestamp, append to current-notes.md | **DONE** |
+| P2c.3 | `--context "text"` flag on `minutes record`: saves to `~/.minutes/current-context.txt`, included in frontmatter | **DONE** |
+| P2c.4 | `--note "text"` flag on `minutes process`: adds context for voice memos being processed | **DONE** |
+| P2c.5 | Pipeline integration: read notes + context files, pass to LLM summarizer as high-priority context, include `## Notes` section in markdown output | **DONE** |
+| P2c.6 | LLM prompt update: instruct summarizer to weight user notes heavily, cross-reference notes with transcript timestamps | **DONE** |
+| P2c.7 | `--meeting <path>` flag on `minutes note`: append post-meeting annotations to existing files | **DONE** |
+| P2c.8 | `add_note` MCP tool: calls `minutes note` for Claude Desktop/Cowork/Dispatch | **DONE** |
+| P2c.9 | `/minutes note` Claude Code skill | **DONE** |
+| P2c.10 | Tauri note input: text field visible during recording, lines auto-timestamped, rendered visually (not raw markdown) | **DONE** |
 
 **Exit criteria**: `minutes record` → type `minutes note "important point"` in another terminal → `minutes stop` → markdown has `## Notes` section with timestamped notes → LLM summary references the noted moments.
 
@@ -1318,12 +1320,12 @@ context: "Discuss Q2 roadmap, follow up on API launch timeline"
 | P3.5 | Note taking UI: inline quick-note during recording + standalone popup | **DONE** |
 | P3.6 | macOS mic permission: Info.plist + entitlements.plist + .app bundle | **DONE** |
 | P3.7 | .app bundle build: `cargo tauri build --bundles app` → Minutes.app | **DONE** |
-| P3.8 | Calendar polling (macOS EventKit or ical) | TBD |
+| P3.8 | Calendar polling (macOS EventKit or ical) | **DONE** (calendar-events helper + tray menu) |
 | P3.9 | Meeting suggestion notification (2 min before) | TBD |
-| P3.10 | Auto-start on login (launchd integration) | TBD |
-| P3.11 | First-run onboarding (permissions, model download, LLM config) | TBD |
-| P3.12 | Homebrew cask formula | TBD |
-| P3.13 | Window close → hide to tray (app keeps running) | TBD |
+| P3.10 | Auto-start on login (launchd integration) | **DONE** (`minutes service install`) |
+| P3.11 | First-run onboarding (permissions, model download, LLM config) | **DONE** (onboarding flow + readiness center) |
+| P3.12 | Homebrew cask formula | **DONE** (`brew install --cask silverstein/tap/minutes`) |
+| P3.13 | Window close → hide to tray (app keeps running) | **DONE** (prevent_close + hide) |
 
 **Bugs fixed during P3 implementation (2026-03-18):**
 - **Critical**: WAV normalization bug — 16-bit samples divided by i32::MAX made audio 65,000x too quiet for whisper. Fixed by dividing by actual bit-depth max.
@@ -1340,13 +1342,13 @@ context: "Discuss Q2 roadmap, follow up on API launch timeline"
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| P4a.1 | Cross-meeting search ("what did we decide about X across all meetings?") | TBD |
-| P4a.2 | People profiles — build attendee context over time (decisions, commitments, topics they care about) | TBD |
-| P4a.3 | **Structured intent extraction** — LLM summarization emits a machine-readable `intents:` block in YAML frontmatter alongside the human-readable summary. Decisions, action items, open questions, and commitments as typed entries with `who`, `what`, `status`, and `by_date` fields. The markdown stays readable; the frontmatter becomes agent-queryable. MCP `search_meetings` gains a `--intents-only` filter that returns structured data, not prose. | TBD |
-| P4a.4 | **Decision consistency tracking** — the `meeting-analyst` agent compares new meeting intents against the existing intent index. Flags contradictions ("March 5: launch date April 1. March 12: launch date pushed to May.") and stale commitments ("Case committed to send spec by March 8 — no follow-up in 3 meetings since"). Outputs a `consistency_report` via MCP tool, not just a wall of text. | TBD |
+| P4a.1 | Cross-meeting search ("what did we decide about X across all meetings?") | **DONE** (`minutes research`, `minutes person`) |
+| P4a.2 | People profiles — build attendee context over time (decisions, commitments, topics they care about) | **DONE** (`minutes person <name>`) |
+| P4a.3 | **Structured intent extraction** — LLM summarization emits a machine-readable `intents:` block in YAML frontmatter alongside the human-readable summary. Decisions, action items, open questions, and commitments as typed entries with `who`, `what`, `status`, and `by_date` fields. The markdown stays readable; the frontmatter becomes agent-queryable. MCP `search_meetings` gains a `--intents-only` filter that returns structured data, not prose. | **DONE** |
+| P4a.4 | **Decision consistency tracking** — the `meeting-analyst` agent compares new meeting intents against the existing intent index. Flags contradictions ("March 5: launch date April 1. March 12: launch date pushed to May.") and stale commitments ("Case committed to send spec by March 8 — no follow-up in 3 meetings since"). Outputs a `consistency_report` via MCP tool, not just a wall of text. | **DONE** (`minutes consistency`) |
 | P4a.5 | PARA entity auto-linking (meetings → people → projects) | TBD |
-| P4a.6 | QMD collection auto-registration (`qmd collection add minutes ~/meetings`) | TBD |
-| P4a.7 | Daily note backlinks (append meeting summaries to daily notes) | TBD |
+| P4a.6 | QMD collection auto-registration (`qmd collection add minutes ~/meetings`) | **DONE** (`minutes qmd register`) |
+| P4a.7 | Daily note backlinks (append meeting summaries to daily notes) | **DONE** (`daily_notes.rs`) |
 
 #### 4b: Claude Cowork + Dispatch Integration
 
@@ -1365,8 +1367,8 @@ context: "Discuss Q2 roadmap, follow up on API launch timeline"
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| P4c.1 | Windows support (WASAPI audio capture) | TBD |
-| P4c.2 | Linux support (PulseAudio/PipeWire capture) | TBD |
+| P4c.1 | Windows support (WASAPI audio capture) | **PARTIAL** (core builds + tests pass on Windows CI; audio capture untested) |
+| P4c.2 | Linux support (PulseAudio/PipeWire capture) | **PARTIAL** (core builds + tests pass on Ubuntu CI; audio capture untested) |
 | P4c.3 | Obsidian community plugin (thin wrapper around CLI) | TBD |
 
 **Cowork integration architecture:**
