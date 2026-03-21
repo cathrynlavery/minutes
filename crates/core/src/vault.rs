@@ -544,6 +544,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // TCC is macOS-only; these dirs don't exist on CI runners for Linux/Windows
+    #[cfg(target_os = "macos")]
     #[test]
     fn tcc_protected_documents() {
         let home = home_dir();
