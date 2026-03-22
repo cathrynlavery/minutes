@@ -180,14 +180,19 @@ fn refresh_calendar_items(
             };
             crate::commands::show_user_notification("Upcoming Meeting", &body);
             state.notified.insert(e.title.clone());
-            eprintln!("[calendar] notified: {} (in {} min)", e.title, e.minutes_until);
+            eprintln!(
+                "[calendar] notified: {} (in {} min)",
+                e.title, e.minutes_until
+            );
         }
     }
 
     // Clean up old notifications (events that have passed)
-    state
-        .notified
-        .retain(|title| all_events.iter().any(|e| &e.title == title && e.minutes_until >= -5));
+    state.notified.retain(|title| {
+        all_events
+            .iter()
+            .any(|e| &e.title == title && e.minutes_until >= -5)
+    });
 
     let events: Vec<_> = all_events
         .into_iter()

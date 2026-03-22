@@ -711,7 +711,10 @@ fn vault_status(config: &Config) -> ReadinessItem {
         vault::VaultStatus::PermissionDenied { path } => ReadinessItem {
             label: "Vault sync (Obsidian / Logseq)".into(),
             state: "attention".into(),
-            detail: format!("Permission denied: {}. Try Set Up Vault from the app.", path.display()),
+            detail: format!(
+                "Permission denied: {}. Try Set Up Vault from the app.",
+                path.display()
+            ),
             optional: true,
         },
         vault::VaultStatus::MissingVaultDir { path } => ReadinessItem {
@@ -730,17 +733,22 @@ pub fn cmd_vault_status() -> serde_json::Value {
     let config = Config::load();
     let health = minutes_core::vault::check_health(&config);
     let (status, strategy, path, detail) = match health {
-        minutes_core::vault::VaultStatus::NotConfigured => {
-            ("not_configured", "".into(), "".into(), "Not configured".into())
-        }
+        minutes_core::vault::VaultStatus::NotConfigured => (
+            "not_configured",
+            "".into(),
+            "".into(),
+            "Not configured".into(),
+        ),
         minutes_core::vault::VaultStatus::Healthy { strategy, path } => {
             let p = path.display().to_string();
-            ("healthy", strategy, p.clone(), format!("Vault active at {}", p))
+            (
+                "healthy",
+                strategy,
+                p.clone(),
+                format!("Vault active at {}", p),
+            )
         }
-        minutes_core::vault::VaultStatus::BrokenSymlink {
-            link_path,
-            target,
-        } => (
+        minutes_core::vault::VaultStatus::BrokenSymlink { link_path, target } => (
             "broken",
             "symlink".into(),
             link_path.display().to_string(),
