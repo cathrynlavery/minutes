@@ -462,6 +462,10 @@ Any agent framework that speaks MCP can use Minutes as its conversation memory l
 
 **Built with:** Rust, [whisper.cpp](https://github.com/ggerganov/whisper.cpp), [symphonia](https://github.com/pdeljanov/Symphonia), [cpal](https://github.com/RustAudio/cpal), [Tauri v2](https://v2.tauri.app/), [ureq](https://github.com/algesten/ureq)
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=silverstein/minutes&type=Date)](https://star-history.com/#silverstein/minutes&Date)
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
