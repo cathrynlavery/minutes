@@ -2123,7 +2123,7 @@ fn cmd_demo(config: &Config) -> Result<()> {
 
     // Clean up temp file
     std::fs::remove_file(&demo_path).ok();
-    std::fs::remove_dir(&demo_dir).ok();
+    std::fs::remove_dir_all(&demo_dir).ok();
 
     match result {
         Ok(result) => {

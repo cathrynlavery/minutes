@@ -174,15 +174,23 @@ const MINUTES_BIN = findMinutesBinary();
 // In that case, read-only tools use the pure-TS reader module.
 
 let cliAvailable: boolean | null = null;
+let cliCheckedAt = 0;
+const CLI_CACHE_TTL_MS = 5 * 60 * 1000; // re-check every 5 minutes
 
 async function isCliAvailable(): Promise<boolean> {
-  if (cliAvailable !== null) return cliAvailable;
+  // Cache hit: return true permanently (CLI won't disappear mid-session)
+  // Cache miss (false): re-probe after TTL so installing CLI mid-session works
+  if (cliAvailable === true) return true;
+  if (cliAvailable === false && Date.now() - cliCheckedAt < CLI_CACHE_TTL_MS) return false;
+
   try {
     await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
     cliAvailable = true;
+    cliCheckedAt = Date.now();
     console.error("[Minutes] CLI found — full mode (all tools enabled)");
   } catch {
     cliAvailable = false;
+    cliCheckedAt = Date.now();
     console.error(
       "[Minutes] CLI not found — read-only mode. Install for recording: brew install minutes"
     );

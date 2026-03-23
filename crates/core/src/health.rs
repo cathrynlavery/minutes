@@ -86,29 +86,30 @@ pub fn mic_status() -> HealthItem {
 pub fn calendar_status() -> HealthItem {
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(r#"tell application "Calendar" to get name of every calendar"#)
-            .output();
+        let mut cmd = std::process::Command::new("osascript");
+        cmd.arg("-e")
+            .arg(r#"tell application "Calendar" to get name of every calendar"#);
+        let output = crate::calendar::output_with_timeout(cmd, std::time::Duration::from_secs(10))
+            .map(|o| if o.status.success() { Ok(o) } else { Err(o) });
 
         match output {
-            Ok(result) if result.status.success() => HealthItem {
+            Some(Ok(_)) => HealthItem {
                 label: "Calendar access".into(),
                 state: "ready".into(),
                 detail: "Calendar access is available for meeting suggestions.".into(),
                 optional: true,
             },
-            Ok(_) => HealthItem {
+            Some(Err(_)) => HealthItem {
                 label: "Calendar access".into(),
                 state: "attention".into(),
                 detail: "Calendar access is unavailable. Meeting suggestions will be hidden."
                     .into(),
                 optional: true,
             },
-            Err(_) => HealthItem {
+            None => HealthItem {
                 label: "Calendar access".into(),
                 state: "attention".into(),
-                detail: "Calendar check failed. Meeting suggestions will be hidden.".into(),
+                detail: "Calendar check timed out. Meeting suggestions will be hidden.".into(),
                 optional: true,
             },
         }

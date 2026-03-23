@@ -15,7 +15,10 @@ use std::time::Duration;
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run a Command with a timeout. Returns None if the process hangs or fails to start.
-fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Option<std::process::Output> {
+pub(crate) fn output_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
     let child = cmd.spawn().ok()?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -42,7 +45,7 @@ fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Option<std::proce
                     libc::kill(child_id as i32, libc::SIGKILL);
                 }
             }
-            let _ = handle.join();
+            drop(handle); // detach — thread exits on its own after kill
             None
         }
     }
