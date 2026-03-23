@@ -14,7 +14,7 @@ minutes is an open-source, privacy-first conversation memory layer for AI assist
 
 ## For AI Agents
 
-minutes exposes a standard MCP server with 12 tools and 6 resources. Any MCP-compatible client can use it as a conversation memory layer.
+minutes exposes a standard MCP server with 13 tools and 6 resources. Any MCP-compatible client can use it as a conversation memory layer. Install via `npx minutes-mcp` (no Rust needed for read-only tools).
 
 ### MCP Server Setup
 
@@ -22,8 +22,8 @@ minutes exposes a standard MCP server with 12 tools and 6 resources. Any MCP-com
 {
   "mcpServers": {
     "minutes": {
-      "command": "node",
-      "args": ["/path/to/minutes/crates/mcp/dist/index.js"]
+      "command": "npx",
+      "args": ["minutes-mcp"]
     }
   }
 }

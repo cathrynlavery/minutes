@@ -38,6 +38,8 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 
+import * as reader from "./reader.js";
+
 const UI_RESOURCE_URI = "ui://minutes/dashboard";
 
 const execFileAsync = promisify(execFile);
@@ -74,16 +76,14 @@ async function isQmdAvailable(): Promise<boolean> {
 async function enrichWithFrontmatter(qmdResults: any[]): Promise<any[]> {
   return Promise.all(
     qmdResults.map(async (r: any) => {
+      const filePath = r.source_path || r.path;
       try {
-        const head = (await readFile(r.source_path || r.path, "utf-8")).slice(0, 600);
-        const title = head.match(/^title:\s*(.+)$/m)?.[1]?.trim() || "";
-        const date = head.match(/^date:\s*(.+)$/m)?.[1]?.trim() || "";
-        const contentType = head.match(/^type:\s*(.+)$/m)?.[1]?.trim() || "meeting";
+        const meeting = await reader.getMeeting(filePath);
         return {
-          date,
-          title,
-          content_type: contentType,
-          path: r.source_path || r.path,
+          date: meeting?.frontmatter.date || "",
+          title: meeting?.frontmatter.title || "",
+          content_type: meeting?.frontmatter.type || "meeting",
+          path: filePath,
           snippet: r.snippet || "",
         };
       } catch {
@@ -91,7 +91,7 @@ async function enrichWithFrontmatter(qmdResults: any[]): Promise<any[]> {
           date: "",
           title: "",
           content_type: "meeting",
-          path: r.source_path || r.path,
+          path: filePath,
           snippet: r.snippet || "",
         };
       }
@@ -168,6 +168,33 @@ function findMinutesBinary(): string {
 }
 
 const MINUTES_BIN = findMinutesBinary();
+
+// ── CLI availability detection ──────────────────────────────
+// When installed via `npx minutes-mcp`, the Rust CLI may not be present.
+// In that case, read-only tools use the pure-TS reader module.
+
+let cliAvailable: boolean | null = null;
+
+async function isCliAvailable(): Promise<boolean> {
+  if (cliAvailable !== null) return cliAvailable;
+  try {
+    await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
+    cliAvailable = true;
+    console.error("[Minutes] CLI found — full mode (all tools enabled)");
+  } catch {
+    cliAvailable = false;
+    console.error(
+      "[Minutes] CLI not found — read-only mode. Install for recording: brew install minutes"
+    );
+  }
+  return cliAvailable;
+}
+
+const CLI_INSTALL_MSG =
+  "Recording requires the minutes CLI binary. Install it:\n" +
+  "  macOS:   brew tap silverstein/tap && brew install minutes\n" +
+  "  Any:     cargo install minutes-cli\n" +
+  "  Source:  https://github.com/silverstein/minutes";
 
 // ── Helper: run minutes CLI command (uses execFile, not exec) ──
 
@@ -262,7 +289,7 @@ function validatePathInDirectories(
 
 const server = new McpServer({
   name: "minutes",
-  version: "0.3.0",
+  version: "0.4.0",
 });
 
 // Configurable directories — override via env vars in Claude Desktop extension settings
@@ -304,6 +331,9 @@ server.tool(
   },
   { title: "Start Recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async ({ title, mode }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
     const { stdout: statusOut } = await runMinutes(["status"]);
     const status = parseJsonOutput(statusOut);
     if (status.recording) {
@@ -356,6 +386,9 @@ server.tool(
   {},
   { title: "Stop Recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
     try {
       const { stdout, stderr } = await runMinutes(["stop"], 180000);
       const result = parseJsonOutput(stdout);
@@ -384,6 +417,9 @@ server.tool(
   {},
   { title: "Recording Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: `No recording in progress (read-only mode).\n\n${CLI_INSTALL_MSG}` }] };
+    }
     const { stdout } = await runMinutes(["status"]);
     const status = parseJsonOutput(stdout);
     const modeLabel = status.recording_mode === "quick-thought" ? "Quick thought" : "Recording";
@@ -413,6 +449,41 @@ registerAppTool(
     _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
   },
   async ({ limit, type: contentType }) => {
+    // Pure-TS fallback when CLI is not available
+    if (!(await isCliAvailable())) {
+      const meetings = await reader.listMeetings(MEETINGS_DIR, limit);
+      const filtered = contentType
+        ? meetings.filter((m) => m.frontmatter.type === contentType)
+        : meetings;
+      const openActions = await reader.findOpenActions(MEETINGS_DIR);
+
+      if (filtered.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No meetings or memos found." }],
+          structuredContent: { meetings: [], actions: [], view: "dashboard" },
+          _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "dashboard" },
+        };
+      }
+
+      const text = filtered
+        .map((m) => `${m.frontmatter.date} — ${m.frontmatter.title} [${m.frontmatter.type}]\n  ${m.path}`)
+        .join("\n\n");
+
+      const meetingsJson = filtered.map((m) => ({
+        date: m.frontmatter.date,
+        title: m.frontmatter.title,
+        content_type: m.frontmatter.type,
+        path: m.path,
+        duration: m.frontmatter.duration,
+      }));
+
+      return {
+        content: [{ type: "text" as const, text }],
+        structuredContent: { meetings: meetingsJson, actions: openActions.map((a) => a.item), view: "dashboard" },
+        _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "dashboard" },
+      };
+    }
+
     const args = ["list", "--limit", String(limit)];
     if (contentType) args.push("-t", contentType);
 
@@ -476,6 +547,45 @@ registerAppTool(
     _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
   },
   async ({ query, type: contentType, since, limit, intent_kind, owner, intents_only }) => {
+    // Pure-TS fallback when CLI is not available
+    if (!(await isCliAvailable())) {
+      const droppedFilters = [since && "since", intent_kind && "intent_kind", owner && "owner", intents_only && "intents_only"].filter(Boolean);
+      const filterWarning = droppedFilters.length > 0
+        ? `\n\n(Note: ${droppedFilters.join(", ")} filters require the CLI. Install: brew install minutes)`
+        : "";
+
+      const results = await reader.searchMeetings(MEETINGS_DIR, query, limit);
+      const filtered = contentType
+        ? results.filter((m) => m.frontmatter.type === contentType)
+        : results;
+
+      if (filtered.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `No results for "${query}".${filterWarning}` }],
+          structuredContent: { results: [], view: "search" },
+          _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "search" },
+        };
+      }
+
+      const text = filtered
+        .map((m) => `${m.frontmatter.date} — ${m.frontmatter.title} [${m.frontmatter.type}]\n  ${m.path}`)
+        .join("\n\n") + filterWarning;
+
+      return {
+        content: [{ type: "text" as const, text }],
+        structuredContent: {
+          results: filtered.map((m) => ({
+            date: m.frontmatter.date,
+            title: m.frontmatter.title,
+            content_type: m.frontmatter.type,
+            path: m.path,
+          })),
+          view: "search",
+        },
+        _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "search" },
+      };
+    }
+
     // Intent/metadata queries always use CLI (QMD doesn't index YAML frontmatter fields)
     const useCliOnly = intents_only || intent_kind || owner || since;
 
@@ -560,6 +670,9 @@ registerAppTool(
     _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
   },
   async ({ owner, stale_after_days }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: `Consistency reports require the full CLI for structured intent analysis.\n\n${CLI_INSTALL_MSG}` }] };
+    }
     const args = ["consistency", "--stale-after-days", String(stale_after_days)];
     if (owner) args.push("--owner", owner);
 
@@ -631,6 +744,25 @@ registerAppTool(
     _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
   },
   async ({ name }) => {
+    // Pure-TS fallback when CLI is not available
+    if (!(await isCliAvailable())) {
+      const profile = await reader.getPersonProfile(MEETINGS_DIR, name);
+      const sections = [];
+      if (profile.topics.length > 0) sections.push("Topics: " + profile.topics.join(", "));
+      if (profile.meetings.length > 0) {
+        sections.push("Meetings:\n" + profile.meetings.map((m) => `- ${m.date} — ${m.title}`).join("\n"));
+      }
+      if (profile.openActions.length > 0) {
+        sections.push("Open actions:\n" + profile.openActions.map((a) => `- ${a.task} (${a.status})`).join("\n"));
+      }
+      const text = sections.length > 0 ? sections.join("\n\n") : `No profile data found for ${name}.`;
+      return {
+        content: [{ type: "text" as const, text }],
+        structuredContent: { name, top_topics: profile.topics.map((t) => ({ topic: t, count: 1 })), open_intents: profile.openActions, recent_meetings: profile.meetings, view: "person" },
+        _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "person" },
+      };
+    }
+
     const { stdout, stderr } = await runMinutes(["person", name]);
     const profile = parseJsonOutput(stdout);
 
@@ -705,6 +837,16 @@ server.tool(
   },
   { title: "Research Topic", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   async ({ query, type: contentType, since, attendee }) => {
+    if (!(await isCliAvailable())) {
+      // Fallback: basic search when CLI is not available
+      const results = await reader.searchMeetings(MEETINGS_DIR, query, 20);
+      const filtered = contentType ? results.filter((m) => m.frontmatter.type === contentType) : results;
+      const text = filtered.length > 0
+        ? filtered.map((m) => `${m.frontmatter.date} — ${m.frontmatter.title}\n  ${m.path}`).join("\n\n")
+        : `No results for "${query}". (Note: advanced research features require the CLI.)`;
+      return { content: [{ type: "text" as const, text }] };
+    }
+
     const args = ["research", query];
     if (contentType) args.push("-t", contentType);
     if (since) args.push("--since", since);
@@ -825,6 +967,9 @@ server.tool(
   },
   { title: "Process Audio", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async ({ file_path, type: contentType, title }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
     const allowedDirs = [
       join(MINUTES_HOME, "inbox"),
       MEETINGS_DIR,
@@ -871,6 +1016,9 @@ server.tool(
   },
   { title: "Add Note", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async ({ text, meeting_path }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
     try {
       const args = ["note", text];
       if (meeting_path) {
@@ -1015,6 +1163,14 @@ server.resource(
   "minutes://meetings/recent",
   { description: "List of recent meetings and memos" },
   async () => {
+    if (!(await isCliAvailable())) {
+      const meetings = await reader.listMeetings(MEETINGS_DIR, 20);
+      const json = JSON.stringify(meetings.map((m) => ({
+        date: m.frontmatter.date, title: m.frontmatter.title,
+        content_type: m.frontmatter.type, path: m.path, duration: m.frontmatter.duration,
+      })));
+      return { contents: [{ uri: "minutes://meetings/recent", mimeType: "application/json", text: json }] };
+    }
     const { stdout } = await runMinutes(["list", "--limit", "20"]);
     return { contents: [{ uri: "minutes://meetings/recent", mimeType: "application/json", text: stdout }] };
   }
@@ -1025,6 +1181,9 @@ server.resource(
   "minutes://status",
   { description: "Current recording status" },
   async () => {
+    if (!(await isCliAvailable())) {
+      return { contents: [{ uri: "minutes://status", mimeType: "application/json", text: JSON.stringify({ recording: false, processing: false, note: "Read-only mode (CLI not installed)" }) }] };
+    }
     const { stdout } = await runMinutes(["status"]);
     return { contents: [{ uri: "minutes://status", mimeType: "application/json", text: stdout }] };
   }
@@ -1035,6 +1194,10 @@ server.resource(
   "minutes://actions/open",
   { description: "All open action items across meetings" },
   async () => {
+    if (!(await isCliAvailable())) {
+      const actions = await reader.findOpenActions(MEETINGS_DIR);
+      return { contents: [{ uri: "minutes://actions/open", mimeType: "application/json", text: JSON.stringify(actions) }] };
+    }
     const { stdout } = await runMinutes(["search", "", "--intents-only", "--intent-kind", "action-item"]);
     return { contents: [{ uri: "minutes://actions/open", mimeType: "application/json", text: stdout }] };
   }
@@ -1045,6 +1208,9 @@ server.resource(
   "minutes://events/recent",
   { description: "Recent pipeline events (recordings, processing, notes)" },
   async () => {
+    if (!(await isCliAvailable())) {
+      return { contents: [{ uri: "minutes://events/recent", mimeType: "application/json", text: "[]" }] };
+    }
     const { stdout } = await runMinutes(["events", "--limit", "20"]);
     return { contents: [{ uri: "minutes://events/recent", mimeType: "application/json", text: stdout }] };
   }
@@ -1056,10 +1222,21 @@ server.resource(
   { description: "Get a specific meeting by its filename slug" },
   async (uri, variables) => {
     const slug = String(variables.slug);
+    if (!(await isCliAvailable())) {
+      // Without CLI resolve, find by filename match
+      const meetings = await reader.listMeetings(MEETINGS_DIR, 1000);
+      const match = meetings.find((m) => m.path.includes(slug));
+      if (match) {
+        const content = await readFile(match.path, "utf-8");
+        return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: content }] };
+      }
+      return { contents: [{ uri: uri.href, mimeType: "text/plain", text: `Meeting not found: ${slug}` }] };
+    }
     const { stdout } = await runMinutes(["resolve", slug]);
     const parsed = parseJsonOutput(stdout);
     if (parsed.path) {
-      const content = await readFile(parsed.path, "utf-8");
+      const validated = validatePathInDirectory(parsed.path, MEETINGS_DIR, [".md"]);
+      const content = await readFile(validated, "utf-8");
       return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: content }] };
     }
     return { contents: [{ uri: uri.href, mimeType: "text/plain", text: `Meeting not found: ${slug}` }] };

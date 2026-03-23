@@ -1,0 +1,358 @@
+// Pure-TypeScript meeting file reader.
+//
+// Provides the same functionality as the Rust `minutes-reader` crate:
+// parse YAML frontmatter, list meetings, search meetings, get meeting.
+//
+// Used by the MCP server when the `minutes` CLI binary is not installed,
+// enabling `npx minutes-mcp` to work without Rust.
+//
+// Architecture:
+//   ~/meetings/*.md --> parseFrontmatter() --> MeetingFile
+//                                                |
+//                            +-------------------+
+//                            v                   v
+//                      listMeetings()      searchMeetings()
+
+import { readFile, readdir, stat } from "fs/promises";
+import { join, extname } from "path";
+import { parse as parseYaml } from "yaml";
+
+// ── Types ────────────────────────────────────────────────────
+
+export interface ActionItem {
+  assignee: string;
+  task: string;
+  due?: string;
+  status: string;
+}
+
+export interface Decision {
+  text: string;
+  topic?: string;
+}
+
+export interface Intent {
+  kind: string;
+  what: string;
+  who?: string;
+  status: string;
+  by_date?: string;
+}
+
+export interface Frontmatter {
+  title: string;
+  type: string;
+  date: string;
+  duration: string;
+  source?: string;
+  status?: string;
+  tags: string[];
+  attendees: string[];
+  people: string[];
+  context?: string;
+  calendar_event?: string;
+  action_items: ActionItem[];
+  decisions: Decision[];
+  intents: Intent[];
+}
+
+export interface MeetingFile {
+  frontmatter: Frontmatter;
+  body: string;
+  path: string;
+}
+
+// ── Parsing ──────────────────────────────────────────────────
+
+/**
+ * Split markdown content into YAML frontmatter and body.
+ * Returns null frontmatter string if no valid frontmatter found.
+ */
+export function splitFrontmatter(content: string): {
+  yaml: string | null;
+  body: string;
+} {
+  if (!content.startsWith("---")) {
+    return { yaml: null, body: content };
+  }
+
+  const endIndex = content.indexOf("\n---", 3);
+  if (endIndex === -1) {
+    return { yaml: null, body: content };
+  }
+
+  const yaml = content.slice(3, endIndex).trim();
+  const bodyStart = content.indexOf("\n", endIndex + 4);
+  const body = bodyStart === -1 ? "" : content.slice(bodyStart + 1);
+
+  return { yaml, body };
+}
+
+/**
+ * Parse a meeting markdown file into its frontmatter and body.
+ * Returns null if the file has no valid frontmatter or is unparseable.
+ */
+export function parseFrontmatter(
+  content: string,
+  filePath: string
+): MeetingFile | null {
+  const { yaml, body } = splitFrontmatter(content);
+  if (!yaml) return null;
+
+  try {
+    const parsed = parseYaml(yaml);
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const fm: Frontmatter = {
+      title: String(parsed.title || ""),
+      type: String(parsed.type || "meeting"),
+      date: parsed.date instanceof Date ? parsed.date.toISOString() : String(parsed.date || ""),
+      duration: String(parsed.duration || ""),
+      source: parsed.source ? String(parsed.source) : undefined,
+      status: parsed.status ? String(parsed.status) : undefined,
+      tags: Array.isArray(parsed.tags) ? parsed.tags.map(String) : [],
+      attendees: Array.isArray(parsed.attendees)
+        ? parsed.attendees.map(String)
+        : [],
+      people: Array.isArray(parsed.people) ? parsed.people.map(String) : [],
+      context: parsed.context ? String(parsed.context) : undefined,
+      calendar_event: parsed.calendar_event
+        ? String(parsed.calendar_event)
+        : undefined,
+      action_items: Array.isArray(parsed.action_items)
+        ? parsed.action_items.map((a: any) => ({
+            assignee: String(a.assignee || ""),
+            task: String(a.task || ""),
+            due: a.due ? String(a.due) : undefined,
+            status: String(a.status || "open"),
+          }))
+        : [],
+      decisions: Array.isArray(parsed.decisions)
+        ? parsed.decisions.map((d: any) => ({
+            text: String(d.text || ""),
+            topic: d.topic ? String(d.topic) : undefined,
+          }))
+        : [],
+      intents: Array.isArray(parsed.intents)
+        ? parsed.intents.map((i: any) => ({
+            kind: String(i.kind || ""),
+            what: String(i.what || ""),
+            who: i.who ? String(i.who) : undefined,
+            status: String(i.status || ""),
+            by_date: i.by_date ? String(i.by_date) : undefined,
+          }))
+        : [],
+    };
+
+    return { frontmatter: fm, body, path: filePath };
+  } catch {
+    return null;
+  }
+}
+
+// ── File scanning ────────────────────────────────────────────
+
+/**
+ * Recursively find all .md files in a directory.
+ */
+async function findMarkdownFiles(dir: string): Promise<string[]> {
+  const results: string[] = [];
+
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Skip hidden directories and common non-meeting dirs
+        if (!entry.name.startsWith(".")) {
+          const nested = await findMarkdownFiles(fullPath);
+          results.push(...nested);
+        }
+      } else if (
+        entry.isFile() &&
+        extname(entry.name).toLowerCase() === ".md"
+      ) {
+        results.push(fullPath);
+      }
+    }
+  } catch {
+    // Directory doesn't exist or permission denied — return empty
+  }
+
+  return results;
+}
+
+/**
+ * Parse a single meeting file from disk.
+ */
+async function readMeetingFile(
+  filePath: string
+): Promise<MeetingFile | null> {
+  try {
+    const content = await readFile(filePath, "utf-8");
+    return parseFrontmatter(content, filePath);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sort meetings by date descending (newest first).
+ */
+function sortByDateDesc(meetings: MeetingFile[]): MeetingFile[] {
+  return meetings.sort((a, b) => {
+    const dateA = a.frontmatter.date || "";
+    const dateB = b.frontmatter.date || "";
+    return dateB.localeCompare(dateA);
+  });
+}
+
+// ── Public API ───────────────────────────────────────────────
+
+/**
+ * List meetings from a directory, sorted by date descending.
+ */
+export async function listMeetings(
+  dir: string,
+  limit: number = 20
+): Promise<MeetingFile[]> {
+  const files = await findMarkdownFiles(dir);
+  const meetings: MeetingFile[] = [];
+
+  for (const file of files) {
+    const meeting = await readMeetingFile(file);
+    if (meeting) meetings.push(meeting);
+  }
+
+  return sortByDateDesc(meetings).slice(0, limit);
+}
+
+/**
+ * Search meetings by a text query in title and body.
+ * Uses String.includes() — no regex, safe from special character crashes.
+ */
+export async function searchMeetings(
+  dir: string,
+  query: string,
+  limit: number = 20
+): Promise<MeetingFile[]> {
+  if (!query) return [];
+
+  const queryLower = query.toLowerCase();
+  const files = await findMarkdownFiles(dir);
+  const results: MeetingFile[] = [];
+
+  for (const file of files) {
+    const meeting = await readMeetingFile(file);
+    if (!meeting) continue;
+
+    const titleMatch = meeting.frontmatter.title
+      .toLowerCase()
+      .includes(queryLower);
+    const bodyMatch = meeting.body.toLowerCase().includes(queryLower);
+
+    if (titleMatch || bodyMatch) {
+      results.push(meeting);
+    }
+  }
+
+  return sortByDateDesc(results).slice(0, limit);
+}
+
+/**
+ * Get a single meeting by file path.
+ */
+export async function getMeeting(
+  filePath: string
+): Promise<MeetingFile | null> {
+  return readMeetingFile(filePath);
+}
+
+/**
+ * Find open action items across all meetings.
+ */
+export async function findOpenActions(
+  dir: string,
+  assignee?: string
+): Promise<Array<{ path: string; item: ActionItem }>> {
+  const files = await findMarkdownFiles(dir);
+  const results: Array<{ path: string; item: ActionItem }> = [];
+
+  for (const file of files) {
+    const meeting = await readMeetingFile(file);
+    if (!meeting) continue;
+
+    for (const item of meeting.frontmatter.action_items) {
+      if (item.status !== "open") continue;
+      if (
+        assignee &&
+        item.assignee.toLowerCase() !== assignee.toLowerCase()
+      ) {
+        continue;
+      }
+      results.push({ path: meeting.path, item });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Build a person profile from all meetings mentioning them.
+ */
+export async function getPersonProfile(
+  dir: string,
+  name: string
+): Promise<{
+  name: string;
+  meetings: Array<{ title: string; date: string; path: string }>;
+  openActions: ActionItem[];
+  topics: string[];
+}> {
+  const nameLower = name.toLowerCase();
+  const files = await findMarkdownFiles(dir);
+  const meetings: Array<{ title: string; date: string; path: string }> = [];
+  const openActions: ActionItem[] = [];
+  const topicSet = new Set<string>();
+
+  for (const file of files) {
+    const meeting = await readMeetingFile(file);
+    if (!meeting) continue;
+
+    const inAttendees = meeting.frontmatter.attendees.some((a) =>
+      a.toLowerCase().includes(nameLower)
+    );
+    const inPeople = meeting.frontmatter.people.some((p) =>
+      p.toLowerCase().includes(nameLower)
+    );
+    const inBody = meeting.body.toLowerCase().includes(nameLower);
+
+    if (inAttendees || inPeople || inBody) {
+      meetings.push({
+        title: meeting.frontmatter.title,
+        date: meeting.frontmatter.date,
+        path: meeting.path,
+      });
+
+      for (const tag of meeting.frontmatter.tags) {
+        topicSet.add(tag);
+      }
+
+      for (const item of meeting.frontmatter.action_items) {
+        if (
+          item.status === "open" &&
+          item.assignee.toLowerCase().includes(nameLower)
+        ) {
+          openActions.push(item);
+        }
+      }
+    }
+  }
+
+  return {
+    name,
+    meetings: meetings.sort((a, b) => b.date.localeCompare(a.date)),
+    openActions,
+    topics: Array.from(topicSet),
+  };
+}

@@ -1,5 +1,19 @@
 # TODOS.md — Minutes
 
+## P1: Agent Memory SDK (TypeScript) — IN PROGRESS
+**What:** Extract the pure-TS file reading from the npx MCP server into a standalone `minutes-sdk` npm package. Any agent framework (LangChain, CrewAI, Autogen) can `import { searchMeetings } from 'minutes-sdk'` to query human conversation memory.
+**Why:** Positions Minutes as infrastructure, not just a tool. The bridge between Mem0 (agent memory, 41k stars) and human conversation capture. Every agent developer becomes a potential user.
+**Context:** Added to active scope during CEO review (2026-03-22). Ships after npx minutes-mcp.
+**Effort:** M (human: ~1 week / CC: ~30 min)
+**Depends on:** npx minutes-mcp shipping first (pure-TS file reading is the foundation).
+
+## P2: Claude Code Plugin Standalone Distribution — IN PROGRESS
+**What:** Publish the `.claude/plugins/minutes/` plugin so any Claude Code user can install it without cloning the Minutes repo. `/minutes record` just works in any CC session.
+**Why:** Every Claude Code user becomes a potential Minutes user. Massive distribution channel, zero-friction adoption.
+**Context:** Added to active scope during CEO review (2026-03-22). Research CC plugin distribution model first.
+**Effort:** M (human: ~1 week / CC: ~30 min)
+**Depends on:** Understanding CC plugin distribution model (research first).
+
 ## P3: Open Source Interactive Skill Template
 **What:** Extract the multi-phase interactive skill pattern into a reusable SKILL-TEMPLATE-INTERACTIVE.md that other Claude Code plugin authors can follow.
 **Why:** Positions Minutes as the reference implementation for great Claude Code plugin skills. Community multiplier.
@@ -35,6 +49,13 @@
 **Context:** Deferred from windows-support eng review (2026-03-21). Currently users must use `cargo install --git` or download release binaries.
 **Effort:** S (human: ~2 hours / CC: ~15 min)
 **Depends on:** Windows support landing (cross-platform CI must pass first).
+
+## P3: WASM compilation of minutes-reader for SDK
+**What:** Compile `minutes-reader` (Rust crate, no audio deps) to WASM and use it as the npm SDK's parsing core instead of the TypeScript reimplementation.
+**Why:** Eliminates TS/Rust parsing divergence, guarantees exact parity with the Rust pipeline, leverages battle-tested Rust code with existing tests.
+**Context:** Eureka moment from eng review (2026-03-22). The `minutes-reader` crate was designed with no audio dependencies — it's a clean WASM target. Only matters when the TS SDK has real users and parsing edge cases surface.
+**Effort:** M (human: ~1 week / CC: ~30 min)
+**Depends on:** SDK shipping + user feedback on parsing edge cases.
 
 ## P3: Create DESIGN.md
 **What:** Formalize the implicit design system (CSS variables, component patterns, typography, spacing, color usage) into a DESIGN.md file.

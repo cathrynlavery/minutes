@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "Core library for minutes — audio capture, transcription, and meeting memory"
+keywords = ["meeting", "transcription", "whisper", "ai", "memory"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [features]
 default = ["whisper"]

@@ -4,14 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "CLI for minutes — record, transcribe, and search conversation memory"
+keywords = ["meeting", "transcription", "whisper", "ai", "memory"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [[bin]]
 name = "minutes"
 path = "src/main.rs"
 
 [dependencies]
-minutes-core = { path = "../core" }
+minutes-core = { path = "../core", version = "0.4.0" }
 clap = { workspace = true }
 ctrlc = { workspace = true }
 anyhow = { workspace = true }
