@@ -3,6 +3,7 @@
 set -e
 
 export CXXFLAGS="-I$(xcrun --show-sdk-path)/usr/include/c++/v1"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
 echo "=== Building CLI (release) ==="
 cargo build --release -p minutes-cli
