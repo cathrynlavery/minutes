@@ -2202,7 +2202,14 @@ fn cmd_dictate(stdout: bool, note_only: bool, config: &Config) -> Result<()> {
                 DictationEvent::Listening => eprintln!("[minutes] Listening..."),
                 DictationEvent::Accumulating => eprintln!("[minutes] Speaking detected..."),
                 DictationEvent::Processing => eprintln!("[minutes] Transcribing..."),
-                DictationEvent::Success => eprintln!("[minutes] Done — text copied to clipboard"),
+                DictationEvent::PartialText(text) => {
+                    // Clear line and show partial text (streaming preview)
+                    eprint!("\r\x1b[K[minutes] {}", text);
+                }
+                DictationEvent::Success => {
+                    eprintln!(); // newline after partial text
+                    eprintln!("[minutes] Done — text copied to clipboard");
+                }
                 DictationEvent::Error => eprintln!("[minutes] Transcription failed — audio saved"),
                 DictationEvent::Cancelled => eprintln!("[minutes] Dictation cancelled"),
                 DictationEvent::Yielded => {

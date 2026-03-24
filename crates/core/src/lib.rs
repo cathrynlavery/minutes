@@ -24,6 +24,10 @@ pub mod streaming;
 #[cfg(feature = "streaming")]
 pub mod vad;
 
+// Streaming whisper (progressive transcription)
+#[cfg(feature = "streaming")]
+pub mod streaming_whisper;
+
 // Dictation mode (requires streaming + whisper)
 #[cfg(feature = "streaming")]
 pub mod dictation;

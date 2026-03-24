@@ -2449,10 +2449,11 @@ pub fn cmd_start_dictation(
             &config,
             move |event| {
                 use minutes_core::dictation::DictationEvent;
-                let state_str = match event {
+                let state_str = match &event {
                     DictationEvent::Listening => "listening",
                     DictationEvent::Accumulating => "accumulating",
                     DictationEvent::Processing => "processing",
+                    DictationEvent::PartialText(_) => "partial",
                     DictationEvent::Success => "success",
                     DictationEvent::Error => "error",
                     DictationEvent::Cancelled => "cancelled",
@@ -2460,8 +2461,13 @@ pub fn cmd_start_dictation(
                 };
                 app_for_events.emit("dictation:state", state_str).ok();
 
+                // Send partial text for live preview
+                if let DictationEvent::PartialText(text) = &event {
+                    app_for_events.emit("dictation:partial", text.as_str()).ok();
+                }
+
                 // Send audio level for waveform
-                if matches!(event, DictationEvent::Accumulating) {
+                if matches!(&event, DictationEvent::Accumulating) {
                     let level = minutes_core::streaming::stream_audio_level();
                     app_for_events.emit("dictation:level", level).ok();
                 }
@@ -2708,16 +2714,20 @@ pub fn start_dictation_hotkey_with_keycode(
                         &config,
                         move |event| {
                             use minutes_core::dictation::DictationEvent;
-                            let s = match event {
+                            let s = match &event {
                                 DictationEvent::Listening => "listening",
                                 DictationEvent::Accumulating => "accumulating",
                                 DictationEvent::Processing => "processing",
+                                DictationEvent::PartialText(_) => "partial",
                                 DictationEvent::Success => "success",
                                 DictationEvent::Error => "error",
                                 DictationEvent::Cancelled => "cancelled",
                                 DictationEvent::Yielded => "yielded",
                             };
                             app_ev.emit("dictation:state", s).ok();
+                            if let DictationEvent::PartialText(text) = &event {
+                                app_ev.emit("dictation:partial", text.as_str()).ok();
+                            }
                         },
                         move |result| {
                             app_res.emit("dictation:result", &result.text).ok();

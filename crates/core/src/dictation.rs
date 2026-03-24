@@ -3,6 +3,7 @@ use crate::error::{DictationError, MinutesError, TranscribeError};
 use crate::markdown::{ContentType, Frontmatter, OutputStatus};
 use crate::pid;
 use crate::streaming::AudioStream;
+use crate::streaming_whisper::StreamingWhisper;
 use crate::vad::Vad;
 use chrono::Local;
 use std::path::PathBuf;
@@ -54,11 +55,13 @@ pub struct DictationResult {
 }
 
 /// Callback for dictation events (used by Tauri UI).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictationEvent {
     Listening,
     Accumulating,
     Processing,
+    /// Partial transcription (streaming mode) — text updates progressively.
+    PartialText(String),
     Success,
     Error,
     Cancelled,
@@ -144,9 +147,9 @@ where
         tracing::info!(device = %stream.device_name, "dictation audio stream started");
 
         let mut vad = Vad::new();
-        let mut audio_buffer: Vec<f32> = Vec::new();
+        let mut streaming = StreamingWhisper::new(config.transcription.language.clone());
         let mut was_speaking = false;
-        let mut has_spoken = false; // tracks if user has spoken at least once
+        let mut has_spoken = false;
         let mut total_silence_ms: u64 = 0;
         let mut utterance_samples: usize = 0;
         let max_utterance_samples = config.dictation.max_utterance_secs as usize * 16000;
@@ -156,6 +159,17 @@ where
         loop {
             // Check stop flag (Esc / Ctrl-C / MCP stop)
             if stop_flag.load(Ordering::Relaxed) {
+                // Finalize any in-progress transcription before exiting
+                if utterance_samples > 0 {
+                    on_event(DictationEvent::Processing);
+                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                        let result = finish_utterance(&sr.text, sr.duration_secs, config);
+                        if let Some(result) = result {
+                            on_event(DictationEvent::Success);
+                            on_result(result);
+                        }
+                    }
+                }
                 on_event(DictationEvent::Cancelled);
                 break;
             }
@@ -163,16 +177,14 @@ where
             // Check if recording started (yield to recording)
             if let Ok(Some(_)) = pid::check_recording() {
                 tracing::info!("recording started — yielding dictation");
-                if !audio_buffer.is_empty() {
+                if utterance_samples > 0 {
                     on_event(DictationEvent::Processing);
-                    if let Some(result) = process_utterance(
-                        &audio_buffer,
-                        &whisper_ctx,
-                        config,
-                        utterance_samples as f64 / 16000.0,
-                    ) {
-                        on_event(DictationEvent::Success);
-                        on_result(result);
+                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                        let result = finish_utterance(&sr.text, sr.duration_secs, config);
+                        if let Some(result) = result {
+                            on_event(DictationEvent::Success);
+                            on_result(result);
+                        }
                     }
                 }
                 on_event(DictationEvent::Yielded);
@@ -198,42 +210,42 @@ where
                 }
                 was_speaking = true;
                 has_spoken = true;
-                audio_buffer.extend_from_slice(&chunk.samples);
                 utterance_samples += chunk.samples.len();
 
-                // Force-process if max utterance reached
+                // Feed to streaming whisper — may emit a partial result
+                if let Some(sr) = streaming.feed(&chunk.samples, &whisper_ctx) {
+                    on_event(DictationEvent::PartialText(sr.text));
+                }
+
+                // Force-finalize if max utterance reached
                 if utterance_samples >= max_utterance_samples {
                     tracing::info!("max utterance duration reached, force-processing");
                     on_event(DictationEvent::Processing);
-                    if let Some(result) = process_utterance(
-                        &audio_buffer,
-                        &whisper_ctx,
-                        config,
-                        utterance_samples as f64 / 16000.0,
-                    ) {
-                        on_event(DictationEvent::Success);
-                        on_result(result);
+                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                        let result = finish_utterance(&sr.text, sr.duration_secs, config);
+                        if let Some(result) = result {
+                            on_event(DictationEvent::Success);
+                            on_result(result);
+                        }
                     }
-                    audio_buffer.clear();
+                    streaming.reset();
                     utterance_samples = 0;
                     was_speaking = false;
                     on_event(DictationEvent::Listening);
                 }
             } else {
                 // Silence
-                if was_speaking && !audio_buffer.is_empty() {
-                    // Speech just ended — process the utterance
+                if was_speaking && utterance_samples > 0 {
+                    // Speech just ended — finalize the streaming transcription
                     on_event(DictationEvent::Processing);
-                    if let Some(result) = process_utterance(
-                        &audio_buffer,
-                        &whisper_ctx,
-                        config,
-                        utterance_samples as f64 / 16000.0,
-                    ) {
-                        on_event(DictationEvent::Success);
-                        on_result(result);
+                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                        let result = finish_utterance(&sr.text, sr.duration_secs, config);
+                        if let Some(result) = result {
+                            on_event(DictationEvent::Success);
+                            on_result(result);
+                        }
                     }
-                    audio_buffer.clear();
+                    streaming.reset();
                     utterance_samples = 0;
                     was_speaking = false;
                     total_silence_ms = 0;
@@ -241,7 +253,6 @@ where
                 }
 
                 total_silence_ms += 100;
-                // End session after silence timeout, but only if user has spoken at least once
                 if has_spoken
                     && !was_speaking
                     && total_silence_ms >= config.dictation.silence_timeout_ms
@@ -259,8 +270,51 @@ where
     }
 }
 
-/// Process a single utterance: transcribe → output.
+/// Finish a transcribed utterance: write to clipboard, file, daily note.
+/// Called after StreamingWhisper produces a final result.
+fn finish_utterance(text: &str, duration_secs: f64, config: &Config) -> Option<DictationResult> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+
+    tracing::info!(
+        words = text.split_whitespace().count(),
+        duration = format!("{:.1}s", duration_secs),
+        "dictation utterance finalized"
+    );
+
+    // Write to clipboard
+    let destination = config.dictation.destination.as_str();
+    if destination == "clipboard" || destination.is_empty() {
+        if let Err(e) = write_to_clipboard(&text) {
+            tracing::error!("clipboard write failed: {}", e);
+        }
+    }
+
+    // Write dictation file
+    let file_path = if destination != "daily_note" {
+        write_dictation_file(&text, duration_secs, config)
+    } else {
+        None
+    };
+
+    // Append to daily note
+    if config.dictation.daily_note_log {
+        append_dictation_to_daily_note(&text, config);
+    }
+
+    Some(DictationResult {
+        text,
+        duration_secs,
+        destination: destination.to_string(),
+        file_path,
+    })
+}
+
+/// Legacy batch process: transcribe → output. Kept for fallback/testing.
 #[cfg(feature = "whisper")]
+#[allow(dead_code)]
 fn process_utterance(
     samples: &[f32],
     ctx: &whisper_rs::WhisperContext,
@@ -306,38 +360,8 @@ fn process_utterance(
         return None;
     }
 
-    tracing::info!(
-        words = text.split_whitespace().count(),
-        duration = format!("{:.1}s", duration_secs),
-        "dictation utterance transcribed"
-    );
-
-    // Write to clipboard
-    let destination = config.dictation.destination.as_str();
-    if destination == "clipboard" || destination.is_empty() {
-        if let Err(e) = write_to_clipboard(&text) {
-            tracing::error!("clipboard write failed: {}", e);
-        }
-    }
-
-    // Write dictation file (skip if destination is daily_note only)
-    let file_path = if destination != "daily_note" {
-        write_dictation_file(&text, duration_secs, config)
-    } else {
-        None
-    };
-
-    // Append to daily note
-    if config.dictation.daily_note_log {
-        append_dictation_to_daily_note(&text, config);
-    }
-
-    Some(DictationResult {
-        text,
-        duration_secs,
-        destination: destination.to_string(),
-        file_path,
-    })
+    // Delegate to finish_utterance for output
+    finish_utterance(&text, duration_secs, config)
 }
 
 /// Write text to the system clipboard.
