@@ -44,10 +44,33 @@ For any desktop work that touches TCC-sensitive features, use exactly one app:
 That script:
 
 - builds the desktop bundle with the dev overlay config
-- signs it with the configured Developer ID identity
+- signs it with a configured local identity when available
+- otherwise falls back to ad-hoc signing so contributors can still run it
 - installs it to `~/Applications/Minutes Dev.app`
 - runs the native hotkey diagnostic from the installed app identity
 - launches `Minutes Dev.app`
+
+### Signing modes
+
+For open-source contributors, the script supports two modes:
+
+- configured identity:
+  - set `MINUTES_DEV_SIGNING_IDENTITY` (preferred) or `APPLE_SIGNING_IDENTITY`
+  - best for stable TCC-sensitive testing across rebuilds
+- ad-hoc:
+  - no signing identity configured
+  - good enough to run the app and work on most features
+  - less reliable for Input Monitoring / Screen Recording / repeated TCC prompts
+
+Example with an explicit local signing identity:
+
+```bash
+export MINUTES_DEV_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+./scripts/install-dev-app.sh
+```
+
+If you do not have a Developer ID certificate, any consistent local codesigning
+identity in your keychain is better than ad-hoc for TCC-sensitive work.
 
 When testing desktop permissions, do not launch:
 
@@ -106,6 +129,9 @@ If macOS keeps prompting even though the toggle already looks enabled:
 
 If you still see repeated prompts, assume macOS is treating the current build
 as a different identity until proven otherwise.
+
+For contributors using ad-hoc signing, repeated prompts are more likely. That
+is expected until you switch to a stable local signing identity.
 
 ## Guidance for AI agents
 

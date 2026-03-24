@@ -82,6 +82,18 @@ Native hotkey sanity check:
 
 See [docs/DESKTOP-DEVELOPMENT.md](/Users/silverbook/Sites/minutes/docs/DESKTOP-DEVELOPMENT.md) for the full workflow.
 
+### Open-source contributor note
+
+This repo is public, so local scripts must not assume the maintainer's Apple
+certificate or local notarization credentials.
+
+- `./scripts/install-dev-app.sh` works without Apple credentials by falling
+  back to ad-hoc signing
+- for more stable TCC-sensitive testing, contributors can export
+  `MINUTES_DEV_SIGNING_IDENTITY` to any consistent local codesigning identity
+- release signing / notarization is maintainer-only and should be configured
+  explicitly via environment variables, not by hardcoded defaults in scripts
+
 ## Release Process
 
 When shipping a new version:

@@ -470,6 +470,14 @@ For macOS development, use a dedicated signed dev app identity:
 
 If you are testing hotkeys, Screen Recording, Input Monitoring, or repeated macOS permission prompts, launch only `Minutes Dev.app` via `./scripts/install-dev-app.sh`. Avoid the repo symlink `./Minutes.app`, raw `target/` binaries, or ad-hoc local bundles for TCC-sensitive testing.
 
+This repository is open source, so local development does not require the
+maintainer's Apple signing credentials:
+
+- `./scripts/install-dev-app.sh` works with ad-hoc signing by default
+- for more stable macOS permission behavior across rebuilds, set
+  `MINUTES_DEV_SIGNING_IDENTITY` to a consistent local codesigning identity
+- release signing and notarization remain maintainer/release workflows
+
 **Privacy:** All Minutes windows are hidden from screen sharing by default — other participants on Zoom/Meet/Teams won't see the app. Toggle via the tray menu: "Hide from Screen Share ✓".
 
 ### Troubleshooting

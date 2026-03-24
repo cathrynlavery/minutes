@@ -12,7 +12,8 @@ DEV_PRODUCT_NAME="Minutes Dev"
 BUILD_APP="target/release/bundle/macos/${DEV_PRODUCT_NAME}.app"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
 INSTALL_APP="${INSTALL_DIR}/${DEV_PRODUCT_NAME}.app"
-SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Mathieu Silverstein (63TMLKT8HN)}"
+SIGNING_IDENTITY="${MINUTES_DEV_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
+SIGN_MODE="adhoc"
 
 OPEN_AFTER_INSTALL=1
 for arg in "$@"; do
@@ -28,10 +29,13 @@ for arg in "$@"; do
   esac
 done
 
-if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; then
-  echo "Signing identity not found: $SIGNING_IDENTITY" >&2
-  echo "Set APPLE_SIGNING_IDENTITY to a valid Developer ID Application identity before running this script." >&2
-  exit 1
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+  if ! security find-identity -v -p codesigning | grep -Fq "$SIGNING_IDENTITY"; then
+    echo "Signing identity not found: $SIGNING_IDENTITY" >&2
+    echo "Set MINUTES_DEV_SIGNING_IDENTITY (preferred) or APPLE_SIGNING_IDENTITY to a valid codesigning identity in your keychain." >&2
+    exit 1
+  fi
+  SIGN_MODE="identity"
 fi
 
 echo "=== Building CLI (release) ==="
@@ -51,11 +55,19 @@ APP_RESOURCES="${BUILD_APP}/Contents/Resources"
 mkdir -p "$APP_RESOURCES"
 cp -f target/release/calendar-events "$APP_RESOURCES/calendar-events"
 
-echo "=== Signing ${DEV_PRODUCT_NAME}.app ==="
-codesign --force --deep --options runtime \
-  --entitlements tauri/src-tauri/entitlements.plist \
-  --sign "$SIGNING_IDENTITY" \
-  "$BUILD_APP"
+if [[ "$SIGN_MODE" == "identity" ]]; then
+  echo "=== Signing ${DEV_PRODUCT_NAME}.app with configured identity ==="
+  codesign --force --deep --options runtime \
+    --entitlements tauri/src-tauri/entitlements.plist \
+    --sign "$SIGNING_IDENTITY" \
+    "$BUILD_APP"
+else
+  echo "=== Signing ${DEV_PRODUCT_NAME}.app ad-hoc ==="
+  echo "No MINUTES_DEV_SIGNING_IDENTITY / APPLE_SIGNING_IDENTITY configured."
+  echo "Using ad-hoc signing so the app remains runnable for contributors."
+  echo "TCC-sensitive features may still require re-granting permissions after rebuilds."
+  codesign --force --deep --sign - "$BUILD_APP"
+fi
 
 echo "=== Installing ${DEV_PRODUCT_NAME}.app to ${INSTALL_DIR} ==="
 mkdir -p "$INSTALL_DIR"
@@ -71,12 +83,18 @@ set -e
 echo ""
 echo "Installed app: $INSTALL_APP"
 echo "Bundle id: com.useminutes.desktop.dev"
+echo "Signing mode: $SIGN_MODE"
 echo "Hotkey diagnostic exit code: $DIAG_EXIT"
 echo "  0 = CGEventTap started successfully"
 echo "  2 = Input Monitoring / macOS identity is still blocking the hotkey"
 echo ""
 echo "For TCC-sensitive testing, launch only this installed dev app."
 echo "Avoid the repo symlink (./Minutes.app), raw target bundles, or ad-hoc builds."
+if [[ "$SIGN_MODE" == "adhoc" ]]; then
+  echo ""
+  echo "Tip: export MINUTES_DEV_SIGNING_IDENTITY to a consistent local signing identity"
+  echo "if you want more stable macOS permission behavior across rebuilds."
+fi
 
 if [[ "$OPEN_AFTER_INSTALL" == "1" ]]; then
   echo ""
