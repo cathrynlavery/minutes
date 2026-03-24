@@ -404,6 +404,30 @@ sudo apt-get install -y libasound2-dev  # Debian/Ubuntu
 cargo install --path crates/cli
 ```
 
+### GPU acceleration (optional)
+
+Build with GPU support for significantly faster transcription:
+
+```bash
+# NVIDIA GPU (Windows/Linux — requires CUDA toolkit)
+cargo install --path crates/cli --features cuda
+
+# Apple Metal (macOS)
+cargo install --path crates/cli --features metal
+
+# Apple CoreML (macOS Neural Engine)
+cargo install --path crates/cli --features coreml
+```
+
+> **Windows CUDA users:** You may need to set environment variables before building:
+> ```powershell
+> $env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+> $env:CMAKE_CUDA_COMPILER = "$env:CUDA_PATH\bin\nvcc.exe"
+> $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+> $env:CMAKE_GENERATOR = "NMake Makefiles"
+> ```
+> The first CUDA build takes longer than usual (compiling GPU kernels) — this is a one-time cost.
+
 ### Setup (all platforms)
 
 ```bash
