@@ -21,6 +21,7 @@ pub fn append_backlink(
     let section = match result.content_type {
         ContentType::Meeting => "Meetings",
         ContentType::Memo => "Voice Memos",
+        ContentType::Dictation => "Dictations",
     };
     let link_target = relative_or_absolute_link(note_dir, &result.path);
     let bullet = if let Some(excerpt) = summary_excerpt(summary) {

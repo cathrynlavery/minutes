@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dictation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-elevated: #2c2c2e;
+      --border: #38383a;
+      --text: #f5f5f7;
+      --text-secondary: #86868b;
+      --accent: #0a84ff;
+      --red: #ff453a;
+      --green: #30d158;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+      background: transparent;
+      overflow: hidden;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    .pill {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 240px;
+      height: 44px;
+      padding: 0 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      animation: appear 200ms ease-out;
+      transition: border-color 150ms ease;
+    }
+
+    .pill.error {
+      border-color: var(--red);
+    }
+
+    .pill.dismissing {
+      animation: dismiss 150ms ease-out forwards;
+    }
+
+    @keyframes appear {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes dismiss {
+      from { opacity: 1; }
+      to   { opacity: 0; }
+    }
+
+    /* Status dot */
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--red);
+    }
+
+    .dot.blink {
+      animation: blink 1s step-end infinite;
+    }
+
+    .dot.green { background: var(--green); }
+    .dot.accent { background: var(--accent); }
+
+    @keyframes blink {
+      50% { opacity: 0.3; }
+    }
+
+    /* Spinner */
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid transparent;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Label */
+    .label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Timer */
+    .timer {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    /* Waveform */
+    .waveform {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+
+    .waveform .bar {
+      width: 2px;
+      background: var(--text-secondary);
+      border-radius: 1px;
+      transition: height 80ms ease;
+      min-height: 4px;
+    }
+
+    /* Error icon */
+    .error-icon {
+      font-size: 14px;
+      color: var(--red);
+      flex-shrink: 0;
+    }
+
+    /* Success icon */
+    .success-icon {
+      font-size: 14px;
+      color: var(--green);
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="pill" id="pill">
+    <div class="dot blink" id="indicator"></div>
+    <span class="label" id="label">Listening...</span>
+    <div class="waveform" id="waveform" style="display:none">
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:4px"></div>
+    </div>
+    <span class="timer" id="timer" style="display:none">0:00</span>
+  </div>
+
+  <script>
+    const { listen } = window.__TAURI__.event;
+
+    const pill = document.getElementById('pill');
+    const indicator = document.getElementById('indicator');
+    const label = document.getElementById('label');
+    const waveform = document.getElementById('waveform');
+    const timer = document.getElementById('timer');
+    const bars = waveform.querySelectorAll('.bar');
+
+    let startTime = null;
+    let timerInterval = null;
+
+    function formatTime(secs) {
+      const m = Math.floor(secs / 60);
+      const s = Math.floor(secs % 60);
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function startTimer() {
+      startTime = Date.now();
+      timerInterval = setInterval(() => {
+        const elapsed = (Date.now() - startTime) / 1000;
+        timer.textContent = formatTime(elapsed);
+      }, 200);
+    }
+
+    function stopTimer() {
+      if (timerInterval) clearInterval(timerInterval);
+      timerInterval = null;
+    }
+
+    // Listen for state changes from Tauri backend
+    listen('dictation:state', (e) => {
+      const state = e.payload;
+
+      pill.classList.remove('error');
+      stopTimer();
+
+      switch (state) {
+        case 'listening':
+          indicator.className = 'dot blink';
+          indicator.style.display = '';
+          label.textContent = 'Listening...';
+          waveform.style.display = 'none';
+          timer.style.display = 'none';
+          // Remove spinner if present
+          document.getElementById('spin')?.remove();
+          break;
+
+        case 'accumulating':
+          indicator.className = 'dot';
+          indicator.style.display = '';
+          label.textContent = 'Dictating';
+          waveform.style.display = 'flex';
+          timer.style.display = '';
+          document.getElementById('spin')?.remove();
+          startTimer();
+          break;
+
+        case 'processing':
+          indicator.style.display = 'none';
+          waveform.style.display = 'none';
+          timer.style.display = 'none';
+          // Add spinner
+          if (!document.getElementById('spin')) {
+            const sp = document.createElement('div');
+            sp.className = 'spinner';
+            sp.id = 'spin';
+            pill.insertBefore(sp, label);
+          }
+          label.textContent = 'Transcribing...';
+          break;
+
+        case 'success':
+          indicator.style.display = 'none';
+          waveform.style.display = 'none';
+          timer.style.display = 'none';
+          document.getElementById('spin')?.remove();
+          // Show success icon
+          if (!document.getElementById('success-ic')) {
+            const ic = document.createElement('span');
+            ic.className = 'success-icon';
+            ic.id = 'success-ic';
+            ic.textContent = '\u2713';
+            pill.insertBefore(ic, label);
+          }
+          label.textContent = 'Copied';
+          // Auto-dismiss after 2s
+          setTimeout(() => dismiss(), 2000);
+          break;
+
+        case 'error':
+          pill.classList.add('error');
+          indicator.style.display = 'none';
+          waveform.style.display = 'none';
+          timer.style.display = 'none';
+          document.getElementById('spin')?.remove();
+          if (!document.getElementById('error-ic')) {
+            const ic = document.createElement('span');
+            ic.className = 'error-icon';
+            ic.id = 'error-ic';
+            ic.textContent = '\u2715';
+            pill.insertBefore(ic, label);
+          }
+          label.textContent = 'Failed \u2014 audio saved';
+          setTimeout(() => dismiss(), 4000);
+          break;
+
+        case 'cancelled':
+        case 'yielded':
+          dismiss();
+          break;
+      }
+    });
+
+    // Listen for audio level updates (waveform animation)
+    listen('dictation:level', (e) => {
+      const level = e.payload; // 0-100
+      const normalized = level / 100;
+      bars.forEach((bar, i) => {
+        // Create varied heights based on position and level
+        const variance = Math.sin((i / bars.length) * Math.PI + Date.now() / 200) * 0.3 + 0.7;
+        const h = 4 + normalized * 12 * variance;
+        bar.style.height = `${Math.max(4, Math.min(16, h))}px`;
+      });
+    });
+
+    function dismiss() {
+      pill.classList.add('dismissing');
+      setTimeout(() => {
+        window.__TAURI__.window.getCurrentWindow().close();
+      }, 150);
+    }
+
+    // Esc key cancels
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        window.__TAURI__.core.invoke('cmd_stop_dictation').catch(() => {});
+        dismiss();
+      }
+    });
+  </script>
+</body>
+</html>

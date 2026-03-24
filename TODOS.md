@@ -57,6 +57,24 @@
 **Effort:** M (human: ~1 week / CC: ~30 min)
 **Depends on:** SDK shipping + user feedback on parsing edge cases.
 
+## P2: Real-Time Streaming Whisper for Dictation
+**What:** Replace batch whisper (transcribe after silence) with streaming whisper — text appears progressively as the user speaks. Feed audio chunks to whisper in ~2-second rolling windows with segment stitching to produce continuous output.
+**Why:** The single biggest UX upgrade to dictation. Transforms the experience from "speak, wait 2s, see text" to "text appears as you speak" (WisprFlow/Monologue parity). The streaming.rs + VAD infra is already built — this is the whisper layer on top.
+**Pros:** Dramatically more responsive dictation. Makes dictation feel like a real text input method rather than a batch processor. Builds directly on existing AudioStream + VAD.
+**Cons:** Segment stitching is complex (whisper can re-transcribe overlapping audio differently). Needs careful handling of partial results vs. final results. Higher CPU usage from continuous whisper inference.
+**Context:** Identified as highest-leverage follow-up during dictation CEO review (2026-03-23). Ship Dictation Lite (batch) first, then upgrade to streaming based on usage feedback.
+**Effort:** L (human: ~3 weeks / CC: ~3-4 hours)
+**Depends on:** Dictation Lite shipping first. Model preload pattern from dictation.rs provides the foundation.
+
+## P2: Cross-Device Dictation (Phone → Mac Pipeline)
+**What:** Enable voice memos recorded on iPhone to be processed as dictation — text goes to clipboard/daily note instead of a full meeting markdown file. The folder watcher already handles iPhone voice memos via iCloud sync; this adds a "dictation mode" to the watcher that outputs shorter, clipboard-ready text instead of full meeting notes.
+**Why:** "Record a thought on your phone while walking, it becomes searchable text on your Mac." High convenience, leverages existing watcher infrastructure. No new audio capture code needed — iPhone already records, iCloud already syncs.
+**Pros:** Extends dictation beyond the desk. Uses existing watch.rs + iCloud sync pipeline. Low incremental effort since the dictation pipeline (transcribe → cleanup → daily note) already exists.
+**Cons:** Depends on iCloud sync latency (~5-30s). Needs a way to distinguish "quick dictation memo" from "long meeting recording" in the watcher (file duration threshold or folder convention).
+**Context:** Identified as second-highest-leverage follow-up during dictation CEO review (2026-03-23). The watcher already processes voice memos — this is about routing short memos through the dictation output path instead of the meeting output path.
+**Effort:** M (human: ~1 week / CC: ~1 hour)
+**Depends on:** Dictation Lite shipping. Watcher already handles voice memos — this adds a dictation-aware routing mode.
+
 ## P3: Create DESIGN.md
 **What:** Formalize the implicit design system (CSS variables, component patterns, typography, spacing, color usage) into a DESIGN.md file.
 **Why:** The codebase has a strong implicit design language in the CSS but no documentation. As the UI grows (Recall panel, future features), having a reference prevents drift.

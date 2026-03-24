@@ -24,6 +24,7 @@ pub struct Config {
     pub call_detection: CallDetectionConfig,
     pub identity: IdentityConfig,
     pub vault: VaultConfig,
+    pub dictation: DictationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +116,22 @@ pub struct IdentityConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct DictationConfig {
+    pub destination: String,
+    pub daily_note_log: bool,
+    pub cleanup_engine: String,
+    pub auto_paste: bool,
+    pub auto_paste_restore: bool,
+    pub silence_timeout_ms: u64,
+    pub max_utterance_secs: u64,
+    pub destination_file: String,
+    pub destination_command: String,
+    pub model: String,
+    pub hotkey_keycode: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VaultConfig {
     pub enabled: bool,
     /// Root path of the markdown vault (e.g., ~/Documents/life)
@@ -123,6 +140,24 @@ pub struct VaultConfig {
     pub meetings_subdir: String,
     /// Sync strategy: "auto", "symlink", "copy", or "direct"
     pub strategy: String,
+}
+
+impl Default for DictationConfig {
+    fn default() -> Self {
+        Self {
+            destination: "clipboard".into(),
+            daily_note_log: true,
+            cleanup_engine: String::new(),
+            auto_paste: false,
+            auto_paste_restore: true,
+            silence_timeout_ms: 2000,
+            max_utterance_secs: 120,
+            destination_file: String::new(),
+            destination_command: String::new(),
+            model: "base".into(),
+            hotkey_keycode: 57, // Caps Lock
+        }
+    }
 }
 
 impl Default for VaultConfig {
@@ -198,6 +233,7 @@ impl Default for Config {
             call_detection: CallDetectionConfig::default(),
             identity: IdentityConfig::default(),
             vault: VaultConfig::default(),
+            dictation: DictationConfig::default(),
         }
     }
 }

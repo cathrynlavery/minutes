@@ -262,6 +262,7 @@ where
         source: match content_type {
             ContentType::Memo => Some("voice-memo".into()),
             ContentType::Meeting => None,
+            ContentType::Dictation => Some("dictation".into()),
         },
         status,
         tags: vec![],

@@ -1667,6 +1667,44 @@
         </div>
       </div>
 
+      <!-- Dictation -->
+      <div style="margin-bottom: 16px;">
+        <div class="about-item-title">DICTATION</div>
+        <div class="about-controls" style="opacity: 0.5;">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Dictation hotkey — coming soon</div>
+            <div class="about-controls-meta">Native hotkey (Caps Lock) requires a signed build. Use <code style="font-family: var(--font-mono); font-size: 11px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px;">minutes dictate</code> in the terminal or MCP tools for now.</div>
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Dictation whisper model</div>
+            <select id="settings-dictation-model" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+              <option value="tiny">tiny — fastest, lower quality</option>
+              <option value="base">base — fast, decent quality (default)</option>
+              <option value="small">small — good quality, slower</option>
+            </select>
+            <div class="about-controls-meta">Smaller models = faster dictation. "base" is recommended.</div>
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-copy">Log dictations to daily note</div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-dictation-daily-note">On</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Silence timeout</div>
+            <div class="about-controls-meta">End dictation session after this much silence (after first speech).</div>
+            <select id="settings-dictation-silence" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+              <option value="1000">1 second</option>
+              <option value="2000">2 seconds (default)</option>
+              <option value="3000">3 seconds</option>
+              <option value="5000">5 seconds</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       <!-- Transcription -->
       <div style="margin-bottom: 16px;">
         <div class="about-item-title">TRANSCRIPTION</div>
@@ -2957,6 +2995,21 @@
         for (const a of agents) { const o = document.createElement('option'); o.value = a.name; o.textContent = a.name; sel.appendChild(o); }
         sel.value = s.assistant.agent;
         document.getElementById('settings-agent-status').textContent = agents.length + ' agent(s) installed';
+        // Dictation settings
+        if (s.dictation) {
+          document.getElementById('settings-dictation-model').value = s.dictation.model || 'base';
+          setSettingsToggle('settings-dictation-daily-note', s.dictation.daily_note_log !== false);
+          document.getElementById('settings-dictation-silence').value = String(s.dictation.silence_timeout_ms || 2000);
+          // Restore saved hotkey keycode
+          const savedKeycode = s.dictation.hotkey_keycode || 57;
+          dictationKeycode = savedKeycode;
+          const keyName = dictationHotkeyLabel(savedKeycode);
+          document.getElementById('settings-dictation-hotkey-record').textContent = keyName;
+        }
+        const nativeDictationHotkey = await invoke('cmd_dictation_hotkey_status').catch(() => null);
+        if (nativeDictationHotkey) {
+          applyDictationHotkeyStatus(nativeDictationHotkey);
+        }
         loadStorageStats();
         loadVaultStatus();
       } catch (e) { console.error('loadSettings:', e); }
@@ -3119,6 +3172,193 @@
     });
     document.getElementById('settings-screen-interval').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'screen_context',key:'interval_secs',value:e.target.value}));
     document.getElementById('settings-agent').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'assistant',key:'agent',value:e.target.value}));
+
+    // Dictation settings handlers
+    document.getElementById('settings-dictation-model').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'dictation',key:'model',value:e.target.value}));
+    document.getElementById('settings-dictation-silence').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'dictation',key:'silence_timeout_ms',value:e.target.value}));
+    document.getElementById('settings-dictation-daily-note').addEventListener('click', async () => {
+      const btn = document.getElementById('settings-dictation-daily-note');
+      const next = btn.textContent !== 'On';
+      await invoke('cmd_set_setting', {section:'dictation',key:'daily_note_log',value:String(next)});
+      setSettingsToggle('settings-dictation-daily-note', next);
+    });
+    // Dictation hotkey — "press to record" key capture
+    const KEYCODE_NAMES = {
+      0: 'A', 1: 'S', 2: 'D', 3: 'F', 4: 'H', 5: 'G', 6: 'Z', 7: 'X', 8: 'C', 9: 'V',
+      11: 'B', 12: 'Q', 13: 'W', 14: 'E', 15: 'R', 16: 'Y', 17: 'T',
+      18: '1', 19: '2', 20: '3', 21: '4', 22: '6', 23: '5', 24: '=', 25: '9',
+      26: '7', 27: '-', 28: '8', 29: '0', 30: ']', 31: 'O', 32: 'U', 33: '[',
+      34: 'I', 35: 'P', 36: 'Return', 37: 'L', 38: 'J', 39: "'", 40: 'K', 41: ';',
+      42: '\\', 43: ',', 44: '/', 45: 'N', 46: 'M', 47: '.', 48: 'Tab', 49: 'Space',
+      50: '`', 51: 'Delete', 53: 'Escape', 57: 'Caps Lock', 63: 'fn',
+      79: 'F18', 80: 'F19', 96: 'F5', 97: 'F6', 98: 'F7', 99: 'F3',
+      100: 'F8', 101: 'F9', 103: 'F11', 105: 'F13', 106: 'F16', 107: 'F14',
+      109: 'F10', 111: 'F12', 113: 'F15', 114: 'Help', 115: 'Home', 116: 'Page Up',
+      117: 'Forward Delete', 118: 'F4', 119: 'End', 120: 'F2', 121: 'Page Down',
+      122: 'F1', 123: 'Left Arrow', 124: 'Right Arrow', 125: 'Down Arrow', 126: 'Up Arrow',
+    };
+    const BROWSER_CODE_TO_MAC = {
+      KeyA: 0, KeyS: 1, KeyD: 2, KeyF: 3, KeyH: 4, KeyG: 5, KeyZ: 6, KeyX: 7, KeyC: 8, KeyV: 9,
+      KeyB: 11, KeyQ: 12, KeyW: 13, KeyE: 14, KeyR: 15, KeyY: 16, KeyT: 17,
+      Digit1: 18, Digit2: 19, Digit3: 20, Digit4: 21, Digit6: 22, Digit5: 23, Equal: 24, Digit9: 25,
+      Digit7: 26, Minus: 27, Digit8: 28, Digit0: 29, BracketRight: 30, KeyO: 31, KeyU: 32, BracketLeft: 33,
+      KeyI: 34, KeyP: 35, Enter: 36, NumpadEnter: 76, KeyL: 37, KeyJ: 38, Quote: 39, KeyK: 40, Semicolon: 41,
+      Backslash: 42, Comma: 43, Slash: 44, KeyN: 45, KeyM: 46, Period: 47, Tab: 48, Space: 49,
+      Backquote: 50, Backspace: 51, Escape: 53, CapsLock: 57,
+      F1: 122, F2: 120, F3: 99, F4: 118, F5: 96, F6: 97, F7: 98, F8: 100, F9: 101, F10: 109,
+      F11: 103, F12: 111, F13: 105, F14: 107, F15: 113, F16: 106, F18: 79, F19: 80,
+      Home: 115, End: 119, PageUp: 116, PageDown: 121, Delete: 117,
+      ArrowLeft: 123, ArrowRight: 124, ArrowDown: 125, ArrowUp: 126,
+    };
+    let dictationKeycode = 57; // default: Caps Lock
+    let dictationHotkeyEnabled = false;
+    let dictationHotkeyPending = false;
+    let dictationHotkeyStartupTimer = null;
+
+    const hotkeyRecordBtn = document.getElementById('settings-dictation-hotkey-record');
+    let isRecordingHotkey = false;
+
+    function dictationHotkeyLabel(keycode) {
+      return KEYCODE_NAMES[keycode] || `Key ${keycode}`;
+    }
+
+    function clearDictationHotkeyStartupTimer() {
+      if (dictationHotkeyStartupTimer) {
+        clearTimeout(dictationHotkeyStartupTimer);
+        dictationHotkeyStartupTimer = null;
+      }
+    }
+
+    function scheduleDictationHotkeyStartupTimer() {
+      clearDictationHotkeyStartupTimer();
+      dictationHotkeyStartupTimer = setTimeout(() => {
+        if (!dictationHotkeyPending) return;
+        applyDictationHotkeyStatus({
+          state: 'failed',
+          enabled: false,
+          pending: false,
+          keycode: dictationKeycode,
+          message: 'Minutes is still waiting for macOS to start the native hotkey. Confirm Minutes is enabled in System Settings > Privacy & Security > Input Monitoring, then try again.',
+        });
+      }, 4000);
+    }
+
+    function applyDictationHotkeyStatus(status) {
+      if (!status) return;
+      clearDictationHotkeyStartupTimer();
+
+      if (typeof status.keycode === 'number') {
+        dictationKeycode = status.keycode;
+      }
+
+      dictationHotkeyEnabled = Boolean(status.enabled);
+      dictationHotkeyPending = Boolean(status.pending);
+
+      const toggleBtn = document.getElementById('settings-dictation-hotkey');
+      const statusEl = document.getElementById('settings-dictation-hotkey-status');
+
+      hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);
+      hotkeyRecordBtn.style.borderColor = '';
+      hotkeyRecordBtn.style.color = '';
+
+      toggleBtn.disabled = false;
+      if (dictationHotkeyPending) {
+        toggleBtn.textContent = 'Starting...';
+        toggleBtn.style.opacity = '0.85';
+        statusEl.style.color = '';
+        statusEl.textContent = `Starting ${dictationHotkeyLabel(dictationKeycode)}. If this stalls, re-check Input Monitoring and try again.`;
+        scheduleDictationHotkeyStartupTimer();
+        return;
+      }
+
+      setSettingsToggle('settings-dictation-hotkey', dictationHotkeyEnabled);
+
+      if (status.state === 'failed') {
+        statusEl.style.color = 'var(--red)';
+        statusEl.textContent = status.message || 'Could not start the native dictation hotkey.';
+      } else if (status.state === 'active') {
+        statusEl.style.color = '';
+        statusEl.textContent = `Active - tap ${dictationHotkeyLabel(dictationKeycode)} to start/stop dictation`;
+      } else if (status.state === 'unsupported') {
+        statusEl.style.color = 'var(--red)';
+        statusEl.textContent = status.message || 'Native dictation hotkey is only available on macOS.';
+      } else {
+        statusEl.style.color = '';
+        statusEl.textContent = 'Tap to start dictation, tap again to stop. Requires Input Monitoring permission.';
+      }
+    }
+
+    hotkeyRecordBtn.addEventListener('click', () => {
+      if (isRecordingHotkey) return;
+      isRecordingHotkey = true;
+      hotkeyRecordBtn.textContent = 'Press any key...';
+      hotkeyRecordBtn.style.borderColor = 'var(--accent)';
+      hotkeyRecordBtn.style.color = 'var(--accent)';
+
+      function captureKey(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        document.removeEventListener('keydown', captureKey, true);
+        isRecordingHotkey = false;
+
+        const macKeycode = BROWSER_CODE_TO_MAC[e.code];
+        if (typeof macKeycode !== 'number') {
+          hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);
+          hotkeyRecordBtn.style.borderColor = '';
+          hotkeyRecordBtn.style.color = '';
+          const status = document.getElementById('settings-dictation-hotkey-status');
+          status.style.color = 'var(--red)';
+          status.textContent = `Minutes cannot bind ${e.key || e.code} yet. Try a letter, number, function key, arrow key, Tab, Escape, Return, Space, or Delete.`;
+          return;
+        }
+
+        dictationKeycode = macKeycode;
+
+        const name = dictationHotkeyLabel(macKeycode);
+        hotkeyRecordBtn.textContent = name;
+        hotkeyRecordBtn.style.borderColor = '';
+        hotkeyRecordBtn.style.color = '';
+
+        // Save to config
+        invoke('cmd_set_setting', { section: 'dictation', key: 'hotkey_keycode', value: String(macKeycode) }).catch((error) => {
+          console.error('Save dictation hotkey:', error);
+        });
+
+        // If hotkey is enabled, restart with new key
+        if (dictationHotkeyEnabled || dictationHotkeyPending) {
+          invoke('cmd_enable_dictation_hotkey', { enabled: true, keycode: macKeycode })
+            .then((status) => applyDictationHotkeyStatus(status))
+            .catch((error) => {
+              applyDictationHotkeyStatus({
+                state: 'failed',
+                enabled: false,
+                pending: false,
+                keycode: macKeycode,
+                message: String(error),
+              });
+            });
+        }
+      }
+
+      document.addEventListener('keydown', captureKey, true);
+    });
+
+    document.getElementById('settings-dictation-hotkey').addEventListener('click', async () => {
+      const next = !(dictationHotkeyEnabled || dictationHotkeyPending);
+      try {
+        const status = await invoke('cmd_enable_dictation_hotkey', { enabled: next, keycode: dictationKeycode });
+        applyDictationHotkeyStatus(status);
+      } catch (e) {
+        applyDictationHotkeyStatus({
+          state: 'failed',
+          enabled: false,
+          pending: false,
+          keycode: dictationKeycode,
+          message: String(e),
+        });
+      }
+    });
+
     document.getElementById('settings-screen-share').addEventListener('click', () => {
       const b = document.getElementById('settings-screen-share');
       setSettingsToggle('settings-screen-share', b.textContent!=='On');
@@ -3442,6 +3682,10 @@
     document.getElementById('btn-dismiss-call').addEventListener('click', () => {
       callBanner.classList.remove('active');
       clearTimeout(callBannerTimeout);
+    });
+
+    currentWindow.listen('dictation-hotkey:status', (event) => {
+      applyDictationHotkeyStatus(event.payload);
     });
 
     // ── Listen for recall:expand events from Rust backend ──

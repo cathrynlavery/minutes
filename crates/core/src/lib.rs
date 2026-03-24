@@ -24,6 +24,14 @@ pub mod streaming;
 #[cfg(feature = "streaming")]
 pub mod vad;
 
+// Dictation mode (requires streaming + whisper)
+#[cfg(feature = "streaming")]
+pub mod dictation;
+
+// Native macOS hotkey monitoring via CGEventTap
+#[cfg(target_os = "macos")]
+pub mod hotkey_macos;
+
 // Re-export commonly used types
 pub use config::Config;
 pub use error::{MinutesError, Result};

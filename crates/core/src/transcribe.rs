@@ -366,6 +366,36 @@ fn normalize_audio(mut samples: Vec<f32>) -> Vec<f32> {
     samples
 }
 
+/// Resolve the whisper model file path for dictation (uses dictation.model config).
+#[cfg(feature = "whisper")]
+pub fn resolve_model_path_for_dictation(config: &Config) -> Result<PathBuf, TranscribeError> {
+    let model_name = &config.dictation.model;
+    let model_dir = &config.transcription.model_path;
+
+    let candidates = [
+        model_dir.join(format!("ggml-{}.bin", model_name)),
+        model_dir.join(format!("whisper-{}.bin", model_name)),
+        model_dir.join(format!("{}.bin", model_name)),
+    ];
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate.clone());
+        }
+    }
+
+    let direct = PathBuf::from(model_name);
+    if direct.exists() {
+        return Ok(direct);
+    }
+
+    Err(TranscribeError::ModelNotFound(format!(
+        "Expected model file \"ggml-{}.bin\" in {}",
+        model_name,
+        model_dir.display(),
+    )))
+}
+
 /// Resolve the whisper model file path.
 #[cfg(feature = "whisper")]
 fn resolve_model_path(config: &Config) -> Result<PathBuf, TranscribeError> {
