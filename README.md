@@ -11,7 +11,7 @@ Agents have run logs. Humans have conversations. **minutes** captures the human 
 Record a meeting. Capture a voice memo on a walk. Ask Claude what was decided three weeks ago. It just works.
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="minutes demo — record, search, action items" width="700">
+  <img src="docs/assets/demo.gif" alt="minutes demo — record, dictate, phone sync, AI recall" width="750">
 </p>
 
 ### Works with
