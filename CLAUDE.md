@@ -47,19 +47,21 @@ open target/release/bundle/macos/Minutes.app   # Launch app
 
 When shipping a new version:
 1. Bump version in: `Cargo.toml` (workspace), `tauri/src-tauri/tauri.conf.json`, `crates/mcp/package.json`, `crates/sdk/package.json`
-2. Verify all 4 match: `grep version Cargo.toml tauri/src-tauri/tauri.conf.json crates/mcp/package.json crates/sdk/package.json`
-3. Rebuild MCP: `cd crates/mcp && npm run build`
-4. Commit, tag, push: `git tag vX.Y.Z && git push origin main --tags`
-5. Create GitHub release: `gh release create vX.Y.Z -t "title" -F notes.md` (triggers signed DMG + CLI binary CI)
-6. **Publish npm packages** (required for `npx minutes-mcp` users):
+2. **Also bump the version string in `crates/mcp/src/index.ts`** (the `McpServer({ version })` constructor). This must match `package.json`.
+3. Verify all 5 match: `grep version Cargo.toml tauri/src-tauri/tauri.conf.json crates/mcp/package.json crates/sdk/package.json && grep 'version:' crates/mcp/src/index.ts`
+4. **Verify MCP runtime deps**: all `import` statements in `crates/mcp/src/index.ts` must have their packages in `dependencies` (not `devDependencies`) in `package.json`. Run: `node -e "require('./crates/mcp/dist/index.js')"` to smoke-test.
+5. Rebuild MCP: `cd crates/mcp && npm run build`
+6. Commit, tag, push: `git tag vX.Y.Z && git push origin main --tags`
+7. Create GitHub release: `gh release create vX.Y.Z -t "title" -F notes.md` (triggers signed DMG + CLI binary CI)
+8. **Publish npm packages** (required for `npx minutes-mcp` users):
    ```bash
    cd crates/sdk && npm publish --access public --registry https://registry.npmjs.org
    cd crates/mcp && npm publish --access public --registry https://registry.npmjs.org
    ```
    If 2FA blocks publish, use a granular access token with "Bypass 2FA" enabled.
    **IMPORTANT**: `crates/mcp/package.json` must depend on `"minutes-sdk": "^X.Y.Z"` (npm version), NOT `"file:../sdk"` (local path). Check before publishing.
-7. Redeploy landing page: `cd site && vercel deploy --yes --prod --scope evil-genius-laboratory`
-8. Update Homebrew tap formula if CLI changed
+9. Redeploy landing page: `cd site && vercel deploy --yes --prod --scope evil-genius-laboratory`
+10. Update Homebrew tap formula if CLI changed
 
 ## Project Structure
 

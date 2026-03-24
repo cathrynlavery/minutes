@@ -195,6 +195,17 @@ enum Commands {
         collection: String,
     },
 
+    /// Dictate: speak and get text in your clipboard + daily note
+    Dictate {
+        /// Output to stdout instead of clipboard
+        #[arg(long)]
+        stdout: bool,
+
+        /// Only write to daily note (no clipboard)
+        #[arg(long)]
+        note_only: bool,
+    },
+
     /// List available audio input devices
     Devices,
 
@@ -369,6 +380,7 @@ fn main() -> Result<()> {
             result
         }
         Commands::Watch { dir } => cmd_watch(dir.as_deref(), &config),
+        Commands::Dictate { stdout, note_only } => cmd_dictate(stdout, note_only, &config),
         Commands::Devices => cmd_devices(),
         Commands::Setup { model, list } => cmd_setup(&model, list),
         Commands::Qmd { action, collection } => cmd_qmd(&action, &collection, &config),
@@ -455,6 +467,15 @@ fn live_stage_label(
         (minutes_core::pipeline::PipelineStage::Saving, CaptureMode::QuickThought) => {
             "Saving quick thought"
         }
+        (minutes_core::pipeline::PipelineStage::Transcribing, CaptureMode::Dictation) => {
+            "Transcribing dictation"
+        }
+        (minutes_core::pipeline::PipelineStage::Summarizing, CaptureMode::Dictation) => {
+            "Generating dictation summary"
+        }
+        (minutes_core::pipeline::PipelineStage::Saving, CaptureMode::Dictation) => {
+            "Saving dictation"
+        }
     }
 }
 
@@ -489,6 +510,9 @@ fn cmd_record(
         CaptureMode::QuickThought => {
             eprintln!("Recording quick thought... (press Ctrl-C or run `minutes stop` to finish)");
             eprintln!("  Tip: speak one idea clearly — it will save as a normal memo artifact");
+        }
+        CaptureMode::Dictation => {
+            eprintln!("Use `minutes dictate` for dictation mode.");
         }
     }
 
@@ -2143,4 +2167,58 @@ fn cmd_demo(config: &Config) -> Result<()> {
             Err(e.into())
         }
     }
+}
+
+fn cmd_dictate(stdout: bool, note_only: bool, config: &Config) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    eprintln!("[minutes] Starting dictation (Ctrl-C to stop)...");
+    eprintln!("[minutes] Speak naturally. Text goes to clipboard after each pause.");
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop_flag);
+
+    // Handle Ctrl-C
+    ctrlc::set_handler(move || {
+        eprintln!("\nStopping dictation...");
+        stop_clone.store(true, Ordering::Relaxed);
+    })?;
+
+    let mut config = config.clone();
+    if stdout {
+        config.dictation.destination = "stdout".into();
+        config.dictation.daily_note_log = !note_only;
+    } else if note_only {
+        config.dictation.destination = "daily_note".into();
+    }
+
+    minutes_core::dictation::run(
+        stop_flag,
+        &config,
+        |event| {
+            use minutes_core::dictation::DictationEvent;
+            match event {
+                DictationEvent::Listening => eprintln!("[minutes] Listening..."),
+                DictationEvent::Accumulating => eprintln!("[minutes] Speaking detected..."),
+                DictationEvent::Processing => eprintln!("[minutes] Transcribing..."),
+                DictationEvent::Success => eprintln!("[minutes] Done — text copied to clipboard"),
+                DictationEvent::Error => eprintln!("[minutes] Transcription failed — audio saved"),
+                DictationEvent::Cancelled => eprintln!("[minutes] Dictation cancelled"),
+                DictationEvent::Yielded => {
+                    eprintln!("[minutes] Recording started — yielding dictation")
+                }
+            }
+        },
+        |result| {
+            if stdout {
+                println!("{}", result.text);
+            }
+            if let Some(ref path) = result.file_path {
+                eprintln!("[minutes] Saved: {}", path.display());
+            }
+        },
+    )?;
+
+    Ok(())
 }

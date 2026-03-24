@@ -67,6 +67,7 @@ pub fn generate_meeting_context(meeting_path: &Path, config: &Config) -> Result<
     let content_type = match fm.r#type {
         minutes_core::markdown::ContentType::Meeting => "meeting",
         minutes_core::markdown::ContentType::Memo => "memo",
+        minutes_core::markdown::ContentType::Dictation => "dictation",
     };
 
     let mut md = String::with_capacity(4096);

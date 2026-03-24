@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 pub enum ContentType {
     Meeting,
     Memo,
+    Dictation,
 }
 
 /// Output status markers.
@@ -155,6 +156,7 @@ pub fn write(
     let output_dir = match frontmatter.r#type {
         ContentType::Memo => config.output_dir.join("memos"),
         ContentType::Meeting => config.output_dir.clone(),
+        ContentType::Dictation => config.output_dir.join("dictations"),
     };
 
     // Ensure output directory exists

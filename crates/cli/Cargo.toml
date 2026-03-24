@@ -14,7 +14,7 @@ name = "minutes"
 path = "src/main.rs"
 
 [dependencies]
-minutes-core = { path = "../core", version = "0.5.0" }
+minutes-core = { path = "../core", version = "0.5.0", features = ["streaming"] }
 clap = { workspace = true }
 ctrlc = { workspace = true }
 anyhow = { workspace = true }

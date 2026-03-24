@@ -297,7 +297,7 @@ function validatePathInDirectories(
 
 const server = new McpServer({
   name: "minutes",
-  version: "0.5.0",
+  version: "0.5.1",
 });
 
 // Configurable directories — override via env vars in Claude Desktop extension settings
@@ -1248,6 +1248,86 @@ server.resource(
       return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: content }] };
     }
     return { contents: [{ uri: uri.href, mimeType: "text/plain", text: `Meeting not found: ${slug}` }] };
+  }
+);
+
+// ── Tool: start_dictation ──────────────────────────────────
+
+server.tool(
+  "start_dictation",
+  "Start dictation mode. Speak naturally — text goes to clipboard and daily note after each pause. Runs until stop_dictation is called or silence timeout.",
+  {},
+  { title: "Start Dictation", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+    const { stdout: statusOut } = await runMinutes(["status"]);
+    const status = parseJsonOutput(statusOut);
+    if (status.recording) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Recording in progress — stop recording before dictating.",
+          },
+        ],
+      };
+    }
+
+    // Spawn detached dictation process
+    const child = spawn(MINUTES_BIN, ["dictate"], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, RUST_LOG: "info" },
+    });
+    child.unref();
+
+    // Wait briefly for startup
+    await new Promise((r) => setTimeout(r, 500));
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: "Dictation started. Speak naturally — text will be copied to clipboard after each pause. Say \"stop dictation\" when done.",
+        },
+      ],
+    };
+  }
+);
+
+// ── Tool: stop_dictation ───────────────────────────────────
+
+server.tool(
+  "stop_dictation",
+  "Stop the current dictation session.",
+  {},
+  { title: "Stop Dictation", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async () => {
+    // Send stop signal by killing the dictation process via PID file
+    const minutesDir = join(homedir(), ".minutes");
+    const pidPath = join(minutesDir, "dictation.pid");
+    if (existsSync(pidPath)) {
+      try {
+        const pidContent = await readFile(pidPath, "utf-8");
+        const pid = parseInt(pidContent.trim(), 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          process.kill(pid, "SIGTERM");
+        }
+      } catch {
+        // Process already dead or PID file invalid
+      }
+    }
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: "Dictation stop requested.",
+        },
+      ],
+    };
   }
 );
 

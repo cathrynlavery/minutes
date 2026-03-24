@@ -166,6 +166,27 @@ pub enum PidError {
     Io(#[from] std::io::Error),
 }
 
+#[derive(Debug, Error)]
+pub enum DictationError {
+    #[error("recording in progress — stop recording before dictating")]
+    RecordingActive,
+
+    #[error("dictation already active (PID: {0})")]
+    AlreadyActive(u32),
+
+    #[error("clipboard write failed: {0}")]
+    ClipboardFailed(String),
+
+    #[error("accessibility permission required for auto-paste")]
+    AccessibilityDenied,
+
+    #[error("dictation not active")]
+    NotActive,
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 /// Unified error type for the minutes-core crate.
 /// CLI matches on this for user-facing error messages.
 #[derive(Debug, Error)]
@@ -193,6 +214,9 @@ pub enum MinutesError {
 
     #[error(transparent)]
     Pid(#[from] PidError),
+
+    #[error(transparent)]
+    Dictation(#[from] DictationError),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

@@ -25,6 +25,11 @@ pub fn pid_path() -> PathBuf {
     Config::minutes_dir().join("recording.pid")
 }
 
+/// Path to the dictation PID file (`~/.minutes/dictation.pid`).
+pub fn dictation_pid_path() -> PathBuf {
+    Config::minutes_dir().join("dictation.pid")
+}
+
 /// Path to the recording metadata JSON (`~/.minutes/recording-meta.json`).
 pub fn recording_meta_path() -> PathBuf {
     Config::minutes_dir().join("recording-meta.json")
@@ -50,6 +55,7 @@ pub fn processing_status_path() -> PathBuf {
 pub enum CaptureMode {
     Meeting,
     QuickThought,
+    Dictation,
 }
 
 impl CaptureMode {
@@ -57,6 +63,7 @@ impl CaptureMode {
         match self {
             Self::Meeting => crate::markdown::ContentType::Meeting,
             Self::QuickThought => crate::markdown::ContentType::Memo,
+            Self::Dictation => crate::markdown::ContentType::Dictation,
         }
     }
 
@@ -64,6 +71,7 @@ impl CaptureMode {
         match self {
             Self::Meeting => "meeting",
             Self::QuickThought => "quick thought",
+            Self::Dictation => "dictation",
         }
     }
 }
@@ -480,6 +488,7 @@ pub fn status() -> RecordingStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fs2::FileExt;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
     fn test_guard() -> MutexGuard<'static, ()> {

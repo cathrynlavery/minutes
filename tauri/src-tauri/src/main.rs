@@ -326,6 +326,7 @@ fn main() {
             hotkey_runtime: hotkey_runtime.clone(),
             discard_short_hotkey_capture: discard_short_hotkey_capture.clone(),
             pty_manager: Arc::new(Mutex::new(pty::PtyManager::default())),
+            dictation_stop_flag: Arc::new(AtomicBool::new(false)),
         })
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
@@ -758,6 +759,12 @@ fn main() {
             commands::cmd_vault_setup,
             commands::cmd_vault_unlink,
             commands::cmd_open_meeting_url,
+            commands::cmd_start_dictation,
+            commands::cmd_stop_dictation,
+            commands::cmd_enable_dictation_hotkey,
+            commands::cmd_dictation_hotkey_status,
+            commands::cmd_check_accessibility,
+            commands::cmd_request_accessibility,
         ])
         .run(tauri::generate_context!())
         .expect("error while running minutes app");

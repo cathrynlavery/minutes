@@ -38,6 +38,9 @@ base64 = "0.22"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Native hotkey (CGEventTap) uses raw FFI — no extra crate deps needed.
+# The macOS frameworks are linked automatically via #[link(name = "...")]
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
 
