@@ -58,6 +58,13 @@ pub enum MinutesEvent {
         vault_path: String,
         strategy: String,
     },
+    VoiceMemoProcessed {
+        path: String,
+        title: String,
+        word_count: usize,
+        source_path: String,
+        device: Option<String>,
+    },
 }
 
 fn events_path() -> PathBuf {

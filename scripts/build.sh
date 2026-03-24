@@ -5,6 +5,12 @@ set -e
 export CXXFLAGS="-I$(xcrun --show-sdk-path)/usr/include/c++/v1"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
+# Code signing + notarization (set these to enable signed builds)
+export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Mathieu Silverstein (63TMLKT8HN)}"
+export APPLE_API_ISSUER="${APPLE_API_ISSUER:-2f202b92-887c-4dfc-b6ef-38b3c6347004}"
+export APPLE_API_KEY="${APPLE_API_KEY:-49R7VWVUJ7}"
+export APPLE_API_KEY_PATH="${APPLE_API_KEY_PATH:-$HOME/.config/minutes/keys/AuthKey_49R7VWVUJ7.p8}"
+
 echo "=== Building CLI (release) ==="
 cargo build --release -p minutes-cli
 

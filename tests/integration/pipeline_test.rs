@@ -75,7 +75,7 @@ fn full_pipeline_memo() {
 
     let content = fs::read_to_string(&result.path).unwrap();
     assert!(content.contains("type: memo"));
-    assert!(content.contains("source: voice-memo"));
+    assert!(content.contains("source: voice-memos"));
 }
 
 #[test]

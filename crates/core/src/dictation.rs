@@ -395,6 +395,8 @@ fn write_dictation_file(text: &str, duration_secs: f64, config: &Config) -> Opti
         calendar_event: None,
         people: vec![],
         entities: crate::markdown::EntityLinks::default(),
+        device: None,
+        captured_at: None,
         context: None,
         action_items: vec![],
         decisions: vec![],

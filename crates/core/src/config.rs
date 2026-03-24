@@ -81,6 +81,9 @@ pub struct WatchConfig {
     pub diarize: bool,
     pub delete_source: bool,
     pub settle_delay_ms: u64,
+    /// Files shorter than this duration route as Memo (skip diarization).
+    /// Set to 0 to disable duration-based routing (use `type` config instead).
+    pub dictation_threshold_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +310,7 @@ impl Default for WatchConfig {
             diarize: false,
             delete_source: false,
             settle_delay_ms: 2000,
+            dictation_threshold_secs: 120,
         }
     }
 }

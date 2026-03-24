@@ -89,11 +89,11 @@ minutes/
 │   │   └── error.rs           # Per-module error types (thiserror)
 │   ├── cli/                   # CLI binary — 15 commands
 │   ├── reader/                # Lightweight read-only meeting parser (no audio deps)
-│   └── mcp/                   # MCP server — 13 tools + 6 resources + MCP App dashboard
+│   └── mcp/                   # MCP server — 13 tools + 7 resources + MCP App dashboard
 │       ├── src/reader.ts      # Pure-TS meeting file reader (npx fallback, SDK foundation)
 │       └── ui/                # Interactive dashboard (vanilla TS, builds to single-file HTML)
 ├── tauri/                     # Tauri v2 menu bar app + singleton AI Assistant
-├── .claude/plugins/minutes/   # Claude Code plugin — 11 skills + 1 agent + 2 hooks
+├── .claude/plugins/minutes/   # Claude Code plugin — 12 skills + 1 agent + 2 hooks
 └── tests/integration/         # Integration tests (including real whisper tests)
 ```
 
@@ -147,8 +147,8 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 
 ## Test Coverage
 
-124 tests total:
-- 81 unit tests (all core modules including screen, calendar, config)
+130 tests total:
+- 87 unit tests (all core modules including screen, calendar, config, watch cross-device)
 - 8 integration tests (pipeline, permissions, collisions, search filters)
 - 2 real whisper tests (transcription + no-speech detection with tiny model)
 - 30 reader.ts unit tests (vitest — frontmatter parsing, listing, search, actions, profiles)
@@ -158,8 +158,8 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 
 ## Claude Ecosystem Integration
 
-- **MCP Server**: 13 tools + 6 resources for Claude Desktop / Cowork / Dispatch (`npx minutes-mcp` for zero-install)
-- **Claude Code Plugin**: 11 skills (8 core + 3 interactive lifecycle) + meeting-analyst agent + PostToolUse hook
+- **MCP Server**: 13 tools + 7 resources for Claude Desktop / Cowork / Dispatch (`npx minutes-mcp` for zero-install)
+- **Claude Code Plugin**: 12 skills (8 core + 3 interactive lifecycle + 1 ghost context) + meeting-analyst agent + PostToolUse hook
 - **Interactive meeting lifecycle**: `/minutes prep` → record → `/minutes debrief` → `/minutes weekly` with skill chaining via `.prep.md` files
 - **Conversational summarization**: Claude reads transcripts via MCP, no API key needed
 - **Auto-tagging + alerts**: PostToolUse hook tags meetings with git repo, checks for decision conflicts, surfaces overdue action items

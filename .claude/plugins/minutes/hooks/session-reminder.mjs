@@ -50,9 +50,50 @@ if (existsSync(configPath)) {
   }
 }
 
+// Scan for recent voice memos (last 3 days, max 5)
+let memoContext = "";
+try {
+  const memosDir = join(homedir(), "meetings", "memos");
+  if (existsSync(memosDir)) {
+    const { readdirSync, statSync } = await import("fs");
+    const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000; // 3 days
+    const files = readdirSync(memosDir)
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => {
+        const full = join(memosDir, f);
+        const mtime = statSync(full).mtimeMs;
+        return { name: f, path: full, mtime };
+      })
+      .filter((f) => f.mtime >= cutoff)
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 5);
+
+    if (files.length > 0) {
+      const memoLines = files.map((f) => {
+        // Extract title from frontmatter (first line after ---)
+        try {
+          const content = readFileSync(f.path, "utf-8");
+          const titleMatch = content.match(/^title:\s*(.+)$/m);
+          const dateMatch = content.match(/^date:\s*(.+)$/m);
+          const title = titleMatch ? titleMatch[1].trim() : f.name.replace(".md", "");
+          const date = dateMatch
+            ? new Date(dateMatch[1].trim()).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+            : "recent";
+          return `[${date}] ${title}`;
+        } catch {
+          return f.name.replace(".md", "");
+        }
+      });
+      memoContext = `\n\nRecent voice memos: ${memoLines.join(", ")}. The user may ask about these — use search_meetings or get_meeting MCP tools to retrieve details.`;
+    }
+  }
+} catch {
+  // Non-fatal — skip voice memo scan
+}
+
 // Output a reminder for Claude to check the calendar
 const output = {
-  additionalContext: `Meeting reminder check: The user is an active Minutes user (has used /minutes prep before). If a Google Calendar MCP tool is available (gcal_list_events), check if the user has a meeting in the next 60 minutes. If they do, briefly mention it: "You have [meeting] in [N] minutes. Run /minutes prep to go in prepared." Keep it to one line — don't be pushy. If no calendar tool is available, skip silently. Do NOT mention this check if there are no upcoming meetings.`,
+  additionalContext: `Meeting reminder check: The user is an active Minutes user (has used /minutes prep before). If a Google Calendar MCP tool is available (gcal_list_events), check if the user has a meeting in the next 60 minutes. If they do, briefly mention it: "You have [meeting] in [N] minutes. Run /minutes prep to go in prepared." Keep it to one line — don't be pushy. If no calendar tool is available, skip silently. Do NOT mention this check if there are no upcoming meetings.${memoContext}`,
 };
 
 console.log(JSON.stringify(output));

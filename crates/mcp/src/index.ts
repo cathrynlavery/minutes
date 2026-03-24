@@ -297,7 +297,7 @@ function validatePathInDirectories(
 
 const server = new McpServer({
   name: "minutes",
-  version: "0.6.0",
+  version: "0.7.0",
 });
 
 // Configurable directories — override via env vars in Claude Desktop extension settings
@@ -1248,6 +1248,56 @@ server.resource(
       return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: content }] };
     }
     return { contents: [{ uri: uri.href, mimeType: "text/plain", text: `Meeting not found: ${slug}` }] };
+  }
+);
+
+// ── Resource: recent_ideas (voice memos from last N days) ──
+
+server.resource(
+  "recent-ideas",
+  "minutes://ideas/recent",
+  { description: "Recent voice memos and ideas captured from any device (last 14 days)" },
+  async (uri) => {
+    const meetings = await reader.listMeetings(MEETINGS_DIR, 200);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 14);
+
+    const memos = meetings.filter((m) => {
+      if (m.frontmatter.type !== "memo") return false;
+      const date = new Date(m.frontmatter.date);
+      return date >= cutoff;
+    });
+
+    if (memos.length === 0) {
+      return {
+        contents: [{
+          uri: uri.href,
+          mimeType: "text/plain",
+          text: "No voice memos in the last 14 days.",
+        }],
+      };
+    }
+
+    const lines = memos
+      .sort((a, b) => new Date(b.frontmatter.date).getTime() - new Date(a.frontmatter.date).getTime())
+      .slice(0, 20)
+      .map((m) => {
+        const date = new Date(m.frontmatter.date).toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        });
+        const device = m.frontmatter.device ? ` (${m.frontmatter.device})` : "";
+        return `- [${date}] ${m.frontmatter.title}${device} — ${m.frontmatter.duration}`;
+      })
+      .join("\n");
+
+    return {
+      contents: [{
+        uri: uri.href,
+        mimeType: "text/plain",
+        text: `Recent voice memos (${memos.length} in last 14 days):\n\n${lines}`,
+      }],
+    };
   }
 );
 

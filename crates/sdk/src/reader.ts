@@ -45,6 +45,8 @@ export interface Frontmatter {
   duration: string;
   source?: string;
   status?: string;
+  device?: string;
+  captured_at?: string;
   tags: string[];
   attendees: string[];
   people: string[];

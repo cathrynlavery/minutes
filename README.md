@@ -23,7 +23,7 @@ Record a meeting. Capture a voice memo on a walk. Ask Claude what was decided th
   <a href="#any-mcp-client-claude-desktop-cursor-windsurf-your-own-agent">Windsurf</a> &bull;
   <a href="#vault-sync-obsidian--logseq">Obsidian</a> &bull;
   <a href="#vault-sync-obsidian--logseq">Logseq</a> &bull;
-  <a href="#iphone--mac-voice-memo-pipeline">iPhone Voice Memos</a> &bull;
+  <a href="#phone--desktop-voice-memo-pipeline">Phone Voice Memos</a> &bull;
   Any MCP client
 </p>
 
@@ -151,21 +151,124 @@ decisions:
 
 Works with [Obsidian](https://obsidian.md), grep, or any markdown tool. Action items and decisions are queryable via the CLI and MCP tools.
 
-## iPhone → Mac voice memo pipeline
+## Phone → desktop voice memo pipeline
 
-No iOS app needed. Use Apple's built-in Voice Memos + a Shortcut:
+No phone app needed. Record a thought on your phone, and it becomes searchable memory on your desktop. Claude even surfaces recent memos proactively — "you had a voice memo about pricing yesterday."
 
-1. **Set up iCloud inbox** (one-time):
-   ```bash
-   mkdir -p ~/Library/Mobile\ Documents/com~apple~CloudDocs/minutes-inbox
-   ```
-2. **Add watch path** in `~/.config/minutes/config.toml`:
-   ```toml
-   [watch]
-   paths = ["~/.minutes/inbox", "~/Library/Mobile Documents/com~apple~CloudDocs/minutes-inbox"]
-   ```
-3. **On iPhone**: Voice Memos → Share → Save to Files → iCloud Drive → `minutes-inbox`
-4. **On Mac**: `minutes watch` picks it up, transcribes, saves to `~/meetings/memos/`
+The watcher is folder-agnostic — it processes any audio file that lands in a watched folder. Pick the sync method that matches your setup:
+
+| Phone | Desktop | Sync method |
+|-------|---------|-------------|
+| **iPhone** | **Mac** | iCloud Drive (built-in, ~5-30s) |
+| **iPhone** | **Windows/Linux** | iCloud for Windows, or Dropbox/Google Drive |
+| **Android** | **Any** | Dropbox, Google Drive, Syncthing, or any folder sync |
+| **Any** | **Any** | AirDrop, USB, email — drop the file in the watched folder |
+
+### Setup (one-time)
+
+**Step 1: Create a sync folder** — pick one that syncs between your phone and desktop:
+
+```bash
+# macOS + iPhone (iCloud Drive)
+mkdir -p ~/Library/Mobile\ Documents/com~apple~CloudDocs/minutes-inbox
+
+# Any platform (Dropbox)
+mkdir -p ~/Dropbox/minutes-inbox
+
+# Any platform (Google Drive)
+mkdir -p ~/Google\ Drive/minutes-inbox
+
+# Or just use the default inbox (manually drop files into it)
+# ~/.minutes/inbox/  ← already exists
+```
+
+**Step 2: Add the sync folder to your watch config** in `~/.config/minutes/config.toml`:
+
+```toml
+[watch]
+paths = [
+  "~/.minutes/inbox",
+  # Add your sync folder here — uncomment one:
+  # "~/Library/Mobile Documents/com~apple~CloudDocs/minutes-inbox",  # iCloud
+  # "~/Dropbox/minutes-inbox",                                       # Dropbox
+  # "~/Google Drive/minutes-inbox",                                  # Google Drive
+]
+```
+
+**Step 3: Set up your phone**
+
+<details>
+<summary><strong>iPhone (Apple Shortcuts)</strong></summary>
+
+1. Open the **Shortcuts** app on your iPhone
+2. Tap **+** → Add Action → search **"Save File"**
+3. Set destination to `iCloud Drive/minutes-inbox/` (or your Dropbox/Google Drive folder)
+4. Turn OFF "Ask Where to Save"
+5. Tap the **(i)** info button → enable **Share Sheet** → set to accept **Audio**
+6. Name it **"Save to Minutes"**
+
+Now: Voice Memos → Share → **Save to Minutes** → done.
+</details>
+
+<details>
+<summary><strong>Android</strong></summary>
+
+Use any voice recorder app + your cloud sync of choice:
+
+- **Dropbox**: Record with any app → Share → Save to Dropbox → `minutes-inbox/`
+- **Google Drive**: Record → Share → Save to Drive → `minutes-inbox/`
+- **Syncthing** (no cloud): Set up a Syncthing share between phone and desktop pointing at your watched folder. Fully local, no cloud.
+- **Tasker/Automate** (power users): Auto-move new recordings from your recorder app to the sync folder.
+</details>
+
+<details>
+<summary><strong>Manual (any phone)</strong></summary>
+
+No sync setup needed — just get the audio file to your desktop's watched folder:
+- **AirDrop** (Apple): Share → AirDrop to Mac → move to `~/.minutes/inbox/`
+- **Email**: Email the recording to yourself → save attachment to watched folder
+- **USB**: Transfer directly
+</details>
+
+**Step 4: Start the watcher** (or install as a background service):
+
+```bash
+minutes watch                  # Run in foreground
+minutes service install        # Or install as background service (auto-starts on login, macOS)
+```
+
+### How it works
+
+```
+Phone (any)                   Desktop (any)
+───────────                   ─────────────
+Record voice memo        →    Cloud sync / manual transfer
+Share to sync folder               │
+                                   ▼
+                            minutes watch detects file
+                                   │
+                            probe duration (<2 min?)
+                              ├── yes → memo pipeline (fast, no diarization)
+                              └── no  → meeting pipeline (full)
+                                   │
+                            transcribe → save markdown
+                                   │
+                            ├── event: VoiceMemoProcessed
+                            ├── daily note backlink
+                            └── surfaces in next Claude session
+```
+
+Short voice memos (<2 minutes) automatically route through the fast memo pipeline — no diarization, no heavy summarization. Long recordings get the full meeting treatment. The threshold is configurable: `dictation_threshold_secs = 120` in `[watch]`.
+
+### Optional: sidecar metadata
+
+If your phone workflow also saves a `.json` file alongside the audio (same name, `.json` extension), Minutes reads it for enriched metadata:
+
+```json
+{"device": "iPhone", "source": "voice-memos", "captured_at": "2026-03-24T08:41:00-07:00"}
+```
+
+This adds `device` and `captured_at` to the meeting's frontmatter. Works with any automation tool (Apple Shortcuts, Tasker, etc.).
 
 Supports `.m4a`, `.mp3`, `.wav`, `.ogg`, `.webm`. Format conversion is automatic via [symphonia](https://github.com/pdeljanov/Symphonia).
 
@@ -310,7 +413,7 @@ minutes setup --model small   # Recommended (466MB, good accuracy)
 minutes setup --model base    # Middle ground (141MB)
 ```
 
-> **Platform notes:** Calendar integration (auto-detecting meeting attendees) requires macOS. Screen context capture works on macOS and Linux. All other features — recording, transcription, search, action items, person profiles — work on all platforms.
+> **Platform notes:** Calendar integration (auto-detecting meeting attendees) requires macOS. Screen context capture works on macOS and Linux. The voice memo pipeline works on all platforms — any folder sync (iCloud, Dropbox, Google Drive, Syncthing) can feed the watcher. The `minutes service install` auto-start command requires macOS (launchd); on Linux, use systemd or cron. All other features — recording, transcription, search, action items, person profiles — work on all platforms.
 
 ### Desktop app
 
@@ -365,7 +468,10 @@ engine = "builtin"        # builtin (regex) or qmd (semantic)
 
 [watch]
 paths = ["~/.minutes/inbox"]
-settle_delay_ms = 2000    # iCloud sync safety delay
+settle_delay_ms = 2000              # Cloud sync safety delay (wait for file to finish syncing)
+dictation_threshold_secs = 120      # Files shorter than this → memo (skip diarize). 0 = disable.
+# Add cloud sync folders to watch for phone voice memos:
+# paths = ["~/.minutes/inbox", "~/Dropbox/minutes-inbox"]
 
 [screen_context]
 enabled = false           # Opt-in: capture screenshots during recording for LLM context

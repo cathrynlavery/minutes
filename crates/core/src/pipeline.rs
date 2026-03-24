@@ -33,6 +33,18 @@ pub enum PipelineStage {
     Saving,
 }
 
+/// Optional metadata from a sidecar JSON file (e.g., from iPhone Apple Shortcut).
+/// Merged into frontmatter when present.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SidecarMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<chrono::DateTime<Local>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
 /// Process an audio file through the full pipeline.
 pub fn process(
     audio_path: &Path,
@@ -40,7 +52,22 @@ pub fn process(
     title: Option<&str>,
     config: &Config,
 ) -> Result<WriteResult, MinutesError> {
-    process_with_progress(audio_path, content_type, title, config, |_| {})
+    process_with_sidecar(audio_path, content_type, title, config, None, |_| {})
+}
+
+/// Process an audio file with optional sidecar metadata (from iPhone, etc.).
+pub fn process_with_sidecar<F>(
+    audio_path: &Path,
+    content_type: ContentType,
+    title: Option<&str>,
+    config: &Config,
+    sidecar: Option<&SidecarMetadata>,
+    on_progress: F,
+) -> Result<WriteResult, MinutesError>
+where
+    F: FnMut(PipelineStage),
+{
+    process_with_progress_and_sidecar(audio_path, content_type, title, config, sidecar, on_progress)
 }
 
 pub fn process_with_progress<F>(
@@ -48,6 +75,20 @@ pub fn process_with_progress<F>(
     content_type: ContentType,
     title: Option<&str>,
     config: &Config,
+    on_progress: F,
+) -> Result<WriteResult, MinutesError>
+where
+    F: FnMut(PipelineStage),
+{
+    process_with_progress_and_sidecar(audio_path, content_type, title, config, None, on_progress)
+}
+
+fn process_with_progress_and_sidecar<F>(
+    audio_path: &Path,
+    content_type: ContentType,
+    title: Option<&str>,
+    config: &Config,
+    sidecar: Option<&SidecarMetadata>,
     mut on_progress: F,
 ) -> Result<WriteResult, MinutesError>
 where
@@ -254,22 +295,31 @@ where
         .map(|entity| entity.label.clone())
         .collect();
 
+    // Determine source field: sidecar overrides default, normalize to "voice-memos" (plural)
+    let source = if let Some(s) = sidecar.and_then(|s| s.source.clone()) {
+        Some(s)
+    } else {
+        match content_type {
+            ContentType::Memo => Some("voice-memos".into()),
+            ContentType::Meeting => None,
+            ContentType::Dictation => Some("dictation".into()),
+        }
+    };
+
     let frontmatter = Frontmatter {
         title: auto_title,
         r#type: content_type,
         date: Local::now(),
         duration,
-        source: match content_type {
-            ContentType::Memo => Some("voice-memo".into()),
-            ContentType::Meeting => None,
-            ContentType::Dictation => Some("dictation".into()),
-        },
+        source,
         status,
         tags: vec![],
         attendees,
         calendar_event: calendar_event_title,
         people,
         entities,
+        device: sidecar.and_then(|s| s.device.clone()),
+        captured_at: sidecar.and_then(|s| s.captured_at),
         context: pre_context,
         action_items: structured_actions,
         decisions: structured_decisions,

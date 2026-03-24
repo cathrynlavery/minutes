@@ -54,6 +54,10 @@ pub struct Frontmatter {
     #[serde(default, skip_serializing_if = "EntityLinks::is_empty")]
     pub entities: EntityLinks,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<DateTime<Local>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_items: Vec<ActionItem>,
@@ -362,6 +366,8 @@ mod tests {
             calendar_event: None,
             people: vec![],
             entities: EntityLinks::default(),
+            device: None,
+            captured_at: None,
             context: None,
             action_items: vec![],
             decisions: vec![],

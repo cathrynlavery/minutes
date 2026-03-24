@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::error::WatchError;
 use crate::markdown::ContentType;
-use crate::pipeline;
+use crate::pipeline::{self, SidecarMetadata};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,9 @@ use std::time::Duration;
 // Folder watcher event loop:
 //
 //   [detect new file]
+//        │
+//        ▼
+//   [skip .icloud stubs + processed/ + failed/]
 //        │
 //        ▼
 //   [settle check: size stable across 2 checks?]
@@ -26,8 +29,17 @@ use std::time::Duration;
 //        │ no match → skip
 //        │ match
 //        ▼
+//   [probe audio duration (symphonia)]
+//        │ <threshold → ContentType::Memo (skip diarize)
+//        │ >=threshold → ContentType::Meeting
+//        │ probe failed → use config.watch.type
+//        ▼
+//   [read sidecar JSON if present]
+//        │ found → enrich frontmatter (device, source)
+//        │ missing/malformed → proceed without
+//        ▼
 //   [run pipeline: transcribe → write markdown]
-//        │ success → move to processed/
+//        │ success → move to processed/ + emit event + notify
 //        │ failure → move to failed/
 //        ▼
 //   [release lock]
@@ -161,15 +173,135 @@ fn move_to(file: &Path, subdir: &str) -> Result<PathBuf, WatchError> {
     Ok(dest)
 }
 
-/// Process a single file through the pipeline.
-fn process_file(path: &Path, config: &Config) -> Result<(), WatchError> {
-    let content_type = if config.watch.r#type == "meeting" {
+/// Check if a file is an iCloud eviction stub (.icloud placeholder).
+fn is_icloud_stub(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.') && n.ends_with(".icloud"))
+}
+
+/// Probe audio duration from container metadata using symphonia.
+/// Returns None if the file can't be probed (corrupt, unsupported, etc.).
+fn audio_duration(path: &Path) -> Option<std::time::Duration> {
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &Default::default(), &Default::default())
+        .ok()?;
+
+    let track = probed.format.default_track()?;
+    let params = &track.codec_params;
+
+    let n_frames = params.n_frames?;
+    let sample_rate = params.sample_rate?;
+    if sample_rate == 0 {
+        return None;
+    }
+
+    Some(std::time::Duration::from_secs_f64(
+        n_frames as f64 / sample_rate as f64,
+    ))
+}
+
+/// Read optional sidecar JSON file (e.g., from Apple Shortcut).
+/// Returns None if sidecar doesn't exist or is malformed — always best-effort.
+fn read_sidecar(audio_path: &Path) -> Option<SidecarMetadata> {
+    let sidecar_path = audio_path.with_extension("json");
+    if !sidecar_path.exists() {
+        return None;
+    }
+
+    match fs::read_to_string(&sidecar_path) {
+        Ok(contents) => match serde_json::from_str::<SidecarMetadata>(&contents) {
+            Ok(meta) => {
+                tracing::info!(
+                    sidecar = %sidecar_path.display(),
+                    device = ?meta.device,
+                    "sidecar metadata loaded"
+                );
+                // Clean up sidecar file after reading
+                fs::remove_file(&sidecar_path).ok();
+                Some(meta)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    sidecar = %sidecar_path.display(),
+                    error = %e,
+                    "malformed sidecar JSON — processing without metadata"
+                );
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                sidecar = %sidecar_path.display(),
+                error = %e,
+                "could not read sidecar — processing without metadata"
+            );
+            None
+        }
+    }
+}
+
+/// Determine content type based on audio duration and config.
+/// Duration-based routing takes priority over config.watch.type.
+/// Set dictation_threshold_secs = 0 to disable duration-based routing.
+fn determine_content_type(path: &Path, config: &Config) -> ContentType {
+    let threshold = config.watch.dictation_threshold_secs;
+
+    if threshold > 0 {
+        if let Some(duration) = audio_duration(path) {
+            let secs = duration.as_secs();
+            let content_type = if secs < threshold {
+                ContentType::Memo
+            } else {
+                ContentType::Meeting
+            };
+            tracing::info!(
+                path = %path.display(),
+                duration_secs = secs,
+                threshold,
+                content_type = ?content_type,
+                "duration-based routing"
+            );
+            return content_type;
+        }
+        tracing::debug!(
+            path = %path.display(),
+            "could not probe duration — falling back to config type"
+        );
+    }
+
+    // Fallback: use config.watch.type
+    if config.watch.r#type == "meeting" {
         ContentType::Meeting
     } else {
         ContentType::Memo
-    };
+    }
+}
 
-    match pipeline::process(path, content_type, None, config) {
+/// Process a single file through the pipeline.
+fn process_file(path: &Path, config: &Config) -> Result<(), WatchError> {
+    let content_type = determine_content_type(path, config);
+    let sidecar = read_sidecar(path);
+
+    match pipeline::process_with_sidecar(
+        path,
+        content_type,
+        None,
+        config,
+        sidecar.as_ref(),
+        |_| {},
+    ) {
         Ok(result) => {
             tracing::info!(
                 input = %path.display(),
@@ -177,12 +309,28 @@ fn process_file(path: &Path, config: &Config) -> Result<(), WatchError> {
                 words = result.word_count,
                 "file processed successfully"
             );
+
+            // Emit WatchProcessed event (existing)
             crate::events::append_event(crate::events::MinutesEvent::WatchProcessed {
                 path: result.path.display().to_string(),
                 title: result.title.clone(),
                 word_count: result.word_count,
                 source_path: path.display().to_string(),
             });
+
+            // Emit VoiceMemoProcessed event for voice memos (enables agent reactivity)
+            if content_type == ContentType::Memo {
+                crate::events::append_event(
+                    crate::events::MinutesEvent::VoiceMemoProcessed {
+                        path: result.path.display().to_string(),
+                        title: result.title.clone(),
+                        word_count: result.word_count,
+                        source_path: path.display().to_string(),
+                        device: sidecar.as_ref().and_then(|s| s.device.clone()),
+                    },
+                );
+            }
+
             move_to(path, "processed")?;
             Ok(())
         }
@@ -315,6 +463,17 @@ fn handle_file_event(path: &Path, settle_delay: u64, config: &Config) {
                 return;
             }
         }
+    }
+
+    // Skip iCloud eviction stubs (.NAME.icloud placeholder files)
+    if is_icloud_stub(path) {
+        tracing::debug!(path = %path.display(), "skipping iCloud stub");
+        return;
+    }
+
+    // Skip sidecar JSON files (processed alongside their audio)
+    if path.extension().and_then(|e| e.to_str()) == Some("json") {
+        return;
     }
 
     // Check extension
@@ -453,6 +612,76 @@ mod tests {
         release_lock();
         assert!(acquire_lock().is_ok());
         release_lock();
+    }
+
+    #[test]
+    fn is_icloud_stub_detects_stubs() {
+        assert!(is_icloud_stub(Path::new(".recording.m4a.icloud")));
+        assert!(is_icloud_stub(Path::new(".test.icloud")));
+        assert!(!is_icloud_stub(Path::new("recording.m4a")));
+        assert!(!is_icloud_stub(Path::new("icloud")));
+        assert!(!is_icloud_stub(Path::new(".hidden_file")));
+    }
+
+    #[test]
+    fn read_sidecar_returns_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let audio = dir.path().join("test.m4a");
+        fs::write(&audio, "audio data").unwrap();
+        assert!(read_sidecar(&audio).is_none());
+    }
+
+    #[test]
+    fn read_sidecar_parses_valid_json() {
+        let dir = TempDir::new().unwrap();
+        let audio = dir.path().join("test.m4a");
+        let sidecar = dir.path().join("test.json");
+        fs::write(&audio, "audio data").unwrap();
+        fs::write(
+            &sidecar,
+            r#"{"device": "iPhone", "source": "voice-memos"}"#,
+        )
+        .unwrap();
+
+        let meta = read_sidecar(&audio).unwrap();
+        assert_eq!(meta.device.as_deref(), Some("iPhone"));
+        assert_eq!(meta.source.as_deref(), Some("voice-memos"));
+        // Sidecar should be cleaned up after reading
+        assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn read_sidecar_handles_malformed_json() {
+        let dir = TempDir::new().unwrap();
+        let audio = dir.path().join("test.m4a");
+        let sidecar = dir.path().join("test.json");
+        fs::write(&audio, "audio data").unwrap();
+        fs::write(&sidecar, "not valid json {{{").unwrap();
+
+        assert!(read_sidecar(&audio).is_none());
+    }
+
+    #[test]
+    fn determine_content_type_uses_threshold() {
+        let mut config = Config::default();
+        config.watch.dictation_threshold_secs = 120;
+
+        // When we can't probe duration, falls back to config type
+        let path = Path::new("/nonexistent/test.m4a");
+        let ct = determine_content_type(path, &config);
+        // Default config.watch.type is "memo"
+        assert_eq!(ct, ContentType::Memo);
+    }
+
+    #[test]
+    fn determine_content_type_disabled_when_zero() {
+        let mut config = Config::default();
+        config.watch.dictation_threshold_secs = 0;
+        config.watch.r#type = "meeting".into();
+
+        let path = Path::new("/nonexistent/test.m4a");
+        let ct = determine_content_type(path, &config);
+        assert_eq!(ct, ContentType::Meeting);
     }
 
     #[test]

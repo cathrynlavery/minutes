@@ -66,14 +66,17 @@
 **Effort:** L (human: ~3 weeks / CC: ~3-4 hours)
 **Depends on:** Dictation Lite shipping first. Model preload pattern from dictation.rs provides the foundation.
 
-## P2: Cross-Device Dictation (Phone → Mac Pipeline)
-**What:** Enable voice memos recorded on iPhone to be processed as dictation — text goes to clipboard/daily note instead of a full meeting markdown file. The folder watcher already handles iPhone voice memos via iCloud sync; this adds a "dictation mode" to the watcher that outputs shorter, clipboard-ready text instead of full meeting notes.
-**Why:** "Record a thought on your phone while walking, it becomes searchable text on your Mac." High convenience, leverages existing watcher infrastructure. No new audio capture code needed — iPhone already records, iCloud already syncs.
-**Pros:** Extends dictation beyond the desk. Uses existing watch.rs + iCloud sync pipeline. Low incremental effort since the dictation pipeline (transcribe → cleanup → daily note) already exists.
-**Cons:** Depends on iCloud sync latency (~5-30s). Needs a way to distinguish "quick dictation memo" from "long meeting recording" in the watcher (file duration threshold or folder convention).
-**Context:** Identified as second-highest-leverage follow-up during dictation CEO review (2026-03-23). The watcher already processes voice memos — this is about routing short memos through the dictation output path instead of the meeting output path.
-**Effort:** M (human: ~1 week / CC: ~1 hour)
-**Depends on:** Dictation Lite shipping. Watcher already handles voice memos — this adds a dictation-aware routing mode.
+## ~~P2: Cross-Device Dictation (Phone → Mac Pipeline)~~ DONE
+**Shipped:** 2026-03-24. Duration-based routing in watch.rs, sidecar JSON metadata, iCloud stub filtering, VoiceMemoProcessed events, SessionStart hook with recent memos, `recent_ideas` MCP resource, `/minutes ideas` skill. See `docs/designs/cross-device-ghost-context.md`.
+
+## P2: Full Ambient Memory (Voice Memo Intelligence)
+**What:** Upgrade voice memo pipeline with LLM auto-classification (person, project, topic tags), intent/decision extraction on voice memos, and include voice memos in `/minutes weekly` synthesis alongside meetings.
+**Why:** Transforms voice memos from "searchable text" to "intelligent entries" that Claude can reason about structurally. The ghost context layer (Approach B) establishes the capture pipeline; this adds the intelligence layer on top.
+**Pros:** Voice memos become first-class meeting intelligence. Auto-tagging eliminates manual organization. Weekly synthesis surfaces cross-memo patterns.
+**Cons:** LLM classification adds latency (~2-5s per memo) and cost. May be overkill for very short memos (<15s). Needs careful prompt engineering to avoid over-extraction.
+**Context:** Deferred as Approach C during cross-device ghost context CEO review (2026-03-24). The foundation (Approach B: duration routing + sidecar metadata + ghost context) must ship first.
+**Effort:** L (human: ~3 weeks / CC: ~3-4 hours)
+**Depends on:** Cross-device ghost context layer shipping first (Approach B).
 
 ## P3: Create DESIGN.md
 **What:** Formalize the implicit design system (CSS variables, component patterns, typography, spacing, color usage) into a DESIGN.md file.
