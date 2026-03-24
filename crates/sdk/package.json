@@ -1,12 +1,13 @@
 {
   "name": "minutes-sdk",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Conversation memory SDK — query meeting transcripts, decisions, and action items from any AI agent or application",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "files": [
-    "dist/"
+    "dist/",
+    "README.md"
   ],
   "keywords": [
     "meeting",
