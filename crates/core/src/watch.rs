@@ -294,14 +294,8 @@ fn process_file(path: &Path, config: &Config) -> Result<(), WatchError> {
     let content_type = determine_content_type(path, config);
     let sidecar = read_sidecar(path);
 
-    match pipeline::process_with_sidecar(
-        path,
-        content_type,
-        None,
-        config,
-        sidecar.as_ref(),
-        |_| {},
-    ) {
+    match pipeline::process_with_sidecar(path, content_type, None, config, sidecar.as_ref(), |_| {})
+    {
         Ok(result) => {
             tracing::info!(
                 input = %path.display(),
@@ -320,15 +314,13 @@ fn process_file(path: &Path, config: &Config) -> Result<(), WatchError> {
 
             // Emit VoiceMemoProcessed event for voice memos (enables agent reactivity)
             if content_type == ContentType::Memo {
-                crate::events::append_event(
-                    crate::events::MinutesEvent::VoiceMemoProcessed {
-                        path: result.path.display().to_string(),
-                        title: result.title.clone(),
-                        word_count: result.word_count,
-                        source_path: path.display().to_string(),
-                        device: sidecar.as_ref().and_then(|s| s.device.clone()),
-                    },
-                );
+                crate::events::append_event(crate::events::MinutesEvent::VoiceMemoProcessed {
+                    path: result.path.display().to_string(),
+                    title: result.title.clone(),
+                    word_count: result.word_count,
+                    source_path: path.display().to_string(),
+                    device: sidecar.as_ref().and_then(|s| s.device.clone()),
+                });
             }
 
             move_to(path, "processed")?;
@@ -637,11 +629,7 @@ mod tests {
         let audio = dir.path().join("test.m4a");
         let sidecar = dir.path().join("test.json");
         fs::write(&audio, "audio data").unwrap();
-        fs::write(
-            &sidecar,
-            r#"{"device": "iPhone", "source": "voice-memos"}"#,
-        )
-        .unwrap();
+        fs::write(&sidecar, r#"{"device": "iPhone", "source": "voice-memos"}"#).unwrap();
 
         let meta = read_sidecar(&audio).unwrap();
         assert_eq!(meta.device.as_deref(), Some("iPhone"));

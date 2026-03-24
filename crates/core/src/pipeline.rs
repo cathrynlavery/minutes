@@ -67,7 +67,14 @@ pub fn process_with_sidecar<F>(
 where
     F: FnMut(PipelineStage),
 {
-    process_with_progress_and_sidecar(audio_path, content_type, title, config, sidecar, on_progress)
+    process_with_progress_and_sidecar(
+        audio_path,
+        content_type,
+        title,
+        config,
+        sidecar,
+        on_progress,
+    )
 }
 
 pub fn process_with_progress<F>(
