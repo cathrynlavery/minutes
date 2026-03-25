@@ -811,3 +811,76 @@ html, body {
     border-top: 1px solid var(--border-color);
   }
 }
+
+/* ── People Map ─────────────────────────────────────────────── */
+
+.people-header {
+  padding: 16px 20px 8px;
+}
+.people-header h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.people-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 8px 20px 20px;
+}
+.person-card {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.person-card:hover {
+  border-color: var(--accent-color, #4a9eff);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.person-card.losing-touch {
+  border-left: 3px solid #f59e0b;
+}
+.person-card.has-commitments {
+  border-left: 3px solid #6366f1;
+}
+.person-card-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.person-card-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted-color, #888);
+  margin-bottom: 6px;
+}
+.person-card-topics {
+  font-size: 11px;
+  color: var(--muted-color, #888);
+  margin-bottom: 6px;
+  font-style: italic;
+}
+.person-card-status {
+  font-size: 12px;
+  font-weight: 500;
+}
+.person-card-status.losing-touch {
+  color: #f59e0b;
+}
+.person-card-status.has-commitments {
+  color: #6366f1;
+}
+.person-card-status.clear {
+  color: #22c55e;
+}
+.person-card-score {
+  font-size: 11px;
+  color: var(--muted-color, #888);
+  margin-top: 4px;
+}
+.stat-warn .stat-value {
+  color: #f59e0b;
+}

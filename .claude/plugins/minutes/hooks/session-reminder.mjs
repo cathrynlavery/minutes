@@ -91,9 +91,57 @@ try {
   // Non-fatal — skip voice memo scan
 }
 
+// Scan relationship graph for proactive intelligence (from SQLite index)
+let relationshipContext = "";
+try {
+  const { execFileSync } = await import("child_process");
+  const minutesBin = join(homedir(), ".local", "bin", "minutes");
+  if (existsSync(minutesBin)) {
+    // Get people data (auto-rebuilds if needed)
+    const peopleRaw = execFileSync(minutesBin, ["people", "--json", "--limit", "10"], {
+      encoding: "utf-8",
+      timeout: 3000,
+    });
+    const people = JSON.parse(peopleRaw);
+
+    if (Array.isArray(people) && people.length > 0) {
+      // Losing touch alerts
+      const losingTouch = people.filter((p) => p.losing_touch);
+      if (losingTouch.length > 0) {
+        const alerts = losingTouch
+          .slice(0, 3)
+          .map((p) => `${p.name} (${p.meeting_count} meetings, last ${Math.round(p.days_since)}d ago)`)
+          .join(", ");
+        relationshipContext += `\n\nLosing touch: ${alerts}. Consider reaching out.`;
+      }
+
+      // Stale commitments
+      try {
+        const commitsRaw = execFileSync(minutesBin, ["commitments", "--json"], {
+          encoding: "utf-8",
+          timeout: 3000,
+        });
+        const commitments = JSON.parse(commitsRaw);
+        const stale = Array.isArray(commitments) ? commitments.filter((c) => c.status === "stale") : [];
+        if (stale.length > 0) {
+          const staleList = stale
+            .slice(0, 3)
+            .map((c) => `"${c.text}" for ${c.person_name || "unknown"}`)
+            .join("; ");
+          relationshipContext += `\n\nStale commitments (overdue): ${staleList}. Mention if relevant to today's work.`;
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+  }
+} catch {
+  // Non-fatal — relationship graph not available or not yet built
+}
+
 // Output a reminder for Claude to check the calendar
 const output = {
-  additionalContext: `Meeting reminder check: The user is an active Minutes user (has used /minutes prep before). If a Google Calendar MCP tool is available (gcal_list_events), check if the user has a meeting in the next 60 minutes. If they do, briefly mention it: "You have [meeting] in [N] minutes. Run /minutes prep to go in prepared." Keep it to one line — don't be pushy. If no calendar tool is available, skip silently. Do NOT mention this check if there are no upcoming meetings.${memoContext}`,
+  additionalContext: `Meeting reminder check: The user is an active Minutes user (has used /minutes prep before). If a Google Calendar MCP tool is available (gcal_list_events), check if the user has a meeting in the next 60 minutes. If they do, briefly mention it: "You have [meeting] in [N] minutes. Run /minutes prep to go in prepared." Keep it to one line — don't be pushy. If no calendar tool is available, skip silently. Do NOT mention this check if there are no upcoming meetings.${memoContext}${relationshipContext}`,
 };
 
 console.log(JSON.stringify(output));
