@@ -129,7 +129,7 @@ minutes/
 ├── BUILD-STATUS.md            # Build progress tracker
 ├── Cargo.toml                 # Workspace root
 ├── crates/
-│   ├── core/src/              # 18 Rust modules — the engine
+│   ├── core/src/              # 25 Rust modules — the engine
 │   │   ├── capture.rs         # Audio capture (cpal)
 │   │   ├── transcribe.rs      # Whisper.cpp + symphonia format conversion
 │   │   ├── diarize.rs         # Pyannote subprocess
@@ -143,12 +143,23 @@ minutes/
 │   │   ├── pid.rs             # PID file lifecycle (flock atomic)
 │   │   ├── events.rs          # Append-only JSONL event log for agent reactivity
 │   │   ├── streaming_whisper.rs # Progressive transcription (partial results every 2s)
+│   │   ├── streaming.rs       # Streaming state machine for live transcription
 │   │   ├── logging.rs         # Structured JSON logging
-│   │   └── error.rs           # Per-module error types (thiserror)
-│   ├── cli/                   # CLI binary — 15 commands
+│   │   ├── error.rs           # Per-module error types (thiserror)
+│   │   ├── calendar.rs        # Calendar integration (upcoming meetings)
+│   │   ├── daily_notes.rs     # Daily note append for dictation/memos
+│   │   ├── dictation.rs       # Dictation mode (speak → clipboard + daily note)
+│   │   ├── health.rs          # System health checks (model, mic, disk, watcher)
+│   │   ├── hotkey_macos.rs    # macOS global hotkey registration
+│   │   ├── screen.rs          # Screen context capture (screenshots)
+│   │   ├── vad.rs             # Voice activity detection
+│   │   └── vault.rs           # Obsidian/Logseq vault sync
+│   ├── cli/                   # CLI binary — 26 commands
 │   ├── reader/                # Lightweight read-only meeting parser (no audio deps)
-│   └── mcp/                   # MCP server — 10 tools + 7 resources + MCP App dashboard
+│   ├── assets/                # Bundled assets (demo.wav)
+│   └── mcp/                   # MCP server — 10 tools + 6 resources + MCP App dashboard
 │       └── ui/                # Interactive dashboard (vanilla TS, builds to single-file HTML)
+├── site/                      # Landing page (Next.js + Remotion demo player)
 ├── tauri/                     # Tauri v2 menu bar app + singleton AI Assistant
 ├── .claude/plugins/minutes/   # Claude Code plugin — 12 skills + 1 agent + 2 hooks
 └── tests/integration/         # Integration tests (including real whisper tests)
@@ -204,18 +215,19 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 
 ## Test Coverage
 
-136 tests total:
-- 90 unit tests (all core modules including screen, calendar, config, watch cross-device, streaming whisper)
-- 8 integration tests (pipeline, permissions, collisions, search filters)
-- 2 real whisper tests (transcription + no-speech detection with tiny model)
+~220 tests total:
+- 141 core unit tests (all modules including screen, calendar, config, watch, streaming whisper, vault, dictation, health, vad, hotkey)
+- 10 integration tests (pipeline, permissions, collisions, search filters)
+- 23 Tauri unit tests (commands, call detection)
+- 2 CLI tests
+- 6 reader crate tests (search, parse)
 - 30 reader.ts unit tests (vitest — frontmatter parsing, listing, search, actions, profiles; reader lives in crates/sdk/src/reader.ts)
 - 8 MCP integration tests (CLI JSON output, TypeScript compilation)
-- 4 hook unit tests (post-record hook: routing, edge cases, error handling)
-- 1 screen context test (screenshot listing and sorting)
+- 1 hook unit test (post-record hook)
 
 ## Claude Ecosystem Integration
 
-- **MCP Server**: 10 tools + 7 resources for Claude Desktop / Cowork / Dispatch (`npx minutes-mcp` for zero-install)
+- **MCP Server**: 10 tools + 6 resources for Claude Desktop / Cowork / Dispatch (`npx minutes-mcp` for zero-install)
 - **Claude Code Plugin**: 12 skills (8 core + 3 interactive lifecycle + 1 ghost context) + meeting-analyst agent + PostToolUse hook
 - **Interactive meeting lifecycle**: `/minutes prep` → record → `/minutes debrief` → `/minutes weekly` with skill chaining via `.prep.md` files
 - **Conversational summarization**: Claude reads transcripts via MCP, no API key needed
