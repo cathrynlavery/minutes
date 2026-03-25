@@ -109,6 +109,21 @@ enum Commands {
         name: String,
     },
 
+    /// Show relationship overview: top contacts, commitments, losing-touch alerts
+    People {
+        /// Force full index rebuild from markdown files
+        #[arg(long)]
+        rebuild: bool,
+
+        /// Output raw JSON instead of formatted table
+        #[arg(long)]
+        json: bool,
+
+        /// Maximum number of people to show
+        #[arg(short, long, default_value = "15")]
+        limit: usize,
+    },
+
     /// Research a topic across meetings, decisions, and open follow-ups
     Research {
         /// Topic or question to investigate across meetings
@@ -182,6 +197,10 @@ enum Commands {
         /// List available models
         #[arg(long)]
         list: bool,
+
+        /// Download speaker diarization models (~34 MB)
+        #[arg(long)]
+        diarization: bool,
     },
 
     /// Inspect or register the meetings directory as a QMD collection
@@ -349,6 +368,11 @@ fn main() -> Result<()> {
             stale_after_days,
         } => cmd_consistency(owner.as_deref(), stale_after_days, &config),
         Commands::Person { name } => cmd_person(&name, &config),
+        Commands::People {
+            rebuild,
+            json,
+            limit,
+        } => cmd_people(rebuild, json, limit, &config),
         Commands::Research {
             query,
             content_type,
@@ -382,7 +406,11 @@ fn main() -> Result<()> {
         Commands::Watch { dir } => cmd_watch(dir.as_deref(), &config),
         Commands::Dictate { stdout, note_only } => cmd_dictate(stdout, note_only, &config),
         Commands::Devices => cmd_devices(),
-        Commands::Setup { model, list } => cmd_setup(&model, list),
+        Commands::Setup {
+            model,
+            list,
+            diarization,
+        } => cmd_setup(&model, list, diarization),
         Commands::Qmd { action, collection } => cmd_qmd(&action, &collection, &config),
         Commands::Service { action } => {
             #[cfg(target_os = "macos")]
@@ -630,6 +658,11 @@ fn cmd_stop(_config: &Config) -> Result<()> {
                 let result = std::fs::read_to_string(&result_path)?;
                 println!("{}", result);
                 std::fs::remove_file(&result_path).ok();
+
+                // Update relationship graph index
+                if let Err(e) = minutes_core::graph::rebuild_index(_config) {
+                    tracing::warn!(error = %e, "graph index rebuild failed (non-fatal)");
+                }
             } else {
                 eprintln!("Recording stopped but no result file found.");
             }
@@ -936,6 +969,113 @@ fn cmd_person(name: &str, config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn cmd_people(rebuild: bool, json: bool, limit: usize, config: &Config) -> Result<()> {
+    use minutes_core::graph;
+
+    if rebuild || !graph::db_path().exists() {
+        eprintln!("Building relationship index...");
+        let stats = graph::rebuild_index(config).map_err(|e| anyhow::anyhow!("{}", e))?;
+        eprintln!(
+            "Index rebuilt: {} people, {} meetings, {} commitments in {}ms",
+            stats.people_count, stats.meeting_count, stats.commitment_count, stats.rebuild_ms
+        );
+        if !stats.alias_suggestions.is_empty() {
+            eprintln!("\nPossible duplicates:");
+            for alias in &stats.alias_suggestions {
+                eprintln!(
+                    "  {} ↔ {} ({} shared meetings)",
+                    alias.name_a, alias.name_b, alias.shared_meetings
+                );
+            }
+        }
+        eprintln!();
+    }
+
+    let people = graph::relationship_map(config).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&people)?);
+        return Ok(());
+    }
+
+    if people.is_empty() {
+        eprintln!(
+            "No people found. Record some meetings first, then run: minutes people --rebuild"
+        );
+        return Ok(());
+    }
+
+    // Top contacts
+    eprintln!("TOP CONTACTS (by relationship score)");
+    for person in people.iter().take(limit) {
+        let status = if person.losing_touch {
+            "\x1b[33m⚠ losing touch\x1b[0m"
+        } else if person.open_commitments > 0 {
+            &format!(
+                "{} open commitment{}",
+                person.open_commitments,
+                if person.open_commitments != 1 {
+                    "s"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            "\x1b[32m✓ all clear\x1b[0m"
+        };
+
+        let last = if person.days_since < 1.0 {
+            "today".to_string()
+        } else if person.days_since < 2.0 {
+            "yesterday".to_string()
+        } else {
+            format!("{}d ago", person.days_since as i64)
+        };
+
+        eprintln!(
+            "  {:<20} {} meeting{}  last: {:<12} {}",
+            person.name,
+            person.meeting_count,
+            if person.meeting_count != 1 { "s" } else { " " },
+            last,
+            status
+        );
+    }
+
+    // Stale commitments
+    let commitments =
+        graph::query_commitments(config, None).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let stale: Vec<_> = commitments.iter().filter(|c| c.status == "stale").collect();
+    if !stale.is_empty() {
+        eprintln!("\nSTALE COMMITMENTS");
+        for c in &stale {
+            let who = c.person_name.as_deref().unwrap_or("unknown");
+            eprintln!(
+                "  • {} (assigned: {}, due: {})",
+                c.text,
+                who,
+                c.due_date.as_deref().unwrap_or("no date")
+            );
+        }
+    }
+
+    // Losing touch
+    let losing: Vec<_> = people.iter().filter(|p| p.losing_touch).collect();
+    if !losing.is_empty() {
+        eprintln!("\nLOSING TOUCH");
+        for person in &losing {
+            eprintln!(
+                "  {} — {} meetings total, last seen {}d ago",
+                person.name, person.meeting_count, person.days_since as i64
+            );
+        }
+    }
+
+    // Print JSON to stdout for programmatic consumption
+    println!("{}", serde_json::to_string_pretty(&people)?);
+    Ok(())
+}
+
 fn cmd_research(
     query: &str,
     content_type: Option<String>,
@@ -1088,7 +1228,7 @@ fn cmd_devices() -> Result<()> {
     Ok(())
 }
 
-fn cmd_setup(model: &str, list: bool) -> Result<()> {
+fn cmd_setup(model: &str, list: bool, diarization: bool) -> Result<()> {
     if list {
         eprintln!("Available whisper models:");
         eprintln!("  tiny      75 MB   (fastest, lowest quality)");
@@ -1096,7 +1236,14 @@ fn cmd_setup(model: &str, list: bool) -> Result<()> {
         eprintln!("  small    466 MB   (recommended default)");
         eprintln!("  medium   1.5 GB");
         eprintln!("  large-v3 3.1 GB   (best quality, slower)");
+        eprintln!();
+        eprintln!("Speaker diarization:");
+        eprintln!("  --diarization   34 MB   (pyannote-rs: segmentation + speaker embedding)");
         return Ok(());
+    }
+
+    if diarization {
+        return cmd_setup_diarization();
     }
 
     let valid_models = ["tiny", "base", "small", "medium", "large-v3"];
@@ -1120,20 +1267,104 @@ fn cmd_setup(model: &str, list: bool) -> Result<()> {
             dest.display(),
             size as f64 / 1_048_576.0
         );
-        return Ok(());
+    } else {
+        let url = format!(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
+            model
+        );
+
+        eprintln!("Downloading whisper model: {} ...", model);
+        download_file(&url, &dest)?;
+
+        // Update config hint
+        eprintln!("\nTo use this model, add to ~/.config/minutes/config.toml:");
+        eprintln!("  [transcription]");
+        eprintln!("  model = \"{}\"", model);
     }
 
-    let url = format!(
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{}.bin",
-        model
-    );
+    // Auto-download Silero VAD model (prevents transcription loops on non-English audio)
+    let vad_dest = model_dir.join("ggml-silero-vad.bin");
+    if !vad_dest.exists() {
+        let vad_url =
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-silero-vad.bin";
+        eprintln!("Downloading Silero VAD model (~2 MB) ...");
+        if let Err(e) = download_file(vad_url, &vad_dest) {
+            eprintln!(
+                "Warning: VAD model download failed ({}). Transcription will still work \
+                 but may produce loops on non-English audio.",
+                e
+            );
+        }
+    }
 
-    eprintln!("Downloading whisper model: {} ...", model);
+    // Also list available input devices
+    let devices = minutes_core::capture::list_input_devices();
+    if !devices.is_empty() {
+        eprintln!("\nAvailable audio input devices:");
+        for d in &devices {
+            eprintln!("  {}", d);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_setup_diarization() -> Result<()> {
+    use minutes_core::diarize;
+
+    let config = Config::default();
+    let model_dir = &config.diarization.model_path;
+    std::fs::create_dir_all(model_dir)?;
+
+    let models = [
+        (
+            diarize::SEGMENTATION_MODEL,
+            diarize::SEGMENTATION_MODEL_URL,
+            "segmentation",
+        ),
+        (
+            diarize::EMBEDDING_MODEL,
+            diarize::EMBEDDING_MODEL_URL,
+            "speaker embedding",
+        ),
+    ];
+
+    let mut all_exist = true;
+    for (filename, url, label) in &models {
+        let dest = model_dir.join(filename);
+        if dest.exists() {
+            let size = std::fs::metadata(&dest)?.len();
+            eprintln!(
+                "Already downloaded: {} ({:.1} MB)",
+                filename,
+                size as f64 / 1_048_576.0
+            );
+        } else {
+            all_exist = false;
+            eprintln!("Downloading {} model: {} ...", label, filename);
+            download_file(url, &dest)?;
+        }
+    }
+
+    if all_exist {
+        eprintln!("\nAll diarization models are installed.");
+    } else {
+        eprintln!("\nDiarization models installed.");
+    }
+
+    eprintln!("\nTo enable speaker diarization, add to ~/.config/minutes/config.toml:");
+    eprintln!("  [diarization]");
+    eprintln!("  engine = \"pyannote-rs\"");
+
+    Ok(())
+}
+
+/// Download a file from a URL to a destination path, with progress reporting.
+fn download_file(url: &str, dest: &std::path::Path) -> Result<()> {
     eprintln!("  From: {}", url);
     eprintln!("  To:   {}", dest.display());
 
-    // Download using ureq (cross-platform, no curl dependency)
-    let response = ureq::get(&url)
+    let response = ureq::get(url)
         .call()
         .map_err(|e| anyhow::anyhow!("download failed: {}. Check your internet connection.", e))?;
 
@@ -1144,7 +1375,7 @@ fn cmd_setup(model: &str, list: bool) -> Result<()> {
         .and_then(|v| v.parse::<u64>().ok());
 
     let mut reader = response.into_body().into_reader();
-    let tmp_dest = dest.with_extension("bin.partial");
+    let tmp_dest = dest.with_extension("partial");
     let mut file = std::fs::File::create(&tmp_dest)?;
     let mut downloaded: u64 = 0;
     let mut buf = vec![0u8; 64 * 1024];
@@ -1176,31 +1407,13 @@ fn cmd_setup(model: &str, list: bool) -> Result<()> {
     drop(file);
 
     // Rename from partial to final (atomic on most filesystems)
-    std::fs::rename(&tmp_dest, &dest).map_err(|e| {
+    std::fs::rename(&tmp_dest, dest).map_err(|e| {
         std::fs::remove_file(&tmp_dest).ok();
         anyhow::anyhow!("failed to save model: {}", e)
     })?;
 
-    let size = std::fs::metadata(&dest)?.len();
-    eprintln!(
-        "\nDone! Model saved to {} ({:.0} MB)",
-        dest.display(),
-        size as f64 / 1_048_576.0
-    );
-
-    // Update config hint
-    eprintln!("\nTo use this model, add to ~/.config/minutes/config.toml:");
-    eprintln!("  [transcription]");
-    eprintln!("  model = \"{}\"", model);
-
-    // Also list available input devices
-    let devices = minutes_core::capture::list_input_devices();
-    if !devices.is_empty() {
-        eprintln!("\nAvailable audio input devices:");
-        for d in &devices {
-            eprintln!("  {}", d);
-        }
-    }
+    let size = std::fs::metadata(dest)?.len();
+    eprintln!("  Done! Saved ({:.1} MB)", size as f64 / 1_048_576.0);
 
     Ok(())
 }
