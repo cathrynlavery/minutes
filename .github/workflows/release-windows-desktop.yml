@@ -37,12 +37,20 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-release-desktop-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Cache ONNX Runtime binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/dfbin
+          key: ${{ runner.os }}-ort-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "${TAURI_CLI_VERSION}" --locked
 
       - name: Build desktop installer (unsigned)
         working-directory: tauri/src-tauri
         run: cargo tauri build --ci --bundles nsis --no-sign
+        env:
+          CARGO_NET_RETRY: 3
 
       - name: Rename desktop binary
         shell: bash

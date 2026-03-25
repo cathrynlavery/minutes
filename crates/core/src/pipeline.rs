@@ -363,8 +363,10 @@ where
         }
 
         // Level 1: LLM suggestions for unmapped speakers
-        let mapped_labels: std::collections::HashSet<String> =
-            speaker_map.iter().map(|a| a.speaker_label.clone()).collect();
+        let mapped_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|a| a.speaker_label.clone())
+            .collect();
         let has_unmapped = transcript.lines().any(|line| {
             if let Some(rest) = line.strip_prefix('[') {
                 if let Some(bracket_end) = rest.find(']') {
@@ -387,7 +389,10 @@ where
         }
 
         // Apply high-confidence attributions to transcript
-        if speaker_map.iter().any(|a| a.confidence == diarize::Confidence::High) {
+        if speaker_map
+            .iter()
+            .any(|a| a.confidence == diarize::Confidence::High)
+        {
             transcript = diarize::apply_confirmed_names(&transcript, &speaker_map);
         }
     }

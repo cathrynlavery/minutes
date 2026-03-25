@@ -1432,7 +1432,11 @@ Short meeting.
         rebuild_index_at(&config, &db).unwrap();
         let conn = open_db(&db).unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM people WHERE slug = 'sarah'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM people WHERE slug = 'sarah'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1, "Sarah should appear once (deduped)");
     }
@@ -1449,7 +1453,11 @@ Short meeting.
         rebuild_index_at(&config, &db).unwrap();
         let conn = open_db(&db).unwrap();
         let stale: i64 = conn
-            .query_row("SELECT COUNT(*) FROM commitments WHERE status = 'stale'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM commitments WHERE status = 'stale'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(stale >= 1, "Past-due commitment should be stale");
     }

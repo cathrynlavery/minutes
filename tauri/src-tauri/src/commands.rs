@@ -2052,11 +2052,13 @@ pub async fn cmd_confirm_speaker(
         attr.confidence = minutes_core::diarize::Confidence::High;
         attr.source = minutes_core::diarize::AttributionSource::Manual;
     } else {
-        return Err(format!("Speaker '{}' not found in speaker_map", speaker_label));
+        return Err(format!(
+            "Speaker '{}' not found in speaker_map",
+            speaker_label
+        ));
     }
 
-    let new_body =
-        minutes_core::diarize::apply_confirmed_names(body, &frontmatter.speaker_map);
+    let new_body = minutes_core::diarize::apply_confirmed_names(body, &frontmatter.speaker_map);
     let new_yaml = serde_yaml::to_string(&frontmatter).map_err(|e| e.to_string())?;
     let new_content = format!("---\n{}---\n{}", new_yaml, new_body);
     std::fs::write(&path, new_content).map_err(|e| e.to_string())?;

@@ -64,10 +64,7 @@ pub struct SpeakerAttribution {
 }
 
 /// Rewrite speaker labels in a transcript for high-confidence attributions only.
-pub fn apply_confirmed_names(
-    transcript: &str,
-    attributions: &[SpeakerAttribution],
-) -> String {
+pub fn apply_confirmed_names(transcript: &str, attributions: &[SpeakerAttribution]) -> String {
     let high_map: std::collections::HashMap<&str, &str> = attributions
         .iter()
         .filter(|a| a.confidence == Confidence::High)
@@ -88,7 +85,12 @@ pub fn apply_confirmed_names(
                     let label = &inside[..space_pos];
                     if let Some(name) = high_map.get(label) {
                         let after = &rest[bracket_end..];
-                        output.push_str(&format!("[{} {}{}\n", name, &inside[space_pos + 1..], after));
+                        output.push_str(&format!(
+                            "[{} {}{}\n",
+                            name,
+                            &inside[space_pos + 1..],
+                            after
+                        ));
                         replaced = true;
                     }
                 }
@@ -630,12 +632,15 @@ mod tests {
     #[test]
     fn apply_confirmed_names_no_high_is_noop() {
         let transcript = "[SPEAKER_1 0:00] Hello\n";
-        let result = apply_confirmed_names(transcript, &[SpeakerAttribution {
-            speaker_label: "SPEAKER_1".into(),
-            name: "Mat".into(),
-            confidence: Confidence::Medium,
-            source: AttributionSource::Deterministic,
-        }]);
+        let result = apply_confirmed_names(
+            transcript,
+            &[SpeakerAttribution {
+                speaker_label: "SPEAKER_1".into(),
+                name: "Mat".into(),
+                confidence: Confidence::Medium,
+                source: AttributionSource::Deterministic,
+            }],
+        );
         assert_eq!(result, transcript);
     }
 

@@ -463,10 +463,16 @@ mod tests {
         }];
         let result = write(&fm, "transcript", None, None, &config).unwrap();
         let content = std::fs::read_to_string(&result.path).unwrap();
-        assert!(content.contains("speaker_map:"), "speaker_map should appear in YAML");
+        assert!(
+            content.contains("speaker_map:"),
+            "speaker_map should appear in YAML"
+        );
         assert!(content.contains("SPEAKER_1"), "speaker label should appear");
         assert!(content.contains("medium"), "confidence should be lowercase");
-        assert!(content.contains("deterministic"), "source should be lowercase");
+        assert!(
+            content.contains("deterministic"),
+            "source should be lowercase"
+        );
     }
 
     #[test]
@@ -479,7 +485,10 @@ mod tests {
         let fm = test_frontmatter(); // speaker_map: vec![]
         let result = write(&fm, "transcript", None, None, &config).unwrap();
         let content = std::fs::read_to_string(&result.path).unwrap();
-        assert!(!content.contains("speaker_map"), "empty speaker_map should be omitted");
+        assert!(
+            !content.contains("speaker_map"),
+            "empty speaker_map should be omitted"
+        );
     }
 
     #[test]

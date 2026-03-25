@@ -499,7 +499,13 @@ fn main() -> Result<()> {
             speaker,
             name,
             save_voice,
-        } => cmd_confirm(&meeting, speaker.as_deref(), name.as_deref(), save_voice, &config),
+        } => cmd_confirm(
+            &meeting,
+            speaker.as_deref(),
+            name.as_deref(),
+            save_voice,
+            &config,
+        ),
     }
 }
 
@@ -2571,7 +2577,9 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
     let my_name = match config.identity.name.as_ref() {
         Some(name) if !name.is_empty() => name.clone(),
         _ => {
-            eprintln!("Your name isn't set yet. This is needed so Minutes knows which speaker is you.");
+            eprintln!(
+                "Your name isn't set yet. This is needed so Minutes knows which speaker is you."
+            );
             eprint!("What's your name? ");
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
@@ -2587,7 +2595,8 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
                 let mut content = std::fs::read_to_string(&config_path)?;
                 if content.contains("[identity]") {
                     // Add name under existing [identity] section
-                    content = content.replace("[identity]", &format!("[identity]\nname = \"{}\"", name));
+                    content =
+                        content.replace("[identity]", &format!("[identity]\nname = \"{}\"", name));
                 } else {
                     content.push_str(&format!("\n[identity]\nname = \"{}\"\n", name));
                 }
@@ -2603,12 +2612,17 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
         eprintln!("Speaker diarization models aren't installed yet.");
         eprintln!("Run this first:  minutes setup --diarization");
         eprintln!("Then try:        minutes enroll");
-        return Err(anyhow::anyhow!("Diarization models required for voice enrollment."));
+        return Err(anyhow::anyhow!(
+            "Diarization models required for voice enrollment."
+        ));
     }
 
     // Step 3: Record or load audio
     eprintln!();
-    eprintln!("  \x1b[1;36m◉ Voice Enrollment\x1b[0m  \x1b[2mfor\x1b[0m \x1b[1m{}\x1b[0m", my_name);
+    eprintln!(
+        "  \x1b[1;36m◉ Voice Enrollment\x1b[0m  \x1b[2mfor\x1b[0m \x1b[1m{}\x1b[0m",
+        my_name
+    );
     eprintln!();
 
     let audio_path = if let Some(path) = file {
@@ -2619,7 +2633,10 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
         path.to_path_buf()
     } else {
         eprintln!("  This creates a voice profile so Minutes can identify you");
-        eprintln!("  in future meetings. Just talk normally for {} seconds.", duration);
+        eprintln!(
+            "  in future meetings. Just talk normally for {} seconds.",
+            duration
+        );
         eprintln!();
         eprintln!("  Tips:");
         eprintln!("  - Use the same mic you use for meetings");
@@ -2631,7 +2648,10 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
         std::io::stdin().read_line(&mut buf)?;
 
         eprintln!();
-        eprintln!("  \x1b[1;32m● REC\x1b[0m  \x1b[1mSpeak now!\x1b[0m  ({}s)", duration);
+        eprintln!(
+            "  \x1b[1;32m● REC\x1b[0m  \x1b[1mSpeak now!\x1b[0m  ({}s)",
+            duration
+        );
         eprintln!();
 
         let tmp_dir = std::env::temp_dir().join("minutes-enroll");
@@ -2668,7 +2688,10 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
     }
 
     if result.num_speakers > 1 {
-        eprintln!("  Note: detected {} voices — using the primary speaker.", result.num_speakers);
+        eprintln!(
+            "  Note: detected {} voices — using the primary speaker.",
+            result.num_speakers
+        );
         eprintln!("  For best results, enroll in a quiet room with just you speaking.");
     }
 
@@ -2709,7 +2732,10 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
         eprintln!();
         eprintln!("  \x1b[36mWhat happens next:\x1b[0m");
         eprintln!("  \x1b[2m›\x1b[0m Your voice will be auto-identified in future meetings");
-        eprintln!("  \x1b[2m›\x1b[0m Your lines show as \x1b[1m[{}]\x1b[0m instead of [SPEAKER_X]", p.name);
+        eprintln!(
+            "  \x1b[2m›\x1b[0m Your lines show as \x1b[1m[{}]\x1b[0m instead of [SPEAKER_X]",
+            p.name
+        );
         eprintln!("  \x1b[2m›\x1b[0m Run \x1b[33mminutes enroll\x1b[0m again to improve accuracy");
         eprintln!("  \x1b[2m›\x1b[0m Run \x1b[33mminutes voices\x1b[0m to see your profile");
     }
@@ -2721,7 +2747,11 @@ fn cmd_enroll(file: Option<&Path>, duration: u64, config: &Config) -> Result<()>
 }
 
 #[cfg(feature = "diarize")]
-fn extract_dominant_embedding(audio_path: &Path, dominant_speaker: &str, config: &Config) -> Result<Vec<f32>> {
+fn extract_dominant_embedding(
+    audio_path: &Path,
+    dominant_speaker: &str,
+    config: &Config,
+) -> Result<Vec<f32>> {
     use pyannote_rs::{EmbeddingExtractor, EmbeddingManager};
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
@@ -2737,53 +2767,93 @@ fn extract_dominant_embedding(audio_path: &Path, dominant_speaker: &str, config:
     let file = std::fs::File::open(audio_path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
-    if let Some(ext) = audio_path.extension().and_then(|e| e.to_str()) { hint.with_extension(ext); }
-    let probed = symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())?;
+    if let Some(ext) = audio_path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let probed = symphonia::default::get_probe().format(
+        &hint,
+        mss,
+        &FormatOptions::default(),
+        &MetadataOptions::default(),
+    )?;
     let mut format = probed.format;
-    let track = format.default_track().ok_or_else(|| anyhow::anyhow!("no audio track"))?;
+    let track = format
+        .default_track()
+        .ok_or_else(|| anyhow::anyhow!("no audio track"))?;
     let track_id = track.id;
-    let sample_rate = track.codec_params.sample_rate.ok_or_else(|| anyhow::anyhow!("no sample rate"))?;
+    let sample_rate = track
+        .codec_params
+        .sample_rate
+        .ok_or_else(|| anyhow::anyhow!("no sample rate"))?;
     let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
-    let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
+    let mut decoder =
+        symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
 
     let mut all_samples: Vec<f32> = Vec::new();
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
-            Err(symphonia::core::errors::Error::IoError(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break
+            }
             Err(e) => return Err(e.into()),
         };
-        if packet.track_id() != track_id { continue; }
+        if packet.track_id() != track_id {
+            continue;
+        }
         let decoded = decoder.decode(&packet)?;
         let spec = *decoded.spec();
         let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
         sample_buf.copy_interleaved_ref(decoded);
         for i in 0..sample_buf.samples().len() / channels {
             let mut sum = 0.0f32;
-            for c in 0..channels { sum += sample_buf.samples()[i * channels + c]; }
+            for c in 0..channels {
+                sum += sample_buf.samples()[i * channels + c];
+            }
             all_samples.push(sum / channels as f32);
         }
     }
-    let samples_i16: Vec<i16> = all_samples.iter().map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
+    let samples_i16: Vec<i16> = all_samples
+        .iter()
+        .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+        .collect();
 
-    let segments_iter = pyannote_rs::get_segments(&samples_i16, sample_rate, &seg_model).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let mut extractor = EmbeddingExtractor::new(&emb_model).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let segments_iter = pyannote_rs::get_segments(&samples_i16, sample_rate, &seg_model)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut extractor =
+        EmbeddingExtractor::new(&emb_model).map_err(|e| anyhow::anyhow!("{}", e))?;
     let mut manager = EmbeddingManager::new(usize::MAX);
     let threshold = config.diarization.threshold;
     let mut dominant_embeddings: Vec<Vec<f32>> = Vec::new();
 
     for segment_result in segments_iter {
         let segment = segment_result.map_err(|e| anyhow::anyhow!("{}", e))?;
-        let embedding: Vec<f32> = extractor.compute(&segment.samples).map_err(|e| anyhow::anyhow!("{}", e))?.collect();
-        let speaker_id = manager.search_speaker(embedding.clone(), threshold).map(|id| id.to_string()).unwrap_or_else(|| "0".to_string());
-        if format!("SPEAKER_{}", speaker_id) == dominant_speaker { dominant_embeddings.push(embedding); }
+        let embedding: Vec<f32> = extractor
+            .compute(&segment.samples)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .collect();
+        let speaker_id = manager
+            .search_speaker(embedding.clone(), threshold)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "0".to_string());
+        if format!("SPEAKER_{}", speaker_id) == dominant_speaker {
+            dominant_embeddings.push(embedding);
+        }
     }
 
-    if dominant_embeddings.is_empty() { return Err(anyhow::anyhow!("No embeddings for dominant speaker")); }
+    if dominant_embeddings.is_empty() {
+        return Err(anyhow::anyhow!("No embeddings for dominant speaker"));
+    }
     let dim = dominant_embeddings[0].len();
     let count = dominant_embeddings.len() as f32;
     let mut avg = vec![0.0f32; dim];
-    for emb in &dominant_embeddings { for (i, val) in emb.iter().enumerate() { avg[i] += val / count; } }
+    for emb in &dominant_embeddings {
+        for (i, val) in emb.iter().enumerate() {
+            avg[i] += val / count;
+        }
+    }
     Ok(avg)
 }
 
@@ -2797,7 +2867,10 @@ fn cmd_voices(delete: bool, json: bool) -> Result<()> {
     let conn = voice::open_db().map_err(|e| anyhow::anyhow!("{}", e))?;
     if delete {
         let profiles = voice::list_profiles(&conn).map_err(|e| anyhow::anyhow!("{}", e))?;
-        if profiles.is_empty() { eprintln!("No voice profiles enrolled."); return Ok(()); }
+        if profiles.is_empty() {
+            eprintln!("No voice profiles enrolled.");
+            return Ok(());
+        }
         for p in &profiles {
             voice::delete_profile(&conn, &p.person_slug).map_err(|e| anyhow::anyhow!("{}", e))?;
             eprintln!("Deleted voice profile: {}", p.name);
@@ -2805,12 +2878,25 @@ fn cmd_voices(delete: bool, json: bool) -> Result<()> {
         return Ok(());
     }
     let profiles = voice::list_profiles(&conn).map_err(|e| anyhow::anyhow!("{}", e))?;
-    if json { println!("{}", serde_json::to_string_pretty(&profiles)?); return Ok(()); }
-    if profiles.is_empty() { eprintln!("No voice profiles enrolled.\nRun: minutes enroll"); return Ok(()); }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&profiles)?);
+        return Ok(());
+    }
+    if profiles.is_empty() {
+        eprintln!("No voice profiles enrolled.\nRun: minutes enroll");
+        return Ok(());
+    }
     eprintln!("Voice profiles:");
     for p in &profiles {
-        eprintln!("  {} — {} samples, {} ({})", p.name, p.sample_count, p.source, p.model_version);
-        eprintln!("    enrolled: {}, updated: {}", p.enrolled_at.get(..10).unwrap_or(&p.enrolled_at), p.updated_at.get(..10).unwrap_or(&p.updated_at));
+        eprintln!(
+            "  {} — {} samples, {} ({})",
+            p.name, p.sample_count, p.source, p.model_version
+        );
+        eprintln!(
+            "    enrolled: {}, updated: {}",
+            p.enrolled_at.get(..10).unwrap_or(&p.enrolled_at),
+            p.updated_at.get(..10).unwrap_or(&p.updated_at)
+        );
     }
     Ok(())
 }
@@ -2826,7 +2912,10 @@ fn cmd_confirm(
     use minutes_core::voice;
 
     if !meeting_path.exists() {
-        return Err(anyhow::anyhow!("Meeting not found: {}", meeting_path.display()));
+        return Err(anyhow::anyhow!(
+            "Meeting not found: {}",
+            meeting_path.display()
+        ));
     }
 
     // Read the meeting file
@@ -2838,8 +2927,8 @@ fn cmd_confirm(
     }
 
     // Parse existing frontmatter
-    let mut frontmatter: minutes_core::markdown::Frontmatter =
-        serde_yaml::from_str(yaml_str).map_err(|e| anyhow::anyhow!("Failed to parse frontmatter: {}", e))?;
+    let mut frontmatter: minutes_core::markdown::Frontmatter = serde_yaml::from_str(yaml_str)
+        .map_err(|e| anyhow::anyhow!("Failed to parse frontmatter: {}", e))?;
 
     if frontmatter.speaker_map.is_empty() {
         eprintln!("No speaker attributions found in this meeting.");
@@ -2872,14 +2961,24 @@ fn cmd_confirm(
                 if let Some(ref embeddings) = meeting_embeddings {
                     if let Some(embedding) = embeddings.get(speaker_label) {
                         let conn = voice::open_db().map_err(|e| anyhow::anyhow!("{}", e))?;
-                        let slug: String = new_name.to_lowercase().chars()
+                        let slug: String = new_name
+                            .to_lowercase()
+                            .chars()
                             .map(|c: char| if c.is_alphanumeric() { c } else { '-' })
-                            .collect::<String>().trim_matches('-').to_string();
+                            .collect::<String>()
+                            .trim_matches('-')
+                            .to_string();
                         voice::save_profile_blended(&conn, &slug, new_name, embedding, "confirmed")
                             .map_err(|e| anyhow::anyhow!("{}", e))?;
-                        eprintln!("Voice profile saved for {} (from confirmed meeting)", new_name);
+                        eprintln!(
+                            "Voice profile saved for {} (from confirmed meeting)",
+                            new_name
+                        );
                     } else {
-                        eprintln!("Warning: no embedding found for {} in meeting sidecar", speaker_label);
+                        eprintln!(
+                            "Warning: no embedding found for {} in meeting sidecar",
+                            speaker_label
+                        );
                     }
                 } else {
                     eprintln!("Warning: no meeting embeddings sidecar found (meeting was processed before Level 3)");
@@ -2889,7 +2988,12 @@ fn cmd_confirm(
             return Err(anyhow::anyhow!(
                 "Speaker '{}' not found in speaker_map. Available: {}",
                 speaker_label,
-                frontmatter.speaker_map.iter().map(|a| a.speaker_label.as_str()).collect::<Vec<_>>().join(", ")
+                frontmatter
+                    .speaker_map
+                    .iter()
+                    .map(|a| a.speaker_label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     } else {
@@ -2915,7 +3019,10 @@ fn cmd_confirm(
             std::io::stdin().read_line(&mut input)?;
             let input = input.trim();
 
-            if input.is_empty() || input.eq_ignore_ascii_case("y") || input.eq_ignore_ascii_case("yes") {
+            if input.is_empty()
+                || input.eq_ignore_ascii_case("y")
+                || input.eq_ignore_ascii_case("yes")
+            {
                 attr.confidence = Confidence::High;
                 attr.source = AttributionSource::Manual;
                 eprintln!("    → Confirmed: {} = {}", attr.speaker_label, attr.name);
@@ -2935,13 +3042,26 @@ fn cmd_confirm(
             if let Some(ref embeddings) = meeting_embeddings {
                 let conn = voice::open_db().map_err(|e| anyhow::anyhow!("{}", e))?;
                 for attr in &frontmatter.speaker_map {
-                    if attr.confidence == Confidence::High && attr.source == AttributionSource::Manual {
+                    if attr.confidence == Confidence::High
+                        && attr.source == AttributionSource::Manual
+                    {
                         if let Some(embedding) = embeddings.get(&attr.speaker_label) {
-                            let slug: String = attr.name.to_lowercase().chars()
+                            let slug: String = attr
+                                .name
+                                .to_lowercase()
+                                .chars()
                                 .map(|c: char| if c.is_alphanumeric() { c } else { '-' })
-                                .collect::<String>().trim_matches('-').to_string();
-                            voice::save_profile_blended(&conn, &slug, &attr.name, embedding, "confirmed")
-                                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                                .collect::<String>()
+                                .trim_matches('-')
+                                .to_string();
+                            voice::save_profile_blended(
+                                &conn,
+                                &slug,
+                                &attr.name,
+                                embedding,
+                                "confirmed",
+                            )
+                            .map_err(|e| anyhow::anyhow!("{}", e))?;
                             eprintln!("  Voice profile saved for {}", attr.name);
                         }
                     }

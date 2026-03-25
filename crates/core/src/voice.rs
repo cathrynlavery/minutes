@@ -103,7 +103,13 @@ fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-pub fn save_profile(conn: &Connection, slug: &str, name: &str, embedding: &[f32], source: &str) -> Result<(), VoiceError> {
+pub fn save_profile(
+    conn: &Connection,
+    slug: &str,
+    name: &str,
+    embedding: &[f32],
+    source: &str,
+) -> Result<(), VoiceError> {
     let now = chrono::Local::now().to_rfc3339();
     let blob = embedding_to_bytes(embedding);
     conn.execute(
@@ -117,23 +123,41 @@ pub fn save_profile(conn: &Connection, slug: &str, name: &str, embedding: &[f32]
     Ok(())
 }
 
-pub fn save_profile_blended(conn: &Connection, slug: &str, name: &str, new_embedding: &[f32], source: &str) -> Result<(), VoiceError> {
+pub fn save_profile_blended(
+    conn: &Connection,
+    slug: &str,
+    name: &str,
+    new_embedding: &[f32],
+    source: &str,
+) -> Result<(), VoiceError> {
     if let Some(existing) = load_profile_with_embedding(conn, slug)? {
         let total = existing.sample_count as f32 + 1.0;
         let old_weight = existing.sample_count as f32;
-        let blended: Vec<f32> = existing.embedding.iter().zip(new_embedding.iter())
-            .map(|(old, new)| (old * old_weight + new) / total).collect();
+        let blended: Vec<f32> = existing
+            .embedding
+            .iter()
+            .zip(new_embedding.iter())
+            .map(|(old, new)| (old * old_weight + new) / total)
+            .collect();
         save_profile(conn, slug, name, &blended, source)
     } else {
         save_profile(conn, slug, name, new_embedding, source)
     }
 }
 
-fn load_profile_with_embedding(conn: &Connection, slug: &str) -> Result<Option<VoiceProfileWithEmbedding>, VoiceError> {
+fn load_profile_with_embedding(
+    conn: &Connection,
+    slug: &str,
+) -> Result<Option<VoiceProfileWithEmbedding>, VoiceError> {
     let mut stmt = conn.prepare("SELECT person_slug, name, embedding, sample_count FROM voice_profiles WHERE person_slug = ?1")?;
     match stmt.query_row(params![slug], |row| {
         let blob: Vec<u8> = row.get(2)?;
-        Ok(VoiceProfileWithEmbedding { person_slug: row.get(0)?, name: row.get(1)?, embedding: bytes_to_embedding(&blob), sample_count: row.get(3)? })
+        Ok(VoiceProfileWithEmbedding {
+            person_slug: row.get(0)?,
+            name: row.get(1)?,
+            embedding: bytes_to_embedding(&blob),
+            sample_count: row.get(3)?,
+        })
     }) {
         Ok(p) => Ok(Some(p)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -143,26 +167,53 @@ fn load_profile_with_embedding(conn: &Connection, slug: &str) -> Result<Option<V
 
 pub fn list_profiles(conn: &Connection) -> Result<Vec<VoiceProfile>, VoiceError> {
     let mut stmt = conn.prepare("SELECT person_slug, name, enrolled_at, updated_at, sample_count, source, model_version FROM voice_profiles ORDER BY updated_at DESC")?;
-    let profiles = stmt.query_map([], |row| {
-        Ok(VoiceProfile { person_slug: row.get(0)?, name: row.get(1)?, enrolled_at: row.get(2)?, updated_at: row.get(3)?, sample_count: row.get(4)?, source: row.get(5)?, model_version: row.get(6)? })
-    })?.collect::<Result<Vec<_>, _>>()?;
+    let profiles = stmt
+        .query_map([], |row| {
+            Ok(VoiceProfile {
+                person_slug: row.get(0)?,
+                name: row.get(1)?,
+                enrolled_at: row.get(2)?,
+                updated_at: row.get(3)?,
+                sample_count: row.get(4)?,
+                source: row.get(5)?,
+                model_version: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(profiles)
 }
 
-pub fn load_all_with_embeddings(conn: &Connection) -> Result<Vec<VoiceProfileWithEmbedding>, VoiceError> {
-    let mut stmt = conn.prepare("SELECT person_slug, name, embedding, sample_count FROM voice_profiles")?;
-    let profiles = stmt.query_map([], |row| {
-        let blob: Vec<u8> = row.get(2)?;
-        Ok(VoiceProfileWithEmbedding { person_slug: row.get(0)?, name: row.get(1)?, embedding: bytes_to_embedding(&blob), sample_count: row.get(3)? })
-    })?.collect::<Result<Vec<_>, _>>()?;
+pub fn load_all_with_embeddings(
+    conn: &Connection,
+) -> Result<Vec<VoiceProfileWithEmbedding>, VoiceError> {
+    let mut stmt =
+        conn.prepare("SELECT person_slug, name, embedding, sample_count FROM voice_profiles")?;
+    let profiles = stmt
+        .query_map([], |row| {
+            let blob: Vec<u8> = row.get(2)?;
+            Ok(VoiceProfileWithEmbedding {
+                person_slug: row.get(0)?,
+                name: row.get(1)?,
+                embedding: bytes_to_embedding(&blob),
+                sample_count: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(profiles)
 }
 
 pub fn delete_profile(conn: &Connection, slug: &str) -> Result<bool, VoiceError> {
-    Ok(conn.execute("DELETE FROM voice_profiles WHERE person_slug = ?1", params![slug])? > 0)
+    Ok(conn.execute(
+        "DELETE FROM voice_profiles WHERE person_slug = ?1",
+        params![slug],
+    )? > 0)
 }
 
-pub fn match_embedding(embedding: &[f32], profiles: &[VoiceProfileWithEmbedding], threshold: f32) -> Option<String> {
+pub fn match_embedding(
+    embedding: &[f32],
+    profiles: &[VoiceProfileWithEmbedding],
+    threshold: f32,
+) -> Option<String> {
     let mut best_name = None;
     let mut best_sim = threshold;
     for p in profiles {
@@ -210,12 +261,17 @@ pub fn load_meeting_embeddings(
 
 fn sidecar_path(meeting_path: &std::path::Path) -> std::path::PathBuf {
     let dir = meeting_path.parent().unwrap_or(std::path::Path::new("."));
-    let stem = meeting_path.file_name().unwrap_or_default().to_string_lossy();
+    let stem = meeting_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
     dir.join(format!(".{}.embeddings", stem.trim_end_matches(".md")))
 }
 
 pub fn load_self_profile(config: &Config) -> Option<VoiceProfileWithEmbedding> {
-    if !config.voice.enabled { return None; }
+    if !config.voice.enabled {
+        return None;
+    }
     let name = config.identity.name.as_ref()?;
     let slug = slugify(name);
     let conn = open_db().ok()?;
@@ -223,12 +279,23 @@ pub fn load_self_profile(config: &Config) -> Option<VoiceProfileWithEmbedding> {
 }
 
 fn slugify(text: &str) -> String {
-    let slug: String = text.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let slug: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
     let mut result = String::new();
     let mut prev_hyphen = false;
     for c in slug.chars() {
-        if c == '-' { if !prev_hyphen && !result.is_empty() { result.push(c); } prev_hyphen = true; }
-        else { result.push(c); prev_hyphen = false; }
+        if c == '-' {
+            if !prev_hyphen && !result.is_empty() {
+                result.push(c);
+            }
+            prev_hyphen = true;
+        } else {
+            result.push(c);
+            prev_hyphen = false;
+        }
     }
     result.trim_end_matches('-').to_string()
 }
@@ -245,11 +312,17 @@ mod tests {
     }
 
     #[test]
-    fn cosine_identical() { assert!((cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6); }
+    fn cosine_identical() {
+        assert!((cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < 1e-6);
+    }
     #[test]
-    fn cosine_orthogonal() { assert!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6); }
+    fn cosine_orthogonal() {
+        assert!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+    }
     #[test]
-    fn cosine_empty() { assert_eq!(cosine_similarity(&[], &[]), 0.0); }
+    fn cosine_empty() {
+        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+    }
 
     #[test]
     fn embedding_roundtrip() {
@@ -295,16 +368,37 @@ mod tests {
     #[test]
     fn match_finds_best() {
         let profiles = vec![
-            VoiceProfileWithEmbedding { person_slug: "mat".into(), name: "Mat".into(), embedding: vec![1.0, 0.0, 0.0], sample_count: 1 },
-            VoiceProfileWithEmbedding { person_slug: "alex".into(), name: "Alex".into(), embedding: vec![0.0, 1.0, 0.0], sample_count: 1 },
+            VoiceProfileWithEmbedding {
+                person_slug: "mat".into(),
+                name: "Mat".into(),
+                embedding: vec![1.0, 0.0, 0.0],
+                sample_count: 1,
+            },
+            VoiceProfileWithEmbedding {
+                person_slug: "alex".into(),
+                name: "Alex".into(),
+                embedding: vec![0.0, 1.0, 0.0],
+                sample_count: 1,
+            },
         ];
-        assert_eq!(match_embedding(&[0.9, 0.1, 0.0], &profiles, 0.5), Some("Mat".into()));
-        assert_eq!(match_embedding(&[0.0, 1.0, 0.0], &profiles, 0.5), Some("Alex".into()));
+        assert_eq!(
+            match_embedding(&[0.9, 0.1, 0.0], &profiles, 0.5),
+            Some("Mat".into())
+        );
+        assert_eq!(
+            match_embedding(&[0.0, 1.0, 0.0], &profiles, 0.5),
+            Some("Alex".into())
+        );
     }
 
     #[test]
     fn match_none_below_threshold() {
-        let profiles = vec![VoiceProfileWithEmbedding { person_slug: "mat".into(), name: "Mat".into(), embedding: vec![1.0, 0.0], sample_count: 1 }];
+        let profiles = vec![VoiceProfileWithEmbedding {
+            person_slug: "mat".into(),
+            name: "Mat".into(),
+            embedding: vec![1.0, 0.0],
+            sample_count: 1,
+        }];
         assert_eq!(match_embedding(&[0.0, 1.0], &profiles, 0.5), None);
     }
 
@@ -341,6 +435,9 @@ mod tests {
     #[test]
     fn sidecar_path_is_hidden_file() {
         let p = sidecar_path(std::path::Path::new("/tmp/meetings/2026-03-25-standup.md"));
-        assert_eq!(p.file_name().unwrap().to_str().unwrap(), ".2026-03-25-standup.embeddings");
+        assert_eq!(
+            p.file_name().unwrap().to_str().unwrap(),
+            ".2026-03-25-standup.embeddings"
+        );
     }
 }
