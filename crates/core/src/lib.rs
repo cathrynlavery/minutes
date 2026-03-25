@@ -5,6 +5,7 @@ pub mod daily_notes;
 pub mod diarize;
 pub mod error;
 pub mod events;
+pub mod graph;
 pub mod health;
 pub mod logging;
 pub mod markdown;
