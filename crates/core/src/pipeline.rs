@@ -168,6 +168,7 @@ where
     };
 
     // Step 2: Diarize (optional — depends on config.diarization.engine)
+    // "auto" engine resolves inside diarize() based on whether models are downloaded
     let transcript = if config.diarization.engine != "none" && content_type == ContentType::Meeting
     {
         on_progress(PipelineStage::Diarizing);

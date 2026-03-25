@@ -47,7 +47,13 @@ pub fn models_installed(config: &Config) -> bool {
 }
 
 /// Run speaker diarization on an audio file.
-/// Returns None if diarization is disabled.
+/// Returns None if diarization is disabled or models are not available.
+///
+/// Engine options:
+/// - `"auto"` (default): use pyannote-rs if models are downloaded, otherwise skip
+/// - `"pyannote-rs"`: native Rust diarization (requires `minutes setup --diarization`)
+/// - `"pyannote"`: legacy Python subprocess (requires `pip install pyannote.audio`)
+/// - `"none"`: explicitly disabled
 pub fn diarize(audio_path: &Path, config: &Config) -> Option<DiarizationResult> {
     let engine = &config.diarization.engine;
 
@@ -55,9 +61,22 @@ pub fn diarize(audio_path: &Path, config: &Config) -> Option<DiarizationResult> 
         return None;
     }
 
-    tracing::info!(engine = %engine, file = %audio_path.display(), "running diarization");
+    // "auto" mode: use pyannote-rs if models are downloaded, otherwise skip silently
+    let resolved_engine = if engine == "auto" {
+        if models_installed(config) {
+            tracing::info!("diarization models found — auto-enabling pyannote-rs");
+            "pyannote-rs"
+        } else {
+            tracing::debug!("diarization models not found — skipping (run `minutes setup --diarization` to enable)");
+            return None;
+        }
+    } else {
+        engine.as_str()
+    };
 
-    let result = match engine.as_str() {
+    tracing::info!(engine = %resolved_engine, file = %audio_path.display(), "running diarization");
+
+    let result = match resolved_engine {
         #[cfg(feature = "diarize")]
         "pyannote-rs" => diarize_with_pyannote_rs(audio_path, config),
         #[cfg(not(feature = "diarize"))]

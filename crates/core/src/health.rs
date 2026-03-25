@@ -87,7 +87,12 @@ pub fn vad_model_status(config: &Config) -> HealthItem {
 
     HealthItem {
         label: "VAD model".into(),
-        state: if found.is_some() { "ready" } else { "attention" }.into(),
+        state: if found.is_some() {
+            "ready"
+        } else {
+            "attention"
+        }
+        .into(),
         detail: if let Some(path) = found {
             format!("Silero VAD installed at {}.", path.display())
         } else {
@@ -128,22 +133,36 @@ pub fn diarization_status(config: &Config) -> HealthItem {
         return HealthItem {
             label: "Speaker diarization".into(),
             state: "ready".into(),
-            detail: "Disabled. Set `diarization.engine = \"pyannote-rs\"` in config to enable."
+            detail: "Disabled. Remove `diarization.engine = \"none\"` from config to auto-detect."
                 .into(),
             optional: true,
         };
     }
 
-    if config.diarization.engine == "pyannote-rs" {
+    let is_auto = config.diarization.engine == "auto";
+    let is_pyannote_rs = config.diarization.engine == "pyannote-rs" || is_auto;
+
+    if is_pyannote_rs {
         let installed = crate::diarize::models_installed(config);
         return HealthItem {
             label: "Speaker diarization".into(),
-            state: if installed { "ready" } else { "attention" }.into(),
+            state: if installed {
+                "ready"
+            } else {
+                if is_auto {
+                    "ready"
+                } else {
+                    "attention"
+                }
+            }
+            .into(),
             detail: if installed {
-                format!(
-                    "pyannote-rs models installed at {}.",
-                    config.diarization.model_path.display()
-                )
+                let mode = if is_auto { "auto-detected" } else { "enabled" };
+                format!("pyannote-rs models installed ({mode}). Meetings will identify speakers.",)
+            } else if is_auto {
+                "Models not downloaded — diarization will be skipped. \
+                 Run `minutes setup --diarization` to enable speaker identification (~34 MB)."
+                    .into()
             } else {
                 "Models not downloaded. Run `minutes setup --diarization` to install (~34 MB)."
                     .into()

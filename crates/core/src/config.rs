@@ -269,7 +269,7 @@ impl Default for TranscriptionConfig {
 impl Default for DiarizationConfig {
     fn default() -> Self {
         Self {
-            engine: "none".into(),
+            engine: "auto".into(),
             model_path: minutes_dir().join("models").join("diarization"),
             threshold: 0.5,
         }
@@ -452,7 +452,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.transcription.model, "small");
         assert_eq!(config.transcription.min_words, 3);
-        assert_eq!(config.diarization.engine, "none");
+        assert_eq!(config.diarization.engine, "auto");
         assert_eq!(config.summarization.engine, "none");
         assert_eq!(config.search.engine, "builtin");
         assert!(!config.daily_notes.enabled);
@@ -483,7 +483,7 @@ model = "large-v3"
         assert_eq!(config.transcription.model, "large-v3");
         // Other fields should be defaults
         assert_eq!(config.transcription.min_words, 3);
-        assert_eq!(config.diarization.engine, "none");
+        assert_eq!(config.diarization.engine, "auto");
         assert!(!config.daily_notes.enabled);
     }
 

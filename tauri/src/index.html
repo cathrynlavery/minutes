@@ -3192,7 +3192,7 @@
           ? 'Downloaded: ' + dl.join(', ')
           : dl.length ? 'Downloaded: ' + dl.join(', ') + '  •  "' + selectedModel + '" not yet downloaded' : 'No models downloaded yet.';
         document.getElementById('btn-download-model').style.display = isDownloaded ? 'none' : '';
-        setSettingsToggle('settings-diarization', s.diarization.engine !== 'none');
+        setSettingsToggle('settings-diarization', s.diarization.engine !== 'none'); // "auto" shows as On
         document.getElementById('settings-summarization-engine').value = s.summarization.engine;
         updateSumStatus(s);
         // Agent command picker (visible when engine = "agent")
@@ -3420,7 +3420,8 @@
     });
     document.getElementById('settings-diarization').addEventListener('click', async () => {
       const s = await invoke('cmd_get_settings');
-      const next = s.diarization.engine==='none'?'pyannote':'none';
+      // Toggle: none → pyannote-rs, anything else (auto/pyannote-rs/pyannote) → none
+      const next = s.diarization.engine==='none'?'pyannote-rs':'none';
       await invoke('cmd_set_setting', {section:'diarization',key:'engine',value:next});
       setSettingsToggle('settings-diarization', next!=='none');
     });

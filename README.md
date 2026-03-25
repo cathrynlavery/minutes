@@ -564,8 +564,10 @@ ollama_model = "llama3.2"
                               # Prevents whisper hallucination loops on non-English/noisy audio.
 
 [diarization]
-engine = "none"           # "none" (default), "pyannote-rs" (recommended — native Rust, no Python),
-                          # or "pyannote" (legacy — requires pip install pyannote.audio + HuggingFace auth)
+engine = "auto"           # "auto" (default — uses pyannote-rs if models downloaded, otherwise skips),
+                          # "pyannote-rs" (always on — native Rust, no Python),
+                          # "pyannote" (legacy — requires pip install pyannote.audio),
+                          # "none" (explicitly disabled)
 # threshold = 0.5         # Speaker similarity threshold (0.0–1.0). Lower = fewer speakers.
 
 [search]

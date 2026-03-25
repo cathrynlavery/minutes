@@ -43,12 +43,19 @@ jobs:
       - name: Build core (no whisper)
         run: cargo build -p minutes-core --no-default-features
 
+      - name: Build core with diarization (cross-platform)
+        run: cargo build -p minutes-core --no-default-features --features diarize
+
       - name: Build full workspace (macOS only)
         if: runner.os == 'macOS'
         run: cargo build --no-default-features
 
       - name: Unit tests (no whisper)
         run: cargo test -p minutes-core --no-default-features --lib -- --test-threads=1
+        timeout-minutes: 3
+
+      - name: Diarization unit tests (cross-platform)
+        run: cargo test -p minutes-core --no-default-features --features diarize --lib -- diarize --test-threads=1
         timeout-minutes: 3
 
       - name: Integration tests (no whisper, macOS only)
