@@ -1186,35 +1186,18 @@ registerAppTool(
     _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
   },
   async ({ person }) => {
-    // Use CLI: minutes people --json (rebuild if needed, read from SQLite)
-    const args = ["people", "--json"];
     if (!(await isCliAvailable())) {
       return { content: [{ type: "text" as const, text: "Minutes CLI not available. Install with: cargo install minutes-cli" }] };
     }
 
-    // Get full people data and extract commitments
+    // Use dedicated commitments command for full text detail
+    const args = ["commitments", "--json"];
+    if (person) args.push("--person", person);
+
     const { stdout } = await runMinutes(args);
-    const people = parseJsonOutput(stdout);
+    const commitments = parseJsonOutput(stdout);
 
-    if (!Array.isArray(people)) {
-      return { content: [{ type: "text" as const, text: "No relationship data found. Run: minutes people --rebuild" }] };
-    }
-
-    // Filter to the requested person if specified
-    let relevantPeople = people;
-    if (person) {
-      const personLower = person.toLowerCase();
-      relevantPeople = people.filter((p: any) =>
-        p.name?.toLowerCase().includes(personLower) ||
-        p.slug?.toLowerCase().includes(personLower)
-      );
-    }
-
-    // Build commitment summary from open_commitments counts
-    const sections: string[] = [];
-    const withCommitments = relevantPeople.filter((p: any) => p.open_commitments > 0);
-
-    if (withCommitments.length === 0) {
+    if (!Array.isArray(commitments) || commitments.length === 0) {
       const scope = person ? ` for ${person}` : "";
       return {
         content: [{ type: "text" as const, text: `No open commitments found${scope}.` }],
@@ -1223,15 +1206,32 @@ registerAppTool(
       };
     }
 
-    for (const p of withCommitments) {
-      sections.push(`${p.name}: ${p.open_commitments} open commitment${p.open_commitments !== 1 ? "s" : ""} (last seen: ${p.last_seen?.split("T")[0] || "unknown"})`);
+    // Group by status
+    const stale = commitments.filter((c: any) => c.status === "stale");
+    const open = commitments.filter((c: any) => c.status === "open");
+
+    const lines: string[] = [];
+    if (stale.length > 0) {
+      lines.push(`STALE (${stale.length} overdue):`);
+      for (const c of stale) {
+        const who = c.person_name || "unassigned";
+        lines.push(`  ⚠ ${c.text} (${who}; due: ${c.due_date || "no date"}; from: ${c.meeting_title})`);
+      }
+    }
+    if (open.length > 0) {
+      if (stale.length > 0) lines.push("");
+      lines.push(`OPEN (${open.length}):`);
+      for (const c of open) {
+        const who = c.person_name || "unassigned";
+        lines.push(`  · ${c.text} (${who}; from: ${c.meeting_title})`);
+      }
     }
 
-    const text = `Open commitments${person ? ` for ${person}` : ""}:\n\n${sections.join("\n")}`;
+    const text = `Commitments${person ? ` for ${person}` : ""}:\n\n${lines.join("\n")}`;
 
     return {
       content: [{ type: "text" as const, text }],
-      structuredContent: { people: withCommitments, person: person || null, view: "commitments" },
+      structuredContent: { commitments, person: person || null, stale_count: stale.length, open_count: open.length, view: "commitments" },
       _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "commitments" },
     };
   }

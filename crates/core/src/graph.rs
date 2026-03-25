@@ -926,14 +926,25 @@ fn names_likely_same(a: &str, b: &str) -> bool {
     if a_lower == b_lower {
         return false; // Same slug would have been deduped already
     }
-    // One name is a prefix/substring of the other
-    let a_first = a_lower.split_whitespace().next().unwrap_or("");
-    let b_first = b_lower.split_whitespace().next().unwrap_or("");
+    let a_parts: Vec<&str> = a_lower.split_whitespace().collect();
+    let b_parts: Vec<&str> = b_lower.split_whitespace().collect();
+    let a_first = a_parts.first().copied().unwrap_or("");
+    let b_first = b_parts.first().copied().unwrap_or("");
     if a_first.is_empty() || b_first.is_empty() {
         return false;
     }
-    // "Sarah" matches "Sarah Chen" (first name match, one has last name)
-    a_first == b_first && a_lower.split_whitespace().count() != b_lower.split_whitespace().count()
+    // First names must match
+    if a_first != b_first {
+        return false;
+    }
+    // If BOTH have last names and they differ → different people
+    // "Alex Chen" vs "Alex Kumar" → false (different last names)
+    // "Alex Chen" vs "Alex" → true (one is a shortened form)
+    if a_parts.len() >= 2 && b_parts.len() >= 2 {
+        return a_parts[1] == b_parts[1]; // Same last name = likely same person
+    }
+    // One has a last name, the other doesn't → likely same person
+    a_parts.len() != b_parts.len()
 }
 
 /// Calculate days since an RFC3339 date string.
@@ -1135,6 +1146,13 @@ Skip the wizard. Drop users into a pre-populated demo workspace.
         assert!(names_likely_same("Sarah", "Sarah Chen"));
         assert!(!names_likely_same("Sarah", "Sam"));
         assert!(!names_likely_same("Sarah Chen", "Sarah Chen")); // exact match = already deduped
+                                                                 // False positive fix: same first name, different last name = different people
+        assert!(!names_likely_same("Alex Chen", "Alex Kumar"));
+        assert!(!names_likely_same("Jordan Mills", "Jordan Lee"));
+        // Both have same first + last (case insensitive) = same slug, already deduped
+        assert!(!names_likely_same("Sarah Chen", "Sarah chen"));
+        // Different last name initials are different people
+        assert!(!names_likely_same("Sarah C.", "Sarah Chen"));
     }
 
     #[test]
@@ -1327,5 +1345,121 @@ Short meeting.
             "False positive alias detected: {:?}",
             stats.alias_suggestions
         );
+    }
+
+    #[test]
+    fn test_fix_frontmatter_date() {
+        let fm = "title: Test\ntype: meeting\ndate: 2026-03-17T14:00:00\nduration: 5m";
+        let fixed = fix_frontmatter(fm);
+        // Should have a timezone offset now
+        assert!(
+            fixed.contains('+') || fixed.contains("-07:00") || fixed.contains("-08:00"),
+            "Date should have timezone offset: {}",
+            fixed
+        );
+    }
+
+    #[test]
+    fn test_fix_frontmatter_wikilinks() {
+        let fm = "title: Test\ntype: meeting\ndate: 2026-03-17T14:00:00-07:00\nduration: 5m\npeople: [[alex-chen], [mat]]";
+        let fixed = fix_frontmatter(fm);
+        assert!(
+            fixed.contains("people: [alex-chen, mat]"),
+            "Wikilinks should be flattened: {}",
+            fixed
+        );
+    }
+
+    #[test]
+    fn test_fix_frontmatter_due_string() {
+        let fm = "  due: Friday";
+        let fixed = fix_frontmatter(fm);
+        assert!(
+            fixed.contains("due: \"Friday\""),
+            "Non-date due should be quoted: {}",
+            fixed
+        );
+    }
+
+    #[test]
+    fn test_extract_dedup_person() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let meeting = "---\ntitle: Dedup Test\ntype: meeting\ndate: 2026-03-20T14:00:00-07:00\nduration: 10m\nattendees: [Sarah]\n---\n\n## Transcript\n[SARAH 0:00] Hello everyone\n";
+        write_meeting(&meetings, "dedup.md", meeting);
+        let config = test_config(&meetings);
+        let db = tmp.path().join("graph.db");
+        rebuild_index_at(&config, &db).unwrap();
+        let conn = open_db(&db).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM people WHERE slug = 'sarah'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "Sarah should appear once (deduped)");
+    }
+
+    #[test]
+    fn test_commitment_staleness_detection() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let meeting = "---\ntitle: Stale Test\ntype: meeting\ndate: 2026-01-01T10:00:00-07:00\nduration: 30m\nattendees: [Alex]\nintents:\n  - kind: commitment\n    what: Deliver the report\n    who: Alex\n    status: open\n    by_date: \"2026-01-15\"\n---\nContent.\n";
+        write_meeting(&meetings, "stale.md", meeting);
+        let config = test_config(&meetings);
+        let db = tmp.path().join("graph.db");
+        rebuild_index_at(&config, &db).unwrap();
+        let conn = open_db(&db).unwrap();
+        let stale: i64 = conn
+            .query_row("SELECT COUNT(*) FROM commitments WHERE status = 'stale'", [], |r| r.get(0))
+            .unwrap();
+        assert!(stale >= 1, "Past-due commitment should be stale");
+    }
+
+    #[test]
+    fn test_no_transcript_section() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let meeting = "---\ntitle: Memo Only\ntype: memo\ndate: 2026-03-20T10:00:00-07:00\nduration: 1m\ntags: [idea]\n---\n\n## Summary\nJust a summary.\n";
+        write_meeting(&meetings, "memo.md", meeting);
+        let config = test_config(&meetings);
+        let stats = rebuild_to_temp(&config, &tmp);
+        assert_eq!(stats.meeting_count, 1);
+        assert_eq!(stats.people_count, 0);
+        assert!(stats.topic_count >= 1); // "idea" from tags
+    }
+
+    #[test]
+    fn test_corrupted_db_auto_rebuild() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        write_meeting(&meetings, "m1.md", MEETING_1);
+        let db = tmp.path().join("graph.db");
+        fs::write(&db, b"not a sqlite database").unwrap();
+        let config = test_config(&meetings);
+        let stats = rebuild_index_at(&config, &db).unwrap();
+        assert_eq!(stats.meeting_count, 1);
+        assert!(stats.people_count >= 2);
+    }
+
+    #[test]
+    fn test_decision_has_null_person() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        write_meeting(&meetings, "m1.md", MEETING_1);
+        let config = test_config(&meetings);
+        let db = tmp.path().join("graph.db");
+        rebuild_index_at(&config, &db).unwrap();
+        let conn = open_db(&db).unwrap();
+        let null_decisions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM commitments WHERE commitment_type = 'decision' AND person_id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(null_decisions >= 1, "Decisions should have NULL person_id");
     }
 }
