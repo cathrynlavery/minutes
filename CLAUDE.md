@@ -18,6 +18,7 @@ cd ~/Sites/minutes
 cargo build                          # Build Rust workspace
 cargo test -p minutes-core --no-default-features  # Fast tests (no whisper model)
 cargo run --bin minutes -- setup --model tiny      # Download whisper model
+cargo run --bin minutes -- setup --diarization     # Download speaker diarization models (~34MB)
 cargo run --bin minutes -- record    # Start recording
 cargo run --bin minutes -- stop      # Stop and process
 ```
@@ -131,8 +132,8 @@ minutes/
 ├── crates/
 │   ├── core/src/              # 25 Rust modules — the engine
 │   │   ├── capture.rs         # Audio capture (cpal)
-│   │   ├── transcribe.rs      # Whisper.cpp + symphonia format conversion
-│   │   ├── diarize.rs         # Pyannote subprocess
+│   │   ├── transcribe.rs      # Whisper.cpp + symphonia + VAD silence strip + sinc resampler
+│   │   ├── diarize.rs         # Speaker diarization (pyannote-rs native or pyannote subprocess)
 │   │   ├── summarize.rs       # LLM summarization (ureq HTTP client)
 │   │   ├── pipeline.rs        # Orchestrates the full flow + structured extraction
 │   │   ├── notes.rs           # Timestamped notetaking during/after recordings
@@ -189,8 +190,11 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 ## Key Architecture Decisions
 
 - **Rust** for the engine — single 6.7MB binary, cross-platform, fast
-- **whisper-rs** (whisper.cpp) for transcription — local, Apple Silicon optimized
+- **whisper-rs** (whisper.cpp) for transcription — local, Apple Silicon optimized, params match whisper-cli defaults (best_of=5, entropy/logprob thresholds)
+- **pyannote-rs** for speaker diarization — native Rust, ONNX models (~34MB), no Python
 - **symphonia** for audio format conversion — m4a/mp3/ogg → WAV, pure Rust
+- **VAD silence stripping** before transcription — prevents whisper hallucination loops on non-English/noisy audio
+- **Windowed-sinc resampler** (32-tap Hann) — replaces linear interp for alias-free 44100→16000 downsampling
 - **ureq** for HTTP — pure Rust, no secrets in process args (replaced curl)
 - **fs2 flock** for PID files — atomic check-and-write, prevents TOCTOU races
 - **Tauri v2** for desktop app — shares `minutes-core` with CLI, ~10MB
@@ -200,7 +204,7 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 
 ## Key Patterns
 
-- All audio processing is local (whisper.cpp + pyannote)
+- All audio processing is local (whisper.cpp + pyannote-rs)
 - Claude summarizes via MCP when the user asks (no API key needed)
 - Optional automated summarization via Ollama (local) or cloud LLMs
 - Config at `~/.config/minutes/config.toml` (optional, compiled defaults work)
@@ -215,8 +219,8 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 
 ## Test Coverage
 
-~220 tests total:
-- 141 core unit tests (all modules including screen, calendar, config, watch, streaming whisper, vault, dictation, health, vad, hotkey)
+~225 tests total:
+- 146 core unit tests (all modules including screen, calendar, config, watch, streaming whisper, vault, dictation, health, vad, hotkey, silence stripping)
 - 10 integration tests (pipeline, permissions, collisions, search filters)
 - 23 Tauri unit tests (commands, call detection)
 - 2 CLI tests

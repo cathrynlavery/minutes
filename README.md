@@ -442,6 +442,10 @@ cargo install --path crates/cli --features coreml
 minutes setup --model tiny    # Quick start (75MB, fast, less accurate)
 minutes setup --model small   # Recommended (466MB, good accuracy)
 minutes setup --model base    # Middle ground (141MB)
+
+# Enable speaker diarization (optional, ~34MB)
+minutes setup --diarization
+# Then set engine in config: diarization.engine = "pyannote-rs"
 ```
 
 > **Platform notes:** Calendar integration (auto-detecting meeting attendees) requires macOS. Screen context capture works on macOS and Linux. The voice memo pipeline works on all platforms — any folder sync (iCloud, Dropbox, Google Drive, Syncthing) can feed the watcher. The `minutes service install` auto-start command requires macOS (launchd); on Linux, use systemd or cron. All other features — recording, transcription, search, action items, person profiles — work on all platforms.
@@ -537,7 +541,9 @@ ollama_url = "http://localhost:11434"
 ollama_model = "llama3.2"
 
 [diarization]
-engine = "none"           # "none" (default) or "pyannote" (requires pip install pyannote.audio + HuggingFace auth)
+engine = "none"           # "none" (default), "pyannote-rs" (recommended — native, no Python),
+                          # or "pyannote" (legacy — requires pip install pyannote.audio + HuggingFace auth)
+# threshold = 0.5         # Speaker similarity threshold (0.0–1.0). Lower = fewer speakers.
 
 [search]
 engine = "builtin"        # builtin (regex) or qmd (semantic)
