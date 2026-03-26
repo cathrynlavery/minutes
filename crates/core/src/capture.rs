@@ -38,11 +38,10 @@ pub fn record_to_wav(
 ) -> Result<(), CaptureError> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-    // Get the default input device
+    // Get the input device — prefer the macOS system default over cpal's default,
+    // which can pick virtual devices (Descript Loopback, Zoom, etc.) over the real mic.
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or(CaptureError::DeviceNotFound)?;
+    let device = select_input_device(&host)?;
 
     let device_name = device.name().unwrap_or_else(|_| "unknown".into());
     eprintln!("[minutes] Using input device: {}", device_name);
@@ -310,6 +309,88 @@ pub fn record_to_wav(
     }
 
     Ok(())
+}
+
+/// Select the best input device.
+///
+/// cpal's `default_input_device()` picks the first device in enumeration order,
+/// which on macOS is often a virtual device (Descript Loopback, Zoom Audio, etc.)
+/// rather than the actual system default. This function queries the macOS system
+/// default via `SoundSource` AppleScript and matches by name, falling back to
+/// cpal's default if the query fails.
+fn select_input_device(host: &cpal::Host) -> Result<cpal::Device, CaptureError> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+
+    // Try to get the macOS system default input device name
+    #[cfg(target_os = "macos")]
+    if let Some(system_default_name) = get_macos_default_input_name() {
+        // Search cpal's device list for a matching name
+        if let Ok(devices) = host.input_devices() {
+            for device in devices {
+                if let Ok(name) = device.name() {
+                    if name == system_default_name {
+                        tracing::info!(
+                            device = %name,
+                            "matched macOS system default input device"
+                        );
+                        return Ok(device);
+                    }
+                }
+            }
+        }
+        tracing::warn!(
+            system_default = %system_default_name,
+            "could not find macOS default input in cpal devices, using cpal default"
+        );
+    }
+
+    // Fallback: cpal's default (works on all platforms)
+    host.default_input_device()
+        .ok_or(CaptureError::DeviceNotFound)
+}
+
+/// Query macOS for the actual system default input device name.
+/// Uses `system_profiler` which is more reliable than AppleScript for audio devices.
+#[cfg(target_os = "macos")]
+fn get_macos_default_input_name() -> Option<String> {
+    // Try AppleScript to get the system-level default input device
+    let output = std::process::Command::new("osascript")
+        .args(["-e", "get name of (get default input device of (get current application's NSAppleScript's alloc's init))"])
+        .output();
+
+    // AppleScript approach is unreliable — use the system_profiler JSON approach instead
+    // or simply read the CoreAudio default via a simpler method.
+    // Most reliable: parse `system_profiler SPAudioDataType -json`
+    let output = std::process::Command::new("system_profiler")
+        .args(["SPAudioDataType", "-json"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let items = json.get("SPAudioDataType")?.as_array()?;
+
+    // Devices are nested under _items in each top-level entry
+    for item in items {
+        if let Some(sub_items) = item.get("_items").and_then(|v| v.as_array()) {
+            for sub in sub_items {
+                let is_default_input = sub
+                    .get("coreaudio_default_audio_input_device")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == "spaudio_yes")
+                    .unwrap_or(false);
+
+                if is_default_input {
+                    return sub.get("_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// List available audio input devices (for diagnostics / `minutes setup`).
