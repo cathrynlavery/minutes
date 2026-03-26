@@ -36,7 +36,7 @@ pub fn record_to_wav(
     stop_flag: Arc<AtomicBool>,
     config: &Config,
 ) -> Result<(), CaptureError> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use cpal::traits::{DeviceTrait, StreamTrait};
 
     // Get the input device — prefer the macOS system default over cpal's default,
     // which can pick virtual devices (Descript Loopback, Zoom, etc.) over the real mic.
@@ -354,13 +354,6 @@ fn select_input_device(host: &cpal::Host) -> Result<cpal::Device, CaptureError> 
 #[cfg(target_os = "macos")]
 fn get_macos_default_input_name() -> Option<String> {
     // Try AppleScript to get the system-level default input device
-    let output = std::process::Command::new("osascript")
-        .args(["-e", "get name of (get default input device of (get current application's NSAppleScript's alloc's init))"])
-        .output();
-
-    // AppleScript approach is unreliable — use the system_profiler JSON approach instead
-    // or simply read the CoreAudio default via a simpler method.
-    // Most reliable: parse `system_profiler SPAudioDataType -json`
     let output = std::process::Command::new("system_profiler")
         .args(["SPAudioDataType", "-json"])
         .output()
