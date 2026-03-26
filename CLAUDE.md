@@ -101,25 +101,78 @@ certificate or local notarization credentials.
 - release signing / notarization is maintainer-only and should be configured
   explicitly via environment variables, not by hardcoded defaults in scripts
 
-## Release Process
+## Pre-Commit Checklist
 
-When shipping a new version:
-1. Bump version in: `Cargo.toml` (workspace), `crates/cli/Cargo.toml` (minutes-core dep version), `tauri/src-tauri/tauri.conf.json`, `crates/mcp/package.json`, `crates/sdk/package.json`
-2. **Also bump the version string in `crates/mcp/src/index.ts`** (the `McpServer({ version })` constructor). This must match `package.json`.
-3. Verify all 5 match: `grep version Cargo.toml tauri/src-tauri/tauri.conf.json crates/mcp/package.json crates/sdk/package.json && grep 'version:' crates/mcp/src/index.ts`
-4. **Verify MCP runtime deps**: all `import` statements in `crates/mcp/src/index.ts` must have their packages in `dependencies` (not `devDependencies`) in `package.json`. Run: `node -e "require('./crates/mcp/dist/index.js')"` to smoke-test.
-5. Rebuild MCP: `cd crates/mcp && npm run build`
-6. Commit, tag, push: `git tag vX.Y.Z && git push origin main --tags`
-7. Create GitHub release: `gh release create vX.Y.Z -t "title" -F notes.md` (triggers signed DMG + CLI binary CI)
-8. **Publish npm packages** (required for `npx minutes-mcp` users):
-   ```bash
-   cd crates/sdk && npm publish --access public --registry https://registry.npmjs.org
-   cd crates/mcp && npm publish --access public --registry https://registry.npmjs.org
-   ```
-   If 2FA blocks publish, use a granular access token with "Bypass 2FA" enabled.
-   **IMPORTANT**: `crates/mcp/package.json` must depend on `"minutes-sdk": "^X.Y.Z"` (npm version), NOT `"file:../sdk"` (local path). Check before publishing.
-9. Redeploy landing page (Next.js + Remotion): `cd site && npm install && vercel deploy --yes --prod --scope evil-genius-laboratory`
-10. Update Homebrew tap formula if CLI changed
+**Run this mental checklist before every commit from this repo.** Not every item applies to every commit — check which areas your changes touch and verify those.
+
+| Area | When to check | How to verify |
+|------|---------------|---------------|
+| **Manifest tools sync** | Any new/renamed/removed MCP tool | Compare `manifest.json` tools array against `server.tool()` and `registerAppTool()` calls in `crates/mcp/src/index.ts` |
+| **Manifest description** | New user-facing features | Read `long_description` in `manifest.json` — does it mention the new capability? |
+| **Manifest version** | Version bumps | `manifest.json` version must match all other version sources |
+| **MCP server rebuild** | Any change to `crates/mcp/src/` or `crates/mcp/ui/` | `cd crates/mcp && npm run build` |
+| **cargo fmt** | Any Rust change | `cargo fmt --all -- --check` |
+| **cargo clippy** | Any Rust change | `cargo clippy --all --no-default-features -- -D warnings` |
+| **SDK rebuild** | Any change to `crates/sdk/src/` | `cd crates/sdk && npm run build` |
+
+## Release Checklist
+
+**When shipping a new version, walk through every item in order.**
+
+### 1. Version bump (all 6 must match)
+```bash
+# Bump in: Cargo.toml, crates/cli/Cargo.toml, tauri/src-tauri/tauri.conf.json,
+#          crates/mcp/package.json, crates/sdk/package.json, manifest.json
+# Also bump the version string in crates/mcp/src/index.ts (McpServer({ version }))
+# Verify:
+grep version Cargo.toml tauri/src-tauri/tauri.conf.json crates/mcp/package.json \
+  crates/sdk/package.json manifest.json && grep 'version:' crates/mcp/src/index.ts
+```
+
+### 2. Manifest sync
+- Tools in `manifest.json` match tools registered in `crates/mcp/src/index.ts`
+- `long_description` reflects current capabilities
+- `keywords` are current
+
+### 3. MCP runtime deps
+All `import` statements in `crates/mcp/src/index.ts` must have their packages in `dependencies` (not `devDependencies`) in `package.json`. Smoke-test: `node -e "require('./crates/mcp/dist/index.js')"`
+
+### 4. Build everything
+```bash
+cd crates/mcp && npm run build       # MCP server + dashboard UI
+cargo fmt --all -- --check           # Rust formatting
+cargo clippy --all --no-default-features -- -D warnings  # Rust lints
+```
+
+### 5. Commit, tag, push
+```bash
+git tag vX.Y.Z && git push origin main --tags
+```
+
+### 6. GitHub release
+```bash
+gh release create vX.Y.Z -t "title" -F notes.md  # Triggers signed DMG + CLI binary CI
+```
+
+### 7. Build and upload .mcpb
+```bash
+mcpb pack . minutes.mcpb
+gh release upload vX.Y.Z minutes.mcpb --clobber
+```
+
+### 8. Publish npm packages
+```bash
+cd crates/sdk && npm publish --access public --registry https://registry.npmjs.org
+cd crates/mcp && npm publish --access public --registry https://registry.npmjs.org
+```
+**IMPORTANT**: `crates/mcp/package.json` must depend on `"minutes-sdk": "^X.Y.Z"` (npm version), NOT `"file:../sdk"` (local path). Check before publishing. If 2FA blocks publish, use a granular access token with "Bypass 2FA" enabled.
+
+### 9. Redeploy landing page
+```bash
+cd site && npm install && vercel deploy --yes --prod --scope evil-genius-laboratory
+```
+
+### 10. Update Homebrew tap formula if CLI changed
 
 ## Project Structure
 
