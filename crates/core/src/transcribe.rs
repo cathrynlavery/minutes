@@ -4,6 +4,12 @@ use std::path::Path;
 #[cfg(any(feature = "whisper", feature = "parakeet"))]
 use std::path::PathBuf;
 
+// Re-export from whisper-guard for public API compatibility
+pub use whisper_guard::audio::{normalize_audio, resample, strip_silence};
+#[cfg(feature = "whisper")]
+pub use whisper_guard::params::{default_whisper_params, streaming_whisper_params};
+pub use whisper_guard::segments::{clean_transcript, CleanStats};
+
 // ──────────────────────────────────────────────────────────────
 // Transcription pipeline:
 //
@@ -56,6 +62,14 @@ fn transcribe_whisper_dispatch(
         return Err(TranscribeError::EmptyAudio);
     }
 
+    // Step 1b: Noise reduction (requires denoise feature + config enabled)
+    #[cfg(feature = "denoise")]
+    let samples = if config.transcription.noise_reduction {
+        denoise_audio(&samples, 16000)
+    } else {
+        samples
+    };
+
     // Step 2: Silence handling.
     // If Silero VAD model is available, whisper handles silence internally via
     // integrated VAD (set in default_whisper_params). Otherwise, fall back to
@@ -69,7 +83,7 @@ fn transcribe_whisper_dispatch(
         tracing::debug!("Silero VAD available — skipping energy-based silence stripping");
         samples
     } else {
-        strip_silence(&samples)
+        strip_silence(&samples, 16000)
     };
 
     if samples.is_empty() {
@@ -206,6 +220,12 @@ fn transcribe_with_whisper(
     // Layer 2: Remove repetition loops — detect consecutive near-identical segments
     let lines = dedup_segments(lines);
 
+    // Layer 4: Remove interleaved repetition (A/B/A/B patterns, filler-separated loops)
+    let lines = dedup_interleaved(lines);
+
+    // Layer 5: Trim trailing noise ([music], [BLANK_AUDIO]) from the end
+    let lines = trim_trailing_noise(lines);
+
     let transcript = lines.join("\n");
     let transcript = if transcript.is_empty() {
         transcript
@@ -321,7 +341,7 @@ fn load_wav(path: &Path) -> Result<Vec<f32>, TranscribeError> {
 
     // Auto-normalize: if peak is below target, boost so whisper gets usable levels.
     // Quiet mics (e.g. MacBook Pro) can produce peaks of 0.004 which whisper can't detect.
-    Ok(normalize_audio(resampled))
+    Ok(normalize_audio(&resampled))
 }
 
 /// Decode audio with ffmpeg (preferred for non-WAV formats).
@@ -479,313 +499,105 @@ fn decode_with_symphonia(path: &Path) -> Result<Vec<f32>, TranscribeError> {
         all_samples
     };
 
-    Ok(normalize_audio(resampled))
+    Ok(normalize_audio(&resampled))
 }
 
-/// Windowed-sinc resampler for high-quality rate conversion.
+// resample() and normalize_audio() are provided by whisper_guard::audio
+// and re-exported at the top of this file.
+
+// Segment cleaning functions (dedup_segments, dedup_interleaved, trim_trailing_noise,
+// clean_transcript, CleanStats) are provided by whisper_guard::segments.
+// They are re-exported as pub use at the top of this file for API compatibility.
+// The private wrappers below delegate to whisper-guard so internal callers
+// (transcribe_with_whisper) continue working without path changes.
+use whisper_guard::segments as wg_segments;
+
+// Thin delegates to whisper-guard (used by whisper, parakeet, and tests)
+fn dedup_segments(lines: Vec<String>) -> Vec<String> {
+    wg_segments::dedup_segments(&lines)
+}
+fn dedup_interleaved(lines: Vec<String>) -> Vec<String> {
+    wg_segments::dedup_interleaved(&lines)
+}
+fn trim_trailing_noise(lines: Vec<String>) -> Vec<String> {
+    wg_segments::trim_trailing_noise(&lines)
+}
+
+// ── Noise reduction ──────────────────────────────────────────
+
+/// Apply RNNoise-based noise reduction to audio samples.
 ///
-/// Linear interpolation introduces aliasing when downsampling (e.g. 44100→16000)
-/// because it doesn't low-pass filter first. This matters for whisper: aliased
-/// artifacts confuse the decoder and contribute to hallucination loops on
-/// non-English audio (issue #21).
+/// nnnoiseless requires 48kHz f32 audio in 480-sample frames with values
+/// in i16 range (-32768 to 32767). This function handles resampling to/from
+/// 48kHz and the scaling automatically.
 ///
-/// This uses a sinc kernel with a Hann window (width=32 taps). The cutoff
-/// frequency is set to the Nyquist of the lower rate, preventing aliasing.
-/// Quality is comparable to ffmpeg's default SWR resampler.
-fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate {
+/// Primes the DenoiseState with a silence frame to avoid first-frame
+/// fade-in artifacts.
+#[cfg(feature = "denoise")]
+fn denoise_audio(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    use nnnoiseless::{DenoiseState, FRAME_SIZE};
+
+    if samples.is_empty() {
         return samples.to_vec();
     }
 
-    let ratio = from_rate as f64 / to_rate as f64;
-    let output_len = (samples.len() as f64 / ratio) as usize;
-    let mut output = Vec::with_capacity(output_len);
-
-    // Cutoff at Nyquist of the lower rate to prevent aliasing
-    let cutoff = if to_rate < from_rate {
-        to_rate as f64 / from_rate as f64
+    // Resample to 48kHz if needed (nnnoiseless requires exactly 48kHz)
+    let (samples_48k, original_rate) = if sample_rate != 48000 {
+        (resample(samples, sample_rate, 48000), Some(sample_rate))
     } else {
-        1.0
+        (samples.to_vec(), None)
     };
 
-    const HALF_WIDTH: i32 = 16; // 32-tap kernel
+    // Scale to i16 range as nnnoiseless expects
+    let scaled: Vec<f32> = samples_48k.iter().map(|s| s * 32767.0).collect();
 
-    for i in 0..output_len {
-        let src_pos = i as f64 * ratio;
-        let src_center = src_pos as i32;
+    let mut state = DenoiseState::new();
+    let mut output = Vec::with_capacity(scaled.len());
+    let mut frame_out = [0.0f32; FRAME_SIZE];
 
-        let mut sum = 0.0f64;
-        let mut weight_sum = 0.0f64;
+    // Prime with a silence frame to avoid first-frame fade-in artifact
+    let silence = [0.0f32; FRAME_SIZE];
+    state.process_frame(&mut frame_out, &silence);
 
-        for j in (src_center - HALF_WIDTH + 1)..=(src_center + HALF_WIDTH) {
-            if j < 0 || j >= samples.len() as i32 {
-                continue;
-            }
-
-            let delta = src_pos - j as f64;
-
-            // Sinc function with cutoff
-            let sinc = if delta.abs() < 1e-10 {
-                cutoff
-            } else {
-                let x = std::f64::consts::PI * delta * cutoff;
-                (x.sin() / (std::f64::consts::PI * delta)) * cutoff
-            };
-
-            // Hann window
-            let window_pos = (delta / HALF_WIDTH as f64 + 1.0) * 0.5;
-            let window = if (0.0..=1.0).contains(&window_pos) {
-                0.5 * (1.0 - (2.0 * std::f64::consts::PI * window_pos).cos())
-            } else {
-                0.0
-            };
-
-            let w = sinc * window;
-            sum += samples[j as usize] as f64 * w;
-            weight_sum += w;
-        }
-
-        let sample = if weight_sum.abs() > 1e-10 {
-            sum / weight_sum
+    for chunk in scaled.chunks(FRAME_SIZE) {
+        if chunk.len() == FRAME_SIZE {
+            state.process_frame(&mut frame_out, chunk);
+            output.extend_from_slice(&frame_out);
         } else {
-            0.0
-        };
-
-        output.push(sample as f32);
-    }
-
-    output
-}
-
-/// Normalize audio to a target peak level for consistent whisper input.
-/// Only boosts quiet audio — already-loud recordings are left untouched.
-fn normalize_audio(mut samples: Vec<f32>) -> Vec<f32> {
-    if samples.is_empty() {
-        return samples;
-    }
-
-    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-
-    // Target peak: 0.5 (leaves headroom, loud enough for whisper)
-    // Only normalize if peak is below 0.1 (quiet mic) and above noise floor
-    const TARGET_PEAK: f32 = 0.5;
-    const QUIET_THRESHOLD: f32 = 0.1;
-    const NOISE_FLOOR: f32 = 0.0001;
-
-    if peak < QUIET_THRESHOLD && peak > NOISE_FLOOR {
-        let gain = TARGET_PEAK / peak;
-        // Cap gain at 100x to avoid amplifying pure noise
-        let gain = gain.min(100.0);
-        tracing::info!(
-            peak = format!("{:.4}", peak),
-            gain = format!("{:.1}x", gain),
-            "auto-normalizing quiet audio"
-        );
-        for s in &mut samples {
-            *s = (*s * gain).clamp(-1.0, 1.0);
+            // Pad last frame with zeros
+            let mut padded = [0.0f32; FRAME_SIZE];
+            padded[..chunk.len()].copy_from_slice(chunk);
+            state.process_frame(&mut frame_out, &padded);
+            output.extend_from_slice(&frame_out[..chunk.len()]);
         }
     }
 
-    samples
-}
+    // Scale back to -1.0..1.0 range
+    let denoised: Vec<f32> = output.iter().map(|s| s / 32767.0).collect();
 
-/// Detect and remove repetition loops from whisper output (issue #21).
-///
-/// Whisper's decoder can get stuck repeating the same text across consecutive segments,
-/// especially on non-English audio. This function detects runs of 3+ consecutive segments
-/// with >80% text overlap and collapses them to the first occurrence.
-#[allow(dead_code)] // Only used with whisper feature
-fn dedup_segments(lines: Vec<String>) -> Vec<String> {
-    if lines.len() < 3 {
-        return lines;
-    }
+    // Resample back to original rate if we upsampled
+    let denoised = if let Some(orig) = original_rate {
+        resample(&denoised, 48000, orig)
+    } else {
+        denoised
+    };
 
-    // Extract just the text portion (after the timestamp) for comparison
-    fn text_part(line: &str) -> &str {
-        // Lines look like "[0:00] some text"
-        line.find("] ").map(|i| &line[i + 2..]).unwrap_or(line)
-    }
+    let original_rms: f32 =
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+    let denoised_rms: f32 =
+        (denoised.iter().map(|s| s * s).sum::<f32>() / denoised.len() as f32).sqrt();
 
-    // Simple text similarity: ratio of matching chars to total chars (normalized)
-    fn similarity(a: &str, b: &str) -> f64 {
-        if a.is_empty() || b.is_empty() {
-            return 0.0;
-        }
-        let a_lower = a.to_lowercase();
-        let b_lower = b.to_lowercase();
-        if a_lower == b_lower {
-            return 1.0;
-        }
-        // Use longest common substring ratio as a fast similarity measure
-        let (short, long) = if a_lower.len() <= b_lower.len() {
-            (&a_lower, &b_lower)
-        } else {
-            (&b_lower, &a_lower)
-        };
-        if long.contains(short.as_str()) {
-            return short.len() as f64 / long.len() as f64;
-        }
-        // Count matching words as fallback
-        let a_words: Vec<&str> = a_lower.split_whitespace().collect();
-        let b_words: Vec<&str> = b_lower.split_whitespace().collect();
-        let matching = a_words.iter().filter(|w| b_words.contains(w)).count();
-        let total = a_words.len().max(b_words.len());
-        if total == 0 {
-            return 0.0;
-        }
-        matching as f64 / total as f64
-    }
+    tracing::info!(
+        original_rms = format!("{:.4}", original_rms),
+        denoised_rms = format!("{:.4}", denoised_rms),
+        reduction_db = format!(
+            "{:.1}",
+            20.0 * (denoised_rms / original_rms.max(0.0001)).log10()
+        ),
+        "noise reduction applied"
+    );
 
-    let mut result = Vec::with_capacity(lines.len());
-    let mut i = 0;
-
-    while i < lines.len() {
-        // Look ahead for a run of similar segments
-        let base_text = text_part(&lines[i]);
-        let mut run_end = i + 1;
-
-        while run_end < lines.len() {
-            let candidate = text_part(&lines[run_end]);
-            if similarity(base_text, candidate) >= 0.8 {
-                run_end += 1;
-            } else {
-                break;
-            }
-        }
-
-        let run_len = run_end - i;
-
-        if run_len >= 3 {
-            // Repetition detected — keep only the first segment
-            tracing::warn!(
-                first_segment = i,
-                repeated_count = run_len,
-                text = base_text,
-                "detected repetition loop in whisper output — collapsing {} segments",
-                run_len
-            );
-            result.push(lines[i].clone());
-            result.push(format!(
-                "[...] [repeated audio removed — {} identical segments collapsed]",
-                run_len - 1
-            ));
-            i = run_end;
-        } else {
-            result.push(lines[i].clone());
-            i += 1;
-        }
-    }
-
-    result
-}
-
-/// Strip silence from audio using energy detection, replacing long gaps with short padding.
-///
-/// Whisper hallucinates repeating text when fed long silence segments,
-/// especially on non-English audio. This function:
-/// 1. Computes RMS energy per 100ms chunk with adaptive noise floor
-/// 2. Keeps all speech chunks plus context padding
-/// 3. Replaces silence gaps >500ms with 300ms of zero padding (enough for
-///    whisper to detect a segment boundary without triggering hallucination)
-fn strip_silence(samples: &[f32]) -> Vec<f32> {
-    const SAMPLE_RATE: usize = 16000;
-    const CHUNK_SIZE: usize = SAMPLE_RATE / 10; // 100ms chunks
-    const MAX_SILENCE_CHUNKS: usize = 5; // 500ms — silence beyond this gets trimmed
-    const PAD_CHUNKS: usize = 3; // 300ms of silence inserted at gap boundaries
-    const CONTEXT_CHUNKS: usize = 2; // 200ms of context kept around speech
-    const ENERGY_MULTIPLIER: f32 = 4.0; // speech must be 4x above noise floor
-
-    if samples.len() < CHUNK_SIZE * 3 {
-        return samples.to_vec();
-    }
-
-    let num_chunks = samples.len() / CHUNK_SIZE;
-
-    // Phase 1: compute RMS per chunk
-    let rms_values: Vec<f32> = (0..num_chunks)
-        .map(|i| {
-            let start = i * CHUNK_SIZE;
-            let end = (start + CHUNK_SIZE).min(samples.len());
-            let chunk = &samples[start..end];
-            (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt()
-        })
-        .collect();
-
-    // Phase 2: estimate noise floor from the quietest 20% of chunks
-    let mut sorted_rms = rms_values.clone();
-    sorted_rms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let quiet_count = (num_chunks / 5).max(1);
-    let noise_floor =
-        (sorted_rms[..quiet_count].iter().sum::<f32>() / quiet_count as f32).clamp(0.0001, 0.02);
-    let threshold = noise_floor * ENERGY_MULTIPLIER;
-
-    // Phase 3: classify chunks as speech (with hangover to avoid flapping)
-    let mut is_speech = vec![false; num_chunks];
-    let mut hangover = 0u32;
-    const HANGOVER_CHUNKS: u32 = 5; // 500ms hangover
-    for (i, rms) in rms_values.iter().enumerate() {
-        if *rms > threshold {
-            is_speech[i] = true;
-            hangover = HANGOVER_CHUNKS;
-        } else if hangover > 0 {
-            is_speech[i] = true;
-            hangover -= 1;
-        }
-    }
-
-    // Phase 4: expand speech regions by CONTEXT_CHUNKS in each direction
-    let mut keep = is_speech.clone();
-    for (i, &speech) in is_speech.iter().enumerate() {
-        if speech {
-            let from = i.saturating_sub(CONTEXT_CHUNKS);
-            let to = (i + CONTEXT_CHUNKS + 1).min(num_chunks);
-            for k in &mut keep[from..to] {
-                *k = true;
-            }
-        }
-    }
-
-    // Phase 5: assemble output — keep speech, replace long silence with short pad
-    let mut output = Vec::with_capacity(samples.len());
-    let mut consecutive_silence = 0usize;
-    let silence_pad: Vec<f32> = vec![0.0; PAD_CHUNKS * CHUNK_SIZE];
-
-    for (i, &kept) in keep.iter().enumerate() {
-        let start = i * CHUNK_SIZE;
-        let end = (start + CHUNK_SIZE).min(samples.len());
-
-        if kept {
-            if consecutive_silence > MAX_SILENCE_CHUNKS {
-                output.extend_from_slice(&silence_pad);
-            }
-            consecutive_silence = 0;
-            output.extend_from_slice(&samples[start..end]);
-        } else {
-            consecutive_silence += 1;
-            if consecutive_silence <= MAX_SILENCE_CHUNKS {
-                output.extend_from_slice(&samples[start..end]);
-            }
-        }
-    }
-
-    // Include any trailing partial chunk
-    let remainder_start = num_chunks * CHUNK_SIZE;
-    if remainder_start < samples.len() {
-        output.extend_from_slice(&samples[remainder_start..]);
-    }
-
-    let original_secs = samples.len() as f64 / SAMPLE_RATE as f64;
-    let stripped_secs = output.len() as f64 / SAMPLE_RATE as f64;
-    if stripped_secs < original_secs * 0.95 {
-        tracing::info!(
-            original_secs = format!("{:.1}", original_secs),
-            stripped_secs = format!("{:.1}", stripped_secs),
-            removed_pct = format!("{:.0}", (1.0 - stripped_secs / original_secs) * 100.0),
-            "VAD stripped silence from audio"
-        );
-    }
-
-    output
+    denoised
 }
 
 /// Resolve the whisper model file path for dictation (uses dictation.model config).
@@ -888,100 +700,39 @@ fn resolve_vad_model_path(config: &Config) -> Option<PathBuf> {
     None
 }
 
-/// Build whisper FullParams with sane defaults matching whisper.cpp CLI.
-///
-/// The whisper.cpp CLI uses `best_of=5`, entropy/logprob thresholds, and
-/// temperature fallback to prevent decoder loops on non-English or noisy
-/// audio. Without these, `Greedy { best_of: 1 }` can repeat gibberish
-/// indefinitely (see GitHub issue #21).
-///
-/// When a Silero VAD model is available, enables integrated VAD so whisper
-/// only transcribes speech segments (matching whisper-cli behavior exactly).
-///
-/// Use this for batch transcription. For latency-sensitive streaming,
-/// use [`streaming_whisper_params`] instead.
-#[cfg(feature = "whisper")]
-pub fn default_whisper_params<'a, 'b>(
-    vad_model_path: Option<&str>,
-) -> whisper_rs::FullParams<'a, 'b> {
-    let mut params =
-        whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 5 });
-
-    // Match whisper.cpp CLI defaults for stable decoding
-    params.set_temperature(0.0);
-    params.set_temperature_inc(0.2); // retry at higher temp on high-entropy segments
-    params.set_entropy_thold(2.4); // flag segments with entropy above this
-    params.set_logprob_thold(-1.0); // flag segments with avg logprob below this
-    params.set_no_speech_thold(0.6); // probability threshold for silence detection
-    params.set_suppress_blank(true); // suppress blank/repeated token hallucinations
-
-    // Enable Silero VAD if model is available — this is the key difference vs whisper-cli.
-    // Without VAD, silence segments trigger decoder hallucination loops, especially on
-    // non-English audio (issue #21).
-    if let Some(path) = vad_model_path {
-        params.set_vad_model_path(Some(path));
-        params.enable_vad(true);
-        params.set_vad_params(whisper_rs::WhisperVadParams::default());
-        tracing::info!("Silero VAD enabled for transcription");
-    }
-
-    // Suppress noisy output
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-
-    params
-}
-
-/// Lighter whisper params for streaming/dictation where latency matters.
-///
-/// Keeps `best_of=1` and disables temperature fallback to stay within
-/// the ~200ms (base) / ~500ms (small) budget for partial transcription.
-/// Still sets entropy/logprob/no-speech thresholds and suppress_blank
-/// to catch the worst hallucinations without the 5x cost of best_of=5.
-#[cfg(feature = "whisper")]
-pub fn streaming_whisper_params<'a, 'b>() -> whisper_rs::FullParams<'a, 'b> {
-    let mut params =
-        whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
-
-    params.set_temperature(0.0);
-    params.set_temperature_inc(0.0); // no retry — latency budget too tight
-    params.set_entropy_thold(2.4);
-    params.set_logprob_thold(-1.0);
-    params.set_no_speech_thold(0.6);
-    params.set_suppress_blank(true);
-
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-
-    params
-}
-
-/// Get number of CPU threads to use for whisper.
+// default_whisper_params, streaming_whisper_params, and num_cpus
+// are re-exported from whisper_guard::params via `pub use` at the top of this file.
 #[cfg(feature = "whisper")]
 fn num_cpus() -> i32 {
-    std::thread::available_parallelism()
-        .map(|p| p.get() as i32)
-        .unwrap_or(4)
-        .min(8) // Cap at 8 — diminishing returns beyond that for whisper
+    whisper_guard::params::num_cpus()
 }
 
 // ──────────────────────────────────────────────────────────────
 // Parakeet engine (subprocess-based)
 //
-// Shells out to parakeet.cpp CLI, parses JSON output with
-// word-level timestamps, formats as [M:SS] lines to match
+// Shells out to parakeet.cpp CLI, parses text output with
+// line-level timestamps, formats as [M:SS] lines to match
 // whisper output exactly. Pipeline/diarization/summarization
 // all work unchanged.
 // ──────────────────────────────────────────────────────────────
+
+/// Known valid parakeet model identifiers.
+#[cfg(feature = "parakeet")]
+const VALID_PARAKEET_MODELS: &[&str] = &["tdt-ctc-110m", "tdt-600m"];
 
 /// Transcribe using parakeet.cpp as a subprocess.
 #[cfg(feature = "parakeet")]
 fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String, TranscribeError> {
     use std::process::Command;
+
+    // Validate model name before doing any work
+    if !VALID_PARAKEET_MODELS.contains(&config.transcription.parakeet_model.as_str()) {
+        return Err(TranscribeError::ParakeetFailed(format!(
+            "unknown parakeet model '{}'. Valid: {}",
+            config.transcription.parakeet_model,
+            VALID_PARAKEET_MODELS.join(", ")
+        )));
+    }
 
     // Step 1: Load audio and convert to 16kHz mono (reuse existing pipeline)
     let samples = load_audio_samples(audio_path)?;
@@ -989,8 +740,16 @@ fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String
         return Err(TranscribeError::EmptyAudio);
     }
 
+    // Noise reduction is not yet supported for parakeet — warn if configured
+    if config.transcription.noise_reduction {
+        tracing::debug!(
+            "noise_reduction is enabled but not applied for parakeet engine \
+             (nnnoiseless only supports the whisper path)"
+        );
+    }
+
     // Strip silence (parakeet benefits from the same pre-processing)
-    let samples = strip_silence(&samples);
+    let samples = strip_silence(&samples, 16000);
     if samples.is_empty() {
         return Err(TranscribeError::EmptyAudio);
     }
@@ -1019,10 +778,20 @@ fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String
         "starting parakeet transcription"
     );
 
+    let model_str = model_path
+        .to_str()
+        .ok_or_else(|| TranscribeError::ParakeetFailed("model path is not valid UTF-8".into()))?;
+    let wav_str = tmp_wav.path().to_str().ok_or_else(|| {
+        TranscribeError::ParakeetFailed("temp WAV path is not valid UTF-8".into())
+    })?;
+    let vocab_str = vocab_path
+        .to_str()
+        .ok_or_else(|| TranscribeError::ParakeetFailed("vocab path is not valid UTF-8".into()))?;
+
     let output = Command::new(binary)
-        .arg(model_path.to_str().unwrap_or(""))
-        .arg(tmp_wav.path().to_str().unwrap_or(""))
-        .args(["--vocab", vocab_path.to_str().unwrap_or("")])
+        .arg(model_str)
+        .arg(wav_str)
+        .args(["--vocab", vocab_str])
         .args(["--model", &config.transcription.parakeet_model])
         .arg("--timestamps")
         .stdout(std::process::Stdio::piped())
@@ -1054,131 +823,23 @@ fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String
     Ok(transcript)
 }
 
-/// A single word from parakeet.cpp JSON output.
-#[cfg(feature = "parakeet")]
-#[derive(serde::Deserialize)]
-struct ParakeetWord {
-    #[serde(alias = "text")]
-    word: String,
-    start: f64,
-    end: f64,
-}
-
-/// Parakeet JSON output envelope — handles both array and object formats.
-#[cfg(feature = "parakeet")]
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum ParakeetOutput {
-    /// Array of word-level timestamps
-    Words(Vec<ParakeetWord>),
-    /// Object with a "words" or "timestamps" field
-    Object {
-        #[serde(default)]
-        words: Vec<ParakeetWord>,
-        #[serde(default)]
-        timestamps: Option<ParakeetTimestamps>,
-    },
-}
-
-#[cfg(feature = "parakeet")]
-#[derive(serde::Deserialize)]
-struct ParakeetTimestamps {
-    #[serde(default)]
-    words: Vec<ParakeetWord>,
-}
-
-/// Parse parakeet.cpp output into `[M:SS] text` lines matching whisper format.
+/// Parse parakeet.cpp text output into `[M:SS] text` lines matching whisper format.
 ///
-/// parakeet.cpp outputs text with `--timestamps` flag. Tries text parsing first
-/// (the actual output format), with JSON as a fallback for potential future versions.
+/// parakeet.cpp with `--timestamps` outputs lines like:
+///   `[0.00 - 2.50] Hello world`
+///   `[2.80 - 5.10] How are you`
 ///
-/// Applies the same dedup_segments anti-hallucination filter used by whisper.
+/// Applies the full anti-hallucination pipeline: dedup_segments, dedup_interleaved,
+/// and trim_trailing_noise — matching the whisper path exactly.
 #[cfg(feature = "parakeet")]
 fn parse_parakeet_output(raw_output: &str, config: &Config) -> Result<String, TranscribeError> {
     let raw = raw_output.trim();
-
-    // Try text parsing first — this is what parakeet.cpp actually outputs with --timestamps
-    if let Ok(result) = parse_parakeet_text_output(raw, config) {
-        return Ok(result);
-    }
-
-    // Fallback: try JSON parsing (for potential future parakeet.cpp versions or wrappers)
-    let words: Vec<ParakeetWord> = if let Ok(output) = serde_json::from_str::<ParakeetOutput>(raw) {
-        match output {
-            ParakeetOutput::Words(w) => w,
-            ParakeetOutput::Object { words, timestamps } => {
-                if !words.is_empty() {
-                    words
-                } else if let Some(ts) = timestamps {
-                    ts.words
-                } else {
-                    Vec::new()
-                }
-            }
-        }
-    } else {
-        return Err(TranscribeError::ParakeetFailed(
-            "could not parse parakeet output as text or JSON".into(),
-        ));
-    };
-
-    if words.is_empty() {
+    if raw.is_empty() {
         return Err(TranscribeError::EmptyTranscript(
             config.transcription.min_words,
         ));
     }
 
-    // Group words into segments at pause boundaries
-    let mut lines = Vec::new();
-    let mut current_words: Vec<&str> = Vec::new();
-    let mut segment_start: f64 = 0.0;
-
-    for (i, word) in words.iter().enumerate() {
-        if current_words.is_empty() {
-            segment_start = word.start;
-        }
-        let w = word.word.trim();
-        if !w.is_empty() {
-            current_words.push(w);
-        }
-
-        // Break segment at pauses > 0.5s or every ~30 words
-        let is_pause = if i + 1 < words.len() {
-            words[i + 1].start - word.end > 0.5
-        } else {
-            true // last word
-        };
-
-        if (is_pause || current_words.len() >= 30) && !current_words.is_empty() {
-            let mins = (segment_start / 60.0) as u64;
-            let secs = (segment_start % 60.0) as u64;
-            let text = current_words.join(" ");
-            lines.push(format!("[{}:{:02}] {}", mins, secs, text));
-            current_words.clear();
-        }
-    }
-
-    // Apply dedup (reuse existing anti-hallucination safety net)
-    let lines = dedup_segments(lines);
-
-    let transcript = lines.join("\n");
-    if transcript.is_empty() {
-        Ok(transcript)
-    } else {
-        Ok(format!("{}\n", transcript))
-    }
-}
-
-/// Parser for parakeet.cpp text output (line-based with timestamps).
-///
-/// Handles output like:
-///   `[0.00 - 2.50] Hello world`
-///   `[2.80 - 5.10] How are you`
-///
-/// Also handles plain text lines without timestamps. Only succeeds if at least
-/// one line was parsed — returns Err to allow JSON fallback on non-text input.
-#[cfg(feature = "parakeet")]
-fn parse_parakeet_text_output(raw: &str, config: &Config) -> Result<String, TranscribeError> {
     let mut lines = Vec::new();
     let mut has_timestamps = false;
 
@@ -1208,33 +869,36 @@ fn parse_parakeet_text_output(raw: &str, config: &Config) -> Result<String, Tran
             }
         }
 
-        // Plain text line (no timestamp) — include as-is
-        if !line.is_empty() {
-            lines.push(format!("[0:00] {}", line));
-        }
+        // Non-timestamp line — skip (don't fake [0:00] timestamps)
     }
 
     if lines.is_empty() {
+        if !has_timestamps {
+            // No parseable output at all — include a snippet in the error for debugging
+            let preview: String = raw.chars().take(200).collect();
+            return Err(TranscribeError::ParakeetFailed(format!(
+                "could not parse parakeet output (no [start - end] timestamps found). \
+                 First 200 chars: {}",
+                preview
+            )));
+        }
         return Err(TranscribeError::EmptyTranscript(
             config.transcription.min_words,
         ));
     }
 
-    // If no timestamped lines were found and input looks like it could be JSON,
-    // return Err to let the JSON fallback parser try
-    if !has_timestamps && raw.trim_start().starts_with(['{', '[']) {
-        return Err(TranscribeError::ParakeetFailed(
-            "text parser found no timestamps — trying JSON fallback".into(),
-        ));
-    }
-
+    // Full anti-hallucination pipeline (same as whisper path)
     let lines = dedup_segments(lines);
+    let lines = dedup_interleaved(lines);
+    let lines = trim_trailing_noise(lines);
+
     let transcript = lines.join("\n");
     if transcript.is_empty() {
-        Ok(transcript)
-    } else {
-        Ok(format!("{}\n", transcript))
+        return Err(TranscribeError::EmptyTranscript(
+            config.transcription.min_words,
+        ));
     }
+    Ok(format!("{}\n", transcript))
 }
 
 /// Write f32 samples as a 16kHz mono 16-bit WAV file.
@@ -1327,52 +991,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resample_preserves_length_proportionally() {
-        let samples: Vec<f32> = (0..44100).map(|i| (i as f32 / 44100.0).sin()).collect();
-        let resampled = resample(&samples, 44100, 16000);
-        // Should be approximately 16000 samples
-        let expected = 16000;
-        assert!(
-            (resampled.len() as i64 - expected as i64).unsigned_abs() < 10,
-            "expected ~{} samples, got {}",
-            expected,
-            resampled.len()
-        );
-    }
-
-    #[test]
-    fn resample_noop_at_same_rate() {
-        let samples = vec![1.0f32, 2.0, 3.0, 4.0];
-        let resampled = resample(&samples, 16000, 16000);
-        assert_eq!(samples, resampled);
-    }
-
-    #[test]
-    fn normalize_boosts_quiet_audio() {
-        // Peak 0.01 → gain = 0.5/0.01 = 50x → new peak = 0.5
-        let samples = vec![0.005f32, -0.008, 0.01, -0.003, 0.007];
-        let normalized = normalize_audio(samples);
-        let peak = normalized.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.4, "expected peak > 0.4, got {}", peak);
-        assert!(peak <= 0.5, "expected peak <= 0.5, got {}", peak);
-    }
-
-    #[test]
-    fn normalize_leaves_loud_audio_untouched() {
-        let samples = vec![0.3f32, -0.5, 0.2, -0.1];
-        let normalized = normalize_audio(samples.clone());
-        assert_eq!(samples, normalized);
-    }
-
-    #[test]
-    fn normalize_ignores_noise_floor() {
-        let samples = vec![0.00001f32, -0.00002, 0.00001];
-        let normalized = normalize_audio(samples.clone());
-        // Below noise floor — should not be boosted
-        assert_eq!(samples, normalized);
-    }
-
-    #[test]
     #[cfg(feature = "whisper")]
     fn resolve_model_path_returns_error_for_missing() {
         let config = Config {
@@ -1382,6 +1000,7 @@ mod tests {
                 min_words: 10,
                 language: Some("en".into()),
                 vad_model: String::new(),
+                noise_reduction: false,
                 ..crate::config::TranscriptionConfig::default()
             },
             ..Config::default()
@@ -1457,7 +1076,7 @@ mod tests {
         let speech: Vec<f32> = (0..16000)
             .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin())
             .collect();
-        let result = strip_silence(&speech);
+        let result = strip_silence(&speech, 16000);
         // All speech — nothing should be stripped
         assert_eq!(result.len(), speech.len());
     }
@@ -1476,7 +1095,7 @@ mod tests {
             samples.push(0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin());
         }
 
-        let result = strip_silence(&samples);
+        let result = strip_silence(&samples, 16000);
         // Should be significantly shorter than 7s (5s of silence trimmed)
         let original_secs = samples.len() as f64 / 16000.0;
         let result_secs = result.len() as f64 / 16000.0;
@@ -1508,7 +1127,7 @@ mod tests {
             samples.push(0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin());
         }
 
-        let result = strip_silence(&samples);
+        let result = strip_silence(&samples, 16000);
         // Short pause should be preserved — output ≈ input length
         let ratio = result.len() as f64 / samples.len() as f64;
         assert!(
@@ -1521,7 +1140,7 @@ mod tests {
     #[test]
     fn strip_silence_handles_all_silence() {
         let samples = vec![0.0f32; 16000 * 10]; // 10s of silence
-        let result = strip_silence(&samples);
+        let result = strip_silence(&samples, 16000);
         // Should still produce something (short pad at minimum)
         assert!(result.len() < samples.len() / 2, "should trim most silence");
     }
@@ -1663,109 +1282,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "parakeet")]
-    fn parse_parakeet_json_basic() {
-        let json = r#"[
-            {"word": "Hello", "start": 0.0, "end": 0.5},
-            {"word": "world", "start": 0.6, "end": 1.0},
-            {"word": "how", "start": 1.2, "end": 1.4},
-            {"word": "are", "start": 1.5, "end": 1.7},
-            {"word": "you", "start": 1.8, "end": 2.0}
-        ]"#;
-        let config = Config::default();
-        let result = parse_parakeet_output(json, &config).unwrap();
-        // All words within 0.5s of each other → one segment
-        assert!(
-            result.contains("[0:00]"),
-            "should have timestamp: {}",
-            result
-        );
-        assert!(result.contains("Hello"), "should have Hello: {}", result);
-        assert!(result.contains("world"), "should have world: {}", result);
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_json_segments_at_pauses() {
-        let json = r#"[
-            {"word": "Hello", "start": 0.0, "end": 0.5},
-            {"word": "world", "start": 0.6, "end": 1.0},
-            {"word": "second", "start": 5.0, "end": 5.5},
-            {"word": "segment", "start": 5.6, "end": 6.0}
-        ]"#;
-        let config = Config::default();
-        let result = parse_parakeet_output(json, &config).unwrap();
-        // Gap of 4.0s between "world" and "second" → two segments
-        let lines: Vec<&str> = result.trim().lines().collect();
-        assert_eq!(lines.len(), 2, "should have 2 segments: {:?}", lines);
-        assert!(lines[0].contains("Hello world"), "first: {}", lines[0]);
-        assert!(lines[1].contains("second segment"), "second: {}", lines[1]);
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_json_object_format() {
-        let json = r#"{"words": [
-            {"text": "Hello", "start": 0.0, "end": 0.5},
-            {"text": "world", "start": 0.6, "end": 1.0}
-        ]}"#;
-        let config = Config::default();
-        let result = parse_parakeet_output(json, &config).unwrap();
-        assert!(
-            result.contains("Hello"),
-            "should parse object format: {}",
-            result
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_json_timestamps_format() {
-        let json = r#"{"timestamps": {"words": [
-            {"word": "Hello", "start": 0.0, "end": 0.5},
-            {"word": "world", "start": 0.6, "end": 1.0}
-        ]}}"#;
-        let config = Config::default();
-        let result = parse_parakeet_output(json, &config).unwrap();
-        assert!(
-            result.contains("Hello"),
-            "should parse timestamps format: {}",
-            result
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_empty_output() {
-        let json = "[]";
-        let config = Config::default();
-        let result = parse_parakeet_output(json, &config);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no text"));
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_empty_input() {
-        let bad = "";
-        let config = Config::default();
-        let result = parse_parakeet_output(bad, &config);
-        assert!(result.is_err(), "empty input should fail");
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_plain_text_passthrough() {
-        // Non-timestamp text is captured as-is via text parser (text-first approach)
-        let text = "this is plain text output";
-        let config = Config::default();
-        let result = parse_parakeet_output(text, &config);
-        assert!(result.is_ok(), "text parser should capture plain text");
-        assert!(result.unwrap().contains("this is plain text output"));
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_text_fallback() {
+    fn parse_parakeet_text_basic() {
         let text = "[0.00 - 2.50] Hello world\n[3.00 - 5.10] How are you\n";
         let config = Config::default();
         let result = parse_parakeet_output(text, &config).unwrap();
@@ -1785,6 +1302,85 @@ mod tests {
 
     #[test]
     #[cfg(feature = "parakeet")]
+    fn parse_parakeet_empty_input() {
+        let config = Config::default();
+        let result = parse_parakeet_output("", &config);
+        assert!(result.is_err(), "empty input should fail");
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
+    fn parse_parakeet_plain_text_rejected() {
+        // Plain text without timestamps should be rejected (not faked as [0:00])
+        let text = "this is plain text output without timestamps";
+        let config = Config::default();
+        let result = parse_parakeet_output(text, &config);
+        assert!(result.is_err(), "plain text without timestamps should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no [start - end] timestamps"),
+            "error should explain the issue: {}",
+            err
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
+    fn parse_parakeet_timestamp_formatting() {
+        // Verify that timestamps > 60s are formatted correctly
+        let text = "[125.00 - 126.00] late segment\n";
+        let config = Config::default();
+        let result = parse_parakeet_output(text, &config).unwrap();
+        assert!(
+            result.contains("[2:05]"),
+            "125s should be [2:05]: {}",
+            result
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
+    fn parse_parakeet_dedup_applied() {
+        // Repeated lines should be collapsed by the anti-hallucination pipeline
+        let text = "[0.00 - 1.00] Hello world\n\
+                     [1.00 - 2.00] Hello world\n\
+                     [2.00 - 3.00] Hello world\n\
+                     [3.00 - 4.00] Hello world\n\
+                     [5.00 - 6.00] Something different\n";
+        let config = Config::default();
+        let result = parse_parakeet_output(text, &config).unwrap();
+        let lines: Vec<&str> = result.trim().lines().collect();
+        assert!(
+            lines.len() < 5,
+            "dedup should collapse repetitions: {:?}",
+            lines
+        );
+        assert!(lines.last().unwrap().contains("Something different"));
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
+    fn parse_parakeet_model_validation() {
+        let config = Config {
+            transcription: crate::config::TranscriptionConfig {
+                engine: "parakeet".into(),
+                parakeet_model: "totally-fake-model".into(),
+                ..crate::config::TranscriptionConfig::default()
+            },
+            ..Config::default()
+        };
+        let result = transcribe(std::path::Path::new("/nonexistent.wav"), &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unknown parakeet model"),
+            "should reject invalid model: {}",
+            err
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
     fn write_wav_roundtrip() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.wav");
@@ -1795,7 +1391,6 @@ mod tests {
 
         write_wav_16k_mono(&path, &samples).unwrap();
 
-        // Read back with hound
         let reader = hound::WavReader::open(&path).unwrap();
         let spec = reader.spec();
         assert_eq!(spec.channels, 1);
@@ -1823,23 +1418,6 @@ mod tests {
             err.contains("minutes setup --parakeet"),
             "error should tell user how to fix it: {}",
             err
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "parakeet")]
-    fn parse_parakeet_timestamp_formatting() {
-        // Verify that timestamps > 60s are formatted correctly
-        let json = r#"[
-            {"word": "late", "start": 125.0, "end": 125.5},
-            {"word": "segment", "start": 125.6, "end": 126.0}
-        ]"#;
-        let config = Config::default();
-        let result = parse_parakeet_output(json, &config).unwrap();
-        assert!(
-            result.contains("[2:05]"),
-            "125s should be [2:05]: {}",
-            result
         );
     }
 }

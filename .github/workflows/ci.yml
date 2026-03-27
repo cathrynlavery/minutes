@@ -125,12 +125,20 @@ jobs:
             target
           key: ${{ runner.os }}-desktop-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Cache ONNX Runtime binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/dfbin
+          key: ${{ runner.os }}-ort-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "2.10.1" --locked
 
       - name: Build Windows NSIS installer (unsigned)
         working-directory: tauri/src-tauri
         run: cargo tauri build --ci --bundles nsis --no-sign
+        env:
+          CARGO_NET_RETRY: 3
 
   mcp:
     name: MCP Server

@@ -175,6 +175,16 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Clean up hallucinated repetitions in existing transcripts
+    Clean {
+        /// Path to meeting .md file, or "all" to clean all meetings
+        meeting: String,
+
+        /// Actually modify the files (default: dry-run showing what would change)
+        #[arg(long)]
+        apply: bool,
+    },
+
     /// Process an audio file through the pipeline
     Process {
         /// Path to audio file (.wav, .m4a, .mp3)
@@ -446,6 +456,7 @@ fn main() -> Result<()> {
             content_type,
             output,
         } => cmd_export(content_type, output, &config),
+        Commands::Clean { meeting, apply } => cmd_clean(&meeting, apply, &config),
         Commands::Process {
             path,
             content_type,
@@ -1297,6 +1308,190 @@ fn parse_intent_kind(kind: &str) -> Result<minutes_core::markdown::IntentKind> {
             other
         ),
     }
+}
+
+fn cmd_clean(meeting: &str, apply: bool, config: &Config) -> Result<()> {
+    let meetings_dir = &config.output_dir;
+
+    // Resolve which files to clean
+    let files: Vec<std::path::PathBuf> = if meeting == "all" {
+        // Find all .md files in meetings dir
+        let mut found = Vec::new();
+        if meetings_dir.exists() {
+            for entry in std::fs::read_dir(meetings_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "md") {
+                    found.push(path);
+                }
+            }
+        }
+        // Also check memos subdir
+        let memos_dir = meetings_dir.join("memos");
+        if memos_dir.exists() {
+            for entry in std::fs::read_dir(&memos_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "md") {
+                    found.push(path);
+                }
+            }
+        }
+        found.sort();
+        found
+    } else {
+        let path = std::path::PathBuf::from(meeting);
+        if path.exists() {
+            // Containment check: only allow files under the meetings directory
+            let canonical = path.canonicalize()?;
+            let meetings_canonical = meetings_dir
+                .canonicalize()
+                .unwrap_or_else(|_| meetings_dir.clone());
+            if !canonical.starts_with(&meetings_canonical) {
+                anyhow::bail!(
+                    "path {} is outside the meetings directory ({})",
+                    path.display(),
+                    meetings_dir.display()
+                );
+            }
+            vec![canonical]
+        } else {
+            // Try as a search term
+            let filters = minutes_core::search::SearchFilters {
+                content_type: None,
+                since: None,
+                attendee: None,
+                intent_kind: None,
+                owner: None,
+                recorded_by: None,
+            };
+            let results = minutes_core::search::search(meeting, config, &filters)?;
+            if results.is_empty() {
+                anyhow::bail!("no meeting found matching: {}", meeting);
+            }
+            eprintln!("  Matched: {}", results[0].path.display());
+            vec![results[0].path.clone()]
+        }
+    };
+
+    if files.is_empty() {
+        eprintln!("No meeting files found.");
+        return Ok(());
+    }
+
+    let mut total_cleaned = 0;
+    let mut total_lines_removed = 0;
+
+    for path in &files {
+        let content = std::fs::read_to_string(path)?;
+
+        // Split into frontmatter + body, find the transcript section
+        let (fm, body) = minutes_core::markdown::split_frontmatter(&content);
+
+        // Find the "## Transcript" section — must be at start of line to avoid
+        // matching "## Transcript" appearing in body text or notes
+        let transcript_marker = "\n## Transcript";
+        if let Some(transcript_start) = body.find(transcript_marker) {
+            let heading_start = transcript_start + 1; // skip the \n
+            let transcript_offset = heading_start + "## Transcript".len();
+            let before_transcript = &body[..heading_start];
+
+            // Get everything after "## Transcript\n"
+            let transcript_text = body[transcript_offset..].trim_start_matches('\n');
+
+            // Check if there's another section after transcript
+            let (transcript_part, after_transcript) =
+                if let Some(next_section) = transcript_text.find("\n## ") {
+                    (
+                        &transcript_text[..next_section],
+                        Some(&transcript_text[next_section..]),
+                    )
+                } else {
+                    (transcript_text, None)
+                };
+
+            // Clean the transcript
+            let (cleaned, stats) = minutes_core::transcribe::clean_transcript(transcript_part);
+
+            if stats.lines_removed > 0 {
+                let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                if apply {
+                    // Rebuild the file
+                    // Reconstruct the file preserving original formatting.
+                    // split_frontmatter returns fm with a leading \n — strip it
+                    // to avoid inserting a blank line after the opening ---.
+                    let mut new_content = String::new();
+                    if !fm.is_empty() {
+                        new_content.push_str("---\n");
+                        new_content.push_str(fm.trim_start_matches('\n'));
+                        if !fm.ends_with('\n') {
+                            new_content.push('\n');
+                        }
+                        new_content.push_str("---\n");
+                    }
+                    // body also starts with \n after the closing --- line
+                    new_content.push_str(before_transcript.trim_start_matches('\n'));
+                    if !new_content.is_empty() && !new_content.ends_with('\n') {
+                        new_content.push('\n');
+                    }
+                    new_content.push_str("\n## Transcript\n\n");
+                    new_content.push_str(&cleaned);
+                    if let Some(after) = after_transcript {
+                        new_content.push_str(after);
+                    }
+                    new_content.push('\n');
+
+                    // Backup original before overwriting
+                    let backup = path.with_extension("md.bak");
+                    std::fs::copy(path, &backup)?;
+
+                    // Atomic write: temp file + rename to avoid corruption
+                    // on interrupted writes
+                    let tmp_path = path.with_extension("md.tmp");
+                    std::fs::write(&tmp_path, &new_content)?;
+                    std::fs::rename(&tmp_path, path)?;
+                    eprintln!(
+                        "  Cleaned {} — removed {} lines ({} → {})",
+                        filename,
+                        stats.lines_removed,
+                        stats.original_lines,
+                        stats.after_trailing_trim
+                    );
+                } else {
+                    eprintln!(
+                        "  {} — would remove {} lines ({} → {})",
+                        filename,
+                        stats.lines_removed,
+                        stats.original_lines,
+                        stats.after_trailing_trim
+                    );
+                }
+                total_cleaned += 1;
+                total_lines_removed += stats.lines_removed;
+            }
+        }
+    }
+
+    eprintln!();
+    if total_cleaned == 0 {
+        eprintln!(
+            "All {} meetings are clean — no hallucination loops detected.",
+            files.len()
+        );
+    } else if apply {
+        eprintln!(
+            "Cleaned {} meeting(s), removed {} total lines of hallucinated repetition.",
+            total_cleaned, total_lines_removed
+        );
+    } else {
+        eprintln!(
+            "Found {} meeting(s) with hallucinated repetition ({} lines to remove).",
+            total_cleaned, total_lines_removed
+        );
+        eprintln!("Run with --apply to fix them.");
+    }
+
+    Ok(())
 }
 
 fn cmd_process(

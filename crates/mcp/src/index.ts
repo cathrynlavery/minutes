@@ -32,6 +32,7 @@ import {
   registerAppTool,
   registerAppResource,
   RESOURCE_MIME_TYPE,
+  EXTENSION_ID,
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import { execFile, spawn } from "child_process";
@@ -171,7 +172,167 @@ function findMinutesBinary(): string {
   return "minutes";
 }
 
-const MINUTES_BIN = findMinutesBinary();
+let MINUTES_BIN = findMinutesBinary();
+
+// ── Expected CLI version (must match this MCP server release) ──
+const EXPECTED_CLI_VERSION = "0.8.0";
+
+// ── CLI auto-install ────────────────────────────────────────
+// When installed via MCPB or `npx minutes-mcp`, the Rust CLI binary
+// may not be present. We attempt to install it automatically so
+// non-technical users don't hit a "binary not found" dead end.
+
+let installAttempted = false;
+
+function getReleaseBinaryName(): string | null {
+  const platform = process.platform;
+  const arch = process.arch;
+  if (platform === "darwin" && arch === "arm64") return "minutes-macos-arm64";
+  if (platform === "darwin" && arch === "x64") return "minutes-macos-arm64"; // Rosetta handles it
+  if (platform === "linux" && arch === "x64") return "minutes-linux-x64";
+  if (platform === "win32" && arch === "x64") return "minutes-windows-x64.exe";
+  return null;
+}
+
+function getInstallDir(): string {
+  const localBin = join(homedir(), ".local", "bin");
+  if (process.platform === "win32") {
+    return join(homedir(), ".cargo", "bin"); // common writable dir on Windows
+  }
+  return localBin;
+}
+
+async function tryAutoInstall(): Promise<boolean> {
+  if (installAttempted) return false;
+  installAttempted = true;
+
+  console.error("[Minutes] CLI not found — attempting automatic install...");
+
+  // Strategy 1: Download pre-built binary from GitHub release (fastest, no deps)
+  const binaryName = getReleaseBinaryName();
+  if (binaryName) {
+    try {
+      const url = `https://github.com/silverstein/minutes/releases/download/v${EXPECTED_CLI_VERSION}/${binaryName}`;
+      const installDir = getInstallDir();
+      const isWindows = process.platform === "win32";
+      const targetName = isWindows ? "minutes.exe" : "minutes";
+      const targetPath = join(installDir, targetName);
+
+      console.error(`[Minutes] Downloading ${binaryName} from v${EXPECTED_CLI_VERSION} release...`);
+
+      // Ensure install directory exists
+      await execFileAsync("mkdir", ["-p", installDir], { timeout: 5000 }).catch(() => {});
+
+      // Download with curl (available on macOS, Linux, and modern Windows)
+      await execFileAsync("curl", ["-fSL", "-o", targetPath, url], { timeout: 120000 });
+
+      // Make executable (not needed on Windows)
+      if (!isWindows) {
+        await execFileAsync("chmod", ["+x", targetPath], { timeout: 5000 });
+      }
+
+      console.error(`[Minutes] ✓ Installed to ${targetPath}`);
+      MINUTES_BIN = targetPath;
+      return true;
+    } catch (e: any) {
+      console.error(`[Minutes] Binary download failed: ${e.message || e}`);
+    }
+  }
+
+  // Strategy 2: Homebrew (macOS only)
+  if (process.platform === "darwin") {
+    try {
+      console.error("[Minutes] Trying: brew tap silverstein/tap && brew install minutes");
+      await execFileAsync("brew", ["tap", "silverstein/tap"], { timeout: 120000 });
+      await execFileAsync("brew", ["install", "minutes"], { timeout: 300000 });
+      console.error("[Minutes] ✓ Installed via Homebrew");
+      MINUTES_BIN = findMinutesBinary();
+      return true;
+    } catch (e: any) {
+      console.error(`[Minutes] Homebrew install failed: ${e.message || e}`);
+    }
+  }
+
+  // Strategy 3: Cargo (if Rust is installed)
+  try {
+    console.error("[Minutes] Trying: cargo install minutes-cli");
+    await execFileAsync("cargo", ["install", "minutes-cli"], { timeout: 600000 });
+    console.error("[Minutes] ✓ Installed via cargo");
+    MINUTES_BIN = findMinutesBinary();
+    return true;
+  } catch (e: any) {
+    console.error(`[Minutes] cargo install failed: ${e.message || e}`);
+  }
+
+  console.error(
+    "[Minutes] Auto-install failed. Install manually:\n" +
+    "  macOS:   brew tap silverstein/tap && brew install minutes\n" +
+    "  Any:     cargo install minutes-cli\n" +
+    "  Source:  https://github.com/silverstein/minutes"
+  );
+  return false;
+}
+
+// ── CLI version check ───────────────────────────────────────
+
+async function checkCliVersion(): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
+    // Output is like "minutes 0.8.0" or just "0.8.0"
+    const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
+    if (match) {
+      const installedVersion = match[1];
+      if (installedVersion !== EXPECTED_CLI_VERSION) {
+        console.error(
+          `[Minutes] ⚠ CLI version mismatch: installed ${installedVersion}, server expects ${EXPECTED_CLI_VERSION}. ` +
+          `Update with: brew upgrade minutes (or cargo install minutes-cli)`
+        );
+      } else {
+        console.error(`[Minutes] CLI v${installedVersion} — up to date`);
+      }
+    }
+  } catch {
+    // Version check is best-effort — don't block on failure
+  }
+}
+
+// ── Auto-setup: download whisper model if missing ───────────
+// Recording needs a whisper model (~75MB for tiny). If the CLI is
+// available but the model isn't downloaded, trigger setup automatically
+// in the background so the first "start recording" just works.
+
+let modelCheckDone = false;
+
+async function ensureWhisperModel(): Promise<void> {
+  if (modelCheckDone) return;
+  modelCheckDone = true;
+
+  try {
+    // health --json returns an array of { label, state, detail, optional } items.
+    // The "Speech model" item has state "ready" when downloaded.
+    const { stdout } = await execFileAsync(MINUTES_BIN, ["health", "--json"], { timeout: 10000 });
+    const items = JSON.parse(stdout);
+    const modelItem = Array.isArray(items) && items.find((i: any) => i.label === "Speech model");
+    if (modelItem && modelItem.state === "ready") {
+      console.error("[Minutes] Whisper model ready");
+      return;
+    }
+  } catch {
+    // health command may not exist in older CLI versions — fall through to setup
+  }
+
+  // Model not found — download tiny model in background
+  console.error("[Minutes] Whisper model not found — downloading tiny model (~75MB)...");
+  try {
+    await execFileAsync(MINUTES_BIN, ["setup", "--model", "tiny"], { timeout: 300000 });
+    console.error("[Minutes] ✓ Whisper tiny model downloaded — recording is ready");
+  } catch (e: any) {
+    console.error(
+      `[Minutes] Model download failed: ${e.message || e}. ` +
+      `Run manually: minutes setup --model tiny`
+    );
+  }
+}
 
 // ── CLI availability detection ──────────────────────────────
 // When installed via `npx minutes-mcp`, the Rust CLI may not be present.
@@ -192,11 +353,31 @@ async function isCliAvailable(): Promise<boolean> {
     cliAvailable = true;
     cliCheckedAt = Date.now();
     console.error("[Minutes] CLI found — full mode (all tools enabled)");
+    // Check version and ensure whisper model in background (non-blocking)
+    checkCliVersion();
+    ensureWhisperModel();
   } catch {
+    // CLI not found — try to install it automatically
+    if (!installAttempted) {
+      const installed = await tryAutoInstall();
+      if (installed) {
+        try {
+          await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
+          cliAvailable = true;
+          cliCheckedAt = Date.now();
+          console.error("[Minutes] CLI now available after auto-install — full mode");
+          checkCliVersion();
+          ensureWhisperModel();
+          return true;
+        } catch {
+          // Install succeeded but binary still not found — path issue
+        }
+      }
+    }
     cliAvailable = false;
     cliCheckedAt = Date.now();
     console.error(
-      "[Minutes] CLI not found — read-only mode. Install for recording: brew install minutes"
+      "[Minutes] CLI not available — read-only mode (search and browse only)"
     );
   }
   return cliAvailable;
@@ -303,6 +484,13 @@ const server = new McpServer({
   name: "minutes",
   version: "0.8.0",
 });
+
+// Declare MCP Apps extension support so hosts classify this server as interactive.
+// The `extensions` field is part of the draft MCP spec (SEP-1724) — not yet in the
+// stable SDK types, so we cast through `any`.
+(server.server as any).registerCapabilities({
+  extensions: { [EXTENSION_ID]: {} },
+} as any);
 
 // Configurable directories — override via env vars in Claude Desktop extension settings
 const MEETINGS_DIR = process.env.MEETINGS_DIR || join(homedir(), "meetings");

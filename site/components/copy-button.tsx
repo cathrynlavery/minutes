@@ -13,14 +13,14 @@ export function CopyButton({ label, cmd }: { label: string; cmd: string }) {
           setTimeout(() => setCopied(false), 1500);
         });
       }}
-      className="group relative bg-[#0a0a0a] border border-white/[0.06] rounded-lg px-5 py-2.5 font-mono text-[13px] text-[#ededed] cursor-pointer transition-all hover:border-white/[0.12] hover:bg-[#111]"
+      className="group relative bg-[#0a0a0a] border border-white/[0.06] rounded-[2px] px-5 py-2.5 font-mono text-[13px] text-[#ededed] cursor-pointer transition-all hover:border-white/[0.12] hover:bg-[#111]"
     >
       <span className="block font-sans text-[11px] text-[#666] mb-1 uppercase tracking-wider">
         {label}
       </span>
       {cmd}
       {copied && (
-        <span className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a] rounded-lg text-[#00cc88] font-sans text-xs">
+        <span className="absolute inset-0 flex items-center justify-center bg-[#0a0a0a] rounded-[2px] text-[#00cc88] font-sans text-xs">
           Copied!
         </span>
       )}

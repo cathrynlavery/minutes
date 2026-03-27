@@ -638,8 +638,5 @@ fn first_words(text: &str, n: usize) -> String {
 }
 
 fn num_cpus() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
-        .min(8) // Cap at 8 — diminishing returns beyond that for whisper
+    whisper_guard::params::num_cpus()
 }

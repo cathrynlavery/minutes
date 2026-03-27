@@ -220,9 +220,7 @@ fn suppress_stderr<T>(f: impl FnOnce() -> T) -> T {
 }
 
 fn num_cpus() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as i32)
-        .unwrap_or(4)
+    whisper_guard::params::num_cpus()
 }
 
 #[cfg(test)]
