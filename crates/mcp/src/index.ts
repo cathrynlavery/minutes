@@ -296,6 +296,44 @@ async function checkCliVersion(): Promise<void> {
   }
 }
 
+// ── Auto-setup: download whisper model if missing ───────────
+// Recording needs a whisper model (~75MB for tiny). If the CLI is
+// available but the model isn't downloaded, trigger setup automatically
+// in the background so the first "start recording" just works.
+
+let modelCheckDone = false;
+
+async function ensureWhisperModel(): Promise<void> {
+  if (modelCheckDone) return;
+  modelCheckDone = true;
+
+  try {
+    // health --json returns an array of { label, state, detail, optional } items.
+    // The "Speech model" item has state "ready" when downloaded.
+    const { stdout } = await execFileAsync(MINUTES_BIN, ["health", "--json"], { timeout: 10000 });
+    const items = JSON.parse(stdout);
+    const modelItem = Array.isArray(items) && items.find((i: any) => i.label === "Speech model");
+    if (modelItem && modelItem.state === "ready") {
+      console.error("[Minutes] Whisper model ready");
+      return;
+    }
+  } catch {
+    // health command may not exist in older CLI versions — fall through to setup
+  }
+
+  // Model not found — download tiny model in background
+  console.error("[Minutes] Whisper model not found — downloading tiny model (~75MB)...");
+  try {
+    await execFileAsync(MINUTES_BIN, ["setup", "--model", "tiny"], { timeout: 300000 });
+    console.error("[Minutes] ✓ Whisper tiny model downloaded — recording is ready");
+  } catch (e: any) {
+    console.error(
+      `[Minutes] Model download failed: ${e.message || e}. ` +
+      `Run manually: minutes setup --model tiny`
+    );
+  }
+}
+
 // ── CLI availability detection ──────────────────────────────
 // When installed via `npx minutes-mcp`, the Rust CLI may not be present.
 // In that case, read-only tools use the pure-TS reader module.
@@ -315,8 +353,9 @@ async function isCliAvailable(): Promise<boolean> {
     cliAvailable = true;
     cliCheckedAt = Date.now();
     console.error("[Minutes] CLI found — full mode (all tools enabled)");
-    // Check version in background (non-blocking)
+    // Check version and ensure whisper model in background (non-blocking)
     checkCliVersion();
+    ensureWhisperModel();
   } catch {
     // CLI not found — try to install it automatically
     if (!installAttempted) {
@@ -328,6 +367,7 @@ async function isCliAvailable(): Promise<boolean> {
           cliCheckedAt = Date.now();
           console.error("[Minutes] CLI now available after auto-install — full mode");
           checkCliVersion();
+          ensureWhisperModel();
           return true;
         } catch {
           // Install succeeded but binary still not found — path issue

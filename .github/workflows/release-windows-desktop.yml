@@ -44,6 +44,7 @@ jobs:
           key: ${{ runner.os }}-ort-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install Tauri CLI
+        shell: bash
         run: cargo install tauri-cli --version "${TAURI_CLI_VERSION}" --locked
 
       - name: Build desktop installer (unsigned)
