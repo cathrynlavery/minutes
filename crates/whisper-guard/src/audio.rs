@@ -13,10 +13,13 @@
 /// 3. Replaces silence gaps >500ms with 300ms of zero padding (enough for
 ///    whisper to detect a segment boundary without triggering hallucination)
 ///
-/// Accepts any sample rate. Chunk sizes and timing thresholds are scaled
-/// proportionally from a 16kHz baseline (100ms chunks, 500ms max silence,
-/// 300ms padding, 200ms context, 500ms hangover).
+/// Accepts any sample rate (must be >= 100 Hz). Chunk sizes and timing
+/// thresholds are scaled proportionally from a 16kHz baseline (100ms chunks,
+/// 500ms max silence, 300ms padding, 200ms context, 500ms hangover).
 pub fn strip_silence(samples: &[f32], sample_rate: u32) -> Vec<f32> {
+    if sample_rate < 100 {
+        return samples.to_vec();
+    }
     let rate = sample_rate as usize;
     let chunk_size = rate / 10; // 100ms chunks
     let max_silence_chunks: usize = 5; // 500ms
