@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@remotion/player": "^4.0.438",
+    "@vercel/analytics": "^2.0.1",
     "geist": "^1.4.1",
     "next": "^15.4.0",
     "react": "^19.2.4",
