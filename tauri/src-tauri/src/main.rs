@@ -162,7 +162,9 @@ pub fn update_tray_state(app: &tauri::AppHandle, is_recording: bool) {
 
 pub fn update_tray_state_with_mode(app: &tauri::AppHandle, is_active: bool, is_live: bool) {
     if let Some(tray) = app.tray_by_id("minutes-tray") {
-        let icon_bytes: &[u8] = if is_active {
+        let icon_bytes: &[u8] = if is_live {
+            include_bytes!("../icons/icon-live.png")
+        } else if is_active {
             include_bytes!("../icons/icon-recording.png")
         } else {
             include_bytes!("../icons/icon.png")
@@ -411,8 +413,24 @@ fn main() {
                         )
                         .ok()
                         .map(|shortcut| shortcut.id());
+                    // Also check live transcript shortcut
+                    let live_shortcut_value = state
+                        .live_shortcut
+                        .lock()
+                        .ok()
+                        .map(|value| value.clone())
+                        .unwrap_or_else(|| "CmdOrCtrl+Shift+L".to_string());
+                    let live_shortcut_id =
+                        <tauri_plugin_global_shortcut::Shortcut as std::str::FromStr>::from_str(
+                            live_shortcut_value.as_str(),
+                        )
+                        .ok()
+                        .map(|shortcut| shortcut.id());
+
                     if Some(shortcut_id) == dictation_shortcut_id {
                         commands::handle_dictation_shortcut_event(app, event.state());
+                    } else if Some(shortcut_id) == live_shortcut_id {
+                        commands::handle_live_shortcut_event(app, event.state());
                     } else {
                         commands::handle_global_hotkey_event(app, event.state());
                     }
@@ -440,6 +458,8 @@ fn main() {
             dictation_stop_flag: Arc::new(AtomicBool::new(false)),
             live_transcript_active: Arc::new(AtomicBool::new(false)),
             live_transcript_stop_flag: Arc::new(AtomicBool::new(false)),
+            live_shortcut_enabled: Arc::new(AtomicBool::new(false)),
+            live_shortcut: Arc::new(Mutex::new("CmdOrCtrl+Shift+L".into())),
         })
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
@@ -975,6 +995,8 @@ fn main() {
             commands::cmd_start_live_transcript,
             commands::cmd_stop_live_transcript,
             commands::cmd_live_transcript_status,
+            commands::cmd_live_shortcut_settings,
+            commands::cmd_set_live_shortcut,
         ])
         .run(tauri::generate_context!())
         .expect("error while running minutes app");

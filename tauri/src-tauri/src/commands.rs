@@ -28,6 +28,8 @@ pub struct AppState {
     pub dictation_shortcut: Arc<Mutex<String>>,
     pub live_transcript_active: Arc<AtomicBool>,
     pub live_transcript_stop_flag: Arc<AtomicBool>,
+    pub live_shortcut_enabled: Arc<AtomicBool>,
+    pub live_shortcut: Arc<Mutex<String>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -3105,16 +3107,168 @@ pub fn cmd_stop_live_transcript(state: tauri::State<AppState>) -> Result<(), Str
 pub fn cmd_live_transcript_status(state: tauri::State<AppState>) -> serde_json::Value {
     let in_app_active = state.live_transcript_active.load(Ordering::Relaxed);
     let status = minutes_core::live_transcript::session_status();
+    let audio_level = if in_app_active {
+        minutes_core::streaming::stream_audio_level()
+    } else {
+        0
+    };
     serde_json::json!({
         "active": in_app_active || status.active,
         "line_count": status.line_count,
         "duration_secs": status.duration_secs,
+        "audioLevel": audio_level,
     })
 }
 
 /// Update the CLAUDE.md in the assistant workspace to mention (or un-mention)
 /// the live transcript. This makes any agent (Claude, Codex, Gemini) aware
 /// of the live JSONL file without requiring MCP.
+pub fn handle_live_shortcut_event(
+    app: &tauri::AppHandle,
+    shortcut_state: tauri_plugin_global_shortcut::ShortcutState,
+) {
+    let state = app.state::<AppState>();
+    if !state.live_shortcut_enabled.load(Ordering::Relaxed) {
+        return;
+    }
+    if shortcut_state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+        return;
+    }
+
+    // Toggle: if active, stop. If idle, start.
+    if state.live_transcript_active.load(Ordering::Relaxed) {
+        state
+            .live_transcript_stop_flag
+            .store(true, Ordering::Relaxed);
+    } else {
+        // Fire start via the same command handler logic
+        let app_clone = app.clone();
+        let active = state.live_transcript_active.clone();
+        let stop_flag = state.live_transcript_stop_flag.clone();
+
+        if active
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return; // already starting
+        }
+        if recording_active(&state.recording) || state.dictation_active.load(Ordering::Relaxed) {
+            active.store(false, Ordering::SeqCst);
+            return; // conflicting mode
+        }
+        stop_flag.store(false, Ordering::Relaxed);
+
+        std::thread::spawn(move || {
+            struct ActiveGuard(Arc<AtomicBool>);
+            impl Drop for ActiveGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+            let _guard = ActiveGuard(active);
+
+            let config = Config::load();
+            if let Ok(workspace) = crate::context::create_workspace(&config) {
+                update_assistant_live_context(&workspace, true);
+            }
+            crate::update_tray_state_with_mode(&app_clone, true, true);
+
+            if let Some(win) = app_clone.get_webview_window("main") {
+                win.emit("live-transcript:started", ()).ok();
+            }
+
+            let result = minutes_core::live_transcript::run(stop_flag.clone(), &config);
+            stop_flag.store(false, Ordering::Relaxed);
+
+            if let Ok(workspace) = crate::context::create_workspace(&config) {
+                update_assistant_live_context(&workspace, false);
+            }
+
+            match result {
+                Ok((lines, duration, _)) => {
+                    eprintln!("[live-shortcut] ended: {} lines in {:.0}s", lines, duration);
+                    if let Some(win) = app_clone.get_webview_window("main") {
+                        win.emit(
+                            "live-transcript:stopped",
+                            serde_json::json!({
+                                "lines": lines, "duration_secs": duration,
+                            }),
+                        )
+                        .ok();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[live-shortcut] error: {}", e);
+                    if let Some(win) = app_clone.get_webview_window("main") {
+                        win.emit(
+                            "live-transcript:error",
+                            serde_json::json!({ "error": e.to_string() }),
+                        )
+                        .ok();
+                    }
+                }
+            }
+            crate::update_tray_state(&app_clone, false);
+        });
+    }
+}
+
+#[tauri::command]
+pub fn cmd_live_shortcut_settings(state: tauri::State<AppState>) -> HotkeySettings {
+    let enabled = state.live_shortcut_enabled.load(Ordering::Relaxed);
+    let shortcut = state
+        .live_shortcut
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| "CmdOrCtrl+Shift+L".into());
+    HotkeySettings {
+        enabled,
+        shortcut,
+        choices: vec![],
+    }
+}
+
+#[tauri::command]
+pub fn cmd_set_live_shortcut(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    enabled: bool,
+    shortcut: String,
+) -> Result<HotkeySettings, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let next_shortcut = validate_hotkey_shortcut(&shortcut)?;
+    let previous = cmd_live_shortcut_settings(state.clone());
+    let manager = app.global_shortcut();
+
+    if previous.enabled {
+        manager
+            .unregister(previous.shortcut.as_str())
+            .map_err(|e| format!("Could not unregister {}: {}", previous.shortcut, e))?;
+    }
+
+    if enabled {
+        if let Err(e) = manager.register(next_shortcut.as_str()) {
+            if previous.enabled {
+                let _ = manager.register(previous.shortcut.as_str());
+            }
+            return Err(format!(
+                "Could not register {}. Another app may already be using it. ({})",
+                next_shortcut, e
+            ));
+        }
+    }
+
+    state
+        .live_shortcut_enabled
+        .store(enabled, Ordering::Relaxed);
+    if let Ok(mut current) = state.live_shortcut.lock() {
+        *current = next_shortcut;
+    }
+
+    Ok(cmd_live_shortcut_settings(state))
+}
+
 fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool) {
     let claude_md = workspace.join("CLAUDE.md");
     let existing = std::fs::read_to_string(&claude_md).unwrap_or_default();

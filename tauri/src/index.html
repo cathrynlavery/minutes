@@ -466,11 +466,12 @@
       text-transform: uppercase;
     }
     .live-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
       background: var(--live);
       animation: live-pulse 2s ease-in-out infinite;
+      /* Rounded square shape distinguishes from recording's circle for colorblind users */
     }
     @keyframes live-pulse {
       0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.4); }
@@ -488,6 +489,21 @@
       font-size: 11px;
       color: var(--text-secondary);
       margin-top: 2px;
+    }
+    .live-level {
+      height: 3px;
+      margin: 6px 0 8px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .live-level-fill {
+      height: 100%;
+      background: var(--live);
+      opacity: 0.6;
+      border-radius: 2px;
+      transition: width 0.15s ease-out;
+      width: 0%;
     }
     .live-actions {
       margin-top: 8px;
@@ -1711,6 +1727,7 @@
       </div>
       <span class="live-time" id="live-time">0:00</span>
     </div>
+    <div class="live-level"><div class="live-level-fill" id="live-level-fill"></div></div>
     <div class="live-utterances" id="live-utterances">0 utterances</div>
     <div class="live-actions">
       <button class="btn btn-secondary btn-sm" id="btn-stop-live">Stop Live</button>
@@ -2013,6 +2030,23 @@
               <option value="5000">5 seconds</option>
             </select>
           </div>
+        </div>
+      </div>
+
+      <!-- Live Transcript -->
+      <div style="margin-bottom: 16px;">
+        <div class="about-item-title">LIVE TRANSCRIPT</div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Keyboard shortcut</div>
+            <select class="shortcut-select" id="settings-live-shortcut-select" style="margin-top: 6px;">
+              <option value="CmdOrCtrl+Shift+L">Cmd+Shift+L</option>
+              <option value="CmdOrCtrl+Alt+L">Cmd+Option+L</option>
+              <option value="CmdOrCtrl+Shift+T">Cmd+Shift+T</option>
+            </select>
+            <div class="about-controls-meta">Toggle live transcript on/off from any app.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-live-shortcut">Off</button>
         </div>
       </div>
 
@@ -2487,6 +2521,8 @@
               const sec = d % 60;
               document.getElementById('live-time').textContent = `${min}:${String(sec).padStart(2, '0')}`;
               document.getElementById('live-utterances').textContent = `${n} utterance${n !== 1 ? 's' : ''}`;
+              const lvl = Math.min(100, liveStatus.audioLevel || 0);
+              document.getElementById('live-level-fill').style.width = lvl + '%';
               if (!wasLive) startFastPoll();
             } else {
               liveBar.classList.remove('active');
@@ -3806,6 +3842,40 @@
       await invoke('cmd_set_setting', {section:'dictation',key:'daily_note_log',value:String(next)});
       setSettingsToggle('settings-dictation-daily-note', next);
     });
+
+    // ── Live transcript shortcut settings ──
+    document.getElementById('settings-live-shortcut').addEventListener('click', async () => {
+      const select = document.getElementById('settings-live-shortcut-select');
+      const currentEnabled = document.getElementById('settings-live-shortcut').textContent === 'On';
+      try {
+        const settings = await invoke('cmd_set_live_shortcut', {
+          enabled: !currentEnabled,
+          shortcut: select.value,
+        });
+        setSettingsToggle('settings-live-shortcut', settings.enabled);
+      } catch (e) {
+        console.error('Live shortcut:', e);
+      }
+    });
+    document.getElementById('settings-live-shortcut-select').addEventListener('change', async (e) => {
+      const enabled = document.getElementById('settings-live-shortcut').textContent === 'On';
+      if (!enabled) return;
+      try {
+        const settings = await invoke('cmd_set_live_shortcut', {
+          enabled: true,
+          shortcut: e.target.value,
+        });
+        setSettingsToggle('settings-live-shortcut', settings.enabled);
+      } catch (e2) {
+        console.error('Live shortcut change:', e2);
+      }
+    });
+    // Load initial live shortcut state
+    invoke('cmd_live_shortcut_settings').then(settings => {
+      setSettingsToggle('settings-live-shortcut', settings.enabled);
+      const select = document.getElementById('settings-live-shortcut-select');
+      if (select) select.value = settings.shortcut;
+    }).catch(() => {});
     // Dictation hotkey — "press to record" key capture
     const KEYCODE_NAMES = {
       0: 'A', 1: 'S', 2: 'D', 3: 'F', 4: 'H', 5: 'G', 6: 'Z', 7: 'X', 8: 'C', 9: 'V',
