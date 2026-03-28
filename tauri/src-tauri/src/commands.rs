@@ -1562,6 +1562,9 @@ pub fn cmd_start_recording(
     if recording_active(&state.recording) || state.starting.load(Ordering::Relaxed) {
         return Err("Already recording".into());
     }
+    if state.live_transcript_active.load(Ordering::Relaxed) {
+        return Err("Live transcript in progress — stop it first".into());
+    }
     let capture_mode = parse_capture_mode(mode.as_deref())?;
     state.starting.store(true, Ordering::Relaxed);
     let rec = state.recording.clone();
@@ -2181,17 +2184,8 @@ fn sync_workspace_for_mode(
     mode: &str,
     meeting_path: Option<&str>,
 ) -> Result<(), String> {
+    // write_assistant_context preserves live transcript markers if present (U2/T3)
     crate::context::write_assistant_context(workspace, config)?;
-
-    // Preserve live transcript context if a session is active (T3)
-    let lt_pid = minutes_core::pid::live_transcript_pid_path();
-    if minutes_core::pid::check_pid_file(&lt_pid)
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        update_assistant_live_context(workspace, true);
-    }
 
     match mode {
         "assistant" => crate::context::clear_active_meeting_context(workspace),
@@ -3032,8 +3026,8 @@ pub fn cmd_start_live_transcript(
             update_assistant_live_context(&workspace, true);
         }
 
-        // Update tray to show active state (T9)
-        crate::update_tray_state(&app_clone, true);
+        // Update tray to show live state (T9 + U3: distinct tooltip)
+        crate::update_tray_state_with_mode(&app_clone, true, true);
 
         let result = minutes_core::live_transcript::run(stop_flag.clone(), &config);
 

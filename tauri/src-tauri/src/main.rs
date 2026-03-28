@@ -157,22 +157,28 @@ pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &st
 
 /// Update tray to reflect recording state
 pub fn update_tray_state(app: &tauri::AppHandle, is_recording: bool) {
+    update_tray_state_with_mode(app, is_recording, false);
+}
+
+pub fn update_tray_state_with_mode(app: &tauri::AppHandle, is_active: bool, is_live: bool) {
     if let Some(tray) = app.tray_by_id("minutes-tray") {
-        let icon_bytes: &[u8] = if is_recording {
+        let icon_bytes: &[u8] = if is_active {
             include_bytes!("../icons/icon-recording.png")
         } else {
             include_bytes!("../icons/icon.png")
         };
         if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
             tray.set_icon(Some(icon)).ok();
-            tray.set_icon_as_template(!is_recording).ok();
+            tray.set_icon_as_template(!is_active).ok();
         }
-        tray.set_tooltip(Some(if is_recording {
+        let tooltip = if is_live {
+            "Minutes — Live Transcribing..."
+        } else if is_active {
             "Minutes — Recording..."
         } else {
             "Minutes"
-        }))
-        .ok();
+        };
+        tray.set_tooltip(Some(tooltip)).ok();
     }
 }
 
