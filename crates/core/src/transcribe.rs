@@ -184,20 +184,18 @@ fn transcribe_with_whisper(
         exceeded
     });
 
-    state
-        .full(params, samples)
-        .map_err(|e| {
-            let msg = format!("{}", e);
-            if msg.contains("abort") {
-                TranscribeError::TranscriptionFailed(format!(
-                    "transcription timed out after {:.0}s (audio was {:.0}s). \
+    state.full(params, samples).map_err(|e| {
+        let msg = format!("{}", e);
+        if msg.contains("abort") {
+            TranscribeError::TranscriptionFailed(format!(
+                "transcription timed out after {:.0}s (audio was {:.0}s). \
                      Try a smaller model or ensure Silero VAD is installed: minutes setup",
-                    timeout_secs, audio_duration_secs
-                ))
-            } else {
-                TranscribeError::TranscriptionFailed(msg)
-            }
-        })?;
+                timeout_secs, audio_duration_secs
+            ))
+        } else {
+            TranscribeError::TranscriptionFailed(msg)
+        }
+    })?;
 
     let num_segments = state.full_n_segments();
 
