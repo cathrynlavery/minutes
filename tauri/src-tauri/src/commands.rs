@@ -2183,6 +2183,16 @@ fn sync_workspace_for_mode(
 ) -> Result<(), String> {
     crate::context::write_assistant_context(workspace, config)?;
 
+    // Preserve live transcript context if a session is active (T3)
+    let lt_pid = minutes_core::pid::live_transcript_pid_path();
+    if minutes_core::pid::check_pid_file(&lt_pid)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        update_assistant_live_context(workspace, true);
+    }
+
     match mode {
         "assistant" => crate::context::clear_active_meeting_context(workspace),
         "meeting" => {
@@ -2983,23 +2993,38 @@ pub fn cmd_start_live_transcript(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
-    if state.live_transcript_active.load(Ordering::Relaxed) {
+    // Atomic CAS: prevents double-click race (T2)
+    if state
+        .live_transcript_active
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err("Live transcript already active".into());
     }
     if recording_active(&state.recording) {
+        state.live_transcript_active.store(false, Ordering::SeqCst);
         return Err("Recording in progress — stop recording first".into());
     }
     if state.dictation_active.load(Ordering::Relaxed) {
+        state.live_transcript_active.store(false, Ordering::SeqCst);
         return Err("Dictation in progress — stop dictation first".into());
     }
 
     let active = state.live_transcript_active.clone();
     let stop_flag = state.live_transcript_stop_flag.clone();
     stop_flag.store(false, Ordering::Relaxed);
-    active.store(true, Ordering::Relaxed);
 
     let app_clone = app.clone();
     std::thread::spawn(move || {
+        // RAII guard: resets active flag on drop, even if thread panics (T1)
+        struct ActiveGuard(Arc<AtomicBool>);
+        impl Drop for ActiveGuard {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = ActiveGuard(active);
+
         let config = Config::load();
 
         // Update the assistant workspace context to mention the live transcript
@@ -3007,9 +3032,11 @@ pub fn cmd_start_live_transcript(
             update_assistant_live_context(&workspace, true);
         }
 
+        // Update tray to show active state (T9)
+        crate::update_tray_state(&app_clone, true);
+
         let result = minutes_core::live_transcript::run(stop_flag.clone(), &config);
 
-        active.store(false, Ordering::Relaxed);
         stop_flag.store(false, Ordering::Relaxed);
 
         // Clear the live transcript mention from assistant context
@@ -3036,10 +3063,18 @@ pub fn cmd_start_live_transcript(
             }
             Err(e) => {
                 eprintln!("[live-transcript] error: {}", e);
+                if let Some(win) = app_clone.get_webview_window("main") {
+                    win.emit(
+                        "live-transcript:error",
+                        serde_json::json!({ "error": e.to_string() }),
+                    )
+                    .ok();
+                }
             }
         }
 
         crate::update_tray_state(&app_clone, false);
+        // _guard drops here, resetting active flag
     });
 
     // Emit event to frontend
@@ -3090,18 +3125,23 @@ fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool)
     let claude_md = workspace.join("CLAUDE.md");
     let existing = std::fs::read_to_string(&claude_md).unwrap_or_default();
 
-    // Marker we look for to find/replace the live transcript section
     let marker_start = "<!-- LIVE_TRANSCRIPT_START -->";
     let marker_end = "<!-- LIVE_TRANSCRIPT_END -->";
 
-    // Remove any existing live transcript section
+    // Remove any existing live transcript section (T4: validate marker order)
     let cleaned = if let (Some(start), Some(end)) =
         (existing.find(marker_start), existing.find(marker_end))
     {
-        let end_pos = end + marker_end.len();
-        format!("{}{}", &existing[..start], &existing[end_pos..])
+        if start < end {
+            let end_pos = end + marker_end.len();
+            format!("{}{}", &existing[..start], &existing[end_pos..])
+        } else {
+            // Markers out of order (corrupt file). Remove both markers individually.
+            existing.replace(marker_start, "").replace(marker_end, "")
+        }
     } else {
-        existing.clone()
+        // Remove any orphaned single marker
+        existing.replace(marker_start, "").replace(marker_end, "")
     };
 
     let updated = if live_active {
@@ -3134,7 +3174,12 @@ fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool)
         cleaned
     };
 
-    std::fs::write(&claude_md, updated.trim_end().to_string() + "\n").ok();
+    // Atomic write: write to temp file then rename (T7)
+    let content = updated.trim_end().to_string() + "\n";
+    let tmp = claude_md.with_extension("md.tmp");
+    if std::fs::write(&tmp, &content).is_ok() {
+        std::fs::rename(&tmp, &claude_md).ok();
+    }
 }
 
 // ── Native hotkey for dictation (macOS only) ─────────────────

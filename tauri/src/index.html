@@ -20,6 +20,7 @@
       --red: #d9655f;
       --red-bg: rgba(217, 101, 95, 0.12);
       --green: #5cb88a;
+      --live: #34c759;
       --purple: #a78bca;
       --radius: 10px;
       --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
@@ -429,7 +430,7 @@
       border-radius: 12px;
       opacity: 1;
       background: rgba(52, 199, 89, 0.15);
-      color: #34c759;
+      color: var(--live);
     }
 
     /* ── Live transcript bar ── */
@@ -451,13 +452,13 @@
       gap: 6px;
       font-size: 13px;
       font-weight: 600;
-      color: #34c759;
+      color: var(--live);
     }
     .live-dot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: #34c759;
+      background: var(--live);
       animation: live-pulse 2s ease-in-out infinite;
     }
     @keyframes live-pulse {
@@ -1044,7 +1045,7 @@
 
     .speaker-badge.high {
       background: rgba(52, 199, 89, 0.15);
-      color: #34c759;
+      color: var(--live);
     }
 
     .speaker-badge.medium {
@@ -2418,6 +2419,8 @@
           recordingLabel.textContent = currentModeLabel(mode);
           recordingBar.classList.add('active');
           processingBar.classList.remove('active');
+          liveBar.classList.remove('active'); // T4: clear live bar if recording starts externally
+          isLiveTranscript = false;
           footer.style.display = 'none';
           if (status.elapsed) recordingTime.textContent = status.elapsed;
           updateViz(status.audioLevel || 0);
@@ -2433,6 +2436,8 @@
           processingTitle.textContent = currentProcessingTitle(mode);
           recordingBar.classList.remove('active');
           processingBar.classList.add('active');
+          liveBar.classList.remove('active'); // T4
+          isLiveTranscript = false;
           footer.style.display = 'none';
           processingStage.textContent = status.processingStage || 'Preparing transcript...';
 
@@ -2444,9 +2449,9 @@
           }
         } else {
           // Check live transcript status
+          let wasLive = isLiveTranscript;
           try {
             const liveStatus = await invoke('cmd_live_transcript_status');
-            const wasLive = isLiveTranscript;
             isLiveTranscript = !!liveStatus.active;
             if (isLiveTranscript) {
               statusPill.className = 'status-pill live';
@@ -2476,8 +2481,8 @@
           quickNote.classList.remove('active');
           footer.style.display = '';
 
-          // Slow down polling when recording/processing stops
-          if (wasRecording || wasProcessing) {
+          // Slow down polling when recording/processing/live stops (T5)
+          if (wasRecording || wasProcessing || wasLive) {
             stopFastPoll();
             loadMeetings(); // Refresh list
           }
@@ -4344,6 +4349,36 @@
 
     currentWindow.listen('dictation-hotkey:status', (event) => {
       applyDictationHotkeyStatus(event.payload);
+    });
+
+    // ── Listen for live transcript events (T6: immediate UI feedback) ──
+    currentWindow.listen('live-transcript:started', () => {
+      isLiveTranscript = true;
+      liveBar.classList.add('active');
+      footer.style.display = 'none';
+      statusPill.className = 'status-pill live';
+      statusPill.textContent = 'live';
+      startFastPoll();
+    });
+
+    currentWindow.listen('live-transcript:stopped', (event) => {
+      isLiveTranscript = false;
+      liveBar.classList.remove('active');
+      footer.style.display = '';
+      statusPill.className = 'status-pill';
+      statusPill.textContent = 'idle';
+      stopFastPoll();
+      loadMeetings();
+    });
+
+    currentWindow.listen('live-transcript:error', (event) => {
+      isLiveTranscript = false;
+      liveBar.classList.remove('active');
+      footer.style.display = '';
+      statusPill.className = 'status-pill';
+      statusPill.textContent = 'idle';
+      stopFastPoll();
+      console.error('[live-transcript] error:', event.payload?.error);
     });
 
     // ── Listen for recall:expand events from Rust backend ──
