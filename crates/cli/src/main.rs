@@ -2971,7 +2971,13 @@ fn cmd_dictate(stdout: bool, note_only: bool, config: &Config) -> Result<()> {
     use std::sync::Arc;
 
     eprintln!("[minutes] Starting dictation (Ctrl-C to stop)...");
-    eprintln!("[minutes] Speak naturally. Text goes to clipboard after each pause.");
+    if config.dictation.accumulate {
+        eprintln!(
+            "[minutes] Speak naturally. Text accumulates across pauses and is written when dictation ends."
+        );
+    } else {
+        eprintln!("[minutes] Speak naturally. Text goes to clipboard after each pause.");
+    }
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop_flag);
@@ -3016,7 +3022,11 @@ fn cmd_dictate(stdout: bool, note_only: bool, config: &Config) -> Result<()> {
                 DictationEvent::SilenceCountdown { .. } => {} // CLI doesn't show countdown
                 DictationEvent::Success => {
                     eprintln!(); // newline after partial text
-                    eprintln!("[minutes] Done — text copied to clipboard");
+                    if config.dictation.accumulate {
+                        eprintln!("[minutes] Captured text");
+                    } else {
+                        eprintln!("[minutes] Done — text copied to clipboard");
+                    }
                 }
                 DictationEvent::Error => eprintln!("[minutes] Transcription failed — audio saved"),
                 DictationEvent::Cancelled => eprintln!("[minutes] Dictation cancelled"),

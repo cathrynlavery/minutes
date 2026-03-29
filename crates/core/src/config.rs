@@ -158,6 +158,7 @@ pub struct IdentityConfig {
 #[serde(default)]
 pub struct DictationConfig {
     pub destination: String,
+    pub accumulate: bool,
     pub daily_note_log: bool,
     pub cleanup_engine: String,
     pub auto_paste: bool,
@@ -189,6 +190,7 @@ impl Default for DictationConfig {
     fn default() -> Self {
         Self {
             destination: "clipboard".into(),
+            accumulate: true,
             daily_note_log: true,
             cleanup_engine: String::new(),
             auto_paste: false,
@@ -526,6 +528,7 @@ mod tests {
         assert_eq!(config.summarization.engine, "none");
         assert_eq!(config.search.engine, "builtin");
         assert!(!config.daily_notes.enabled);
+        assert!(config.dictation.accumulate);
         assert_eq!(config.watch.settle_delay_ms, 2000);
         assert!(!config.watch.extensions.is_empty());
     }
@@ -555,6 +558,7 @@ model = "large-v3"
         assert_eq!(config.transcription.min_words, 3);
         assert_eq!(config.diarization.engine, "auto");
         assert!(!config.daily_notes.enabled);
+        assert!(config.dictation.accumulate);
     }
 
     #[test]
@@ -605,6 +609,7 @@ model = "tiny"
 
         let config = Config::load_from(&config_path);
         assert_eq!(config.transcription.model, "small");
+        assert!(config.dictation.accumulate);
     }
 
     #[test]
@@ -650,5 +655,22 @@ model = "tiny"
         let config = Config::load_from(&config_path);
         assert_eq!(config.transcription.engine, "whisper");
         assert_eq!(config.transcription.parakeet_binary, "parakeet");
+    }
+
+    #[test]
+    fn dictation_accumulate_can_be_disabled_from_toml() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[dictation]
+accumulate = false
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert!(!config.dictation.accumulate);
     }
 }

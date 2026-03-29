@@ -2533,6 +2533,7 @@ pub fn cmd_get_settings() -> serde_json::Value {
         "dictation": {
             "model": config.dictation.model,
             "destination": config.dictation.destination,
+            "accumulate": config.dictation.accumulate,
             "daily_note_log": config.dictation.daily_note_log,
             "cleanup_engine": config.dictation.cleanup_engine,
             "auto_paste": config.dictation.auto_paste,
@@ -2597,6 +2598,9 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         }
         ("dictation", "daily_note_log") => {
             config.dictation.daily_note_log = value == "true";
+        }
+        ("dictation", "accumulate") => {
+            config.dictation.accumulate = value == "true";
         }
         ("dictation", "silence_timeout_ms") => {
             config.dictation.silence_timeout_ms = value

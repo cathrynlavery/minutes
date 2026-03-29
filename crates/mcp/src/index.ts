@@ -1610,7 +1610,7 @@ server.resource(
 
 server.tool(
   "start_dictation",
-  "Start dictation mode. Speak naturally — text goes to clipboard and daily note after each pause. Runs until stop_dictation is called or silence timeout.",
+  "Start dictation mode. Speak naturally — text accumulates across pauses and the combined result is written when dictation ends. Runs until stop_dictation is called or silence timeout.",
   {},
   { title: "Start Dictation", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async () => {
@@ -1645,7 +1645,7 @@ server.tool(
       content: [
         {
           type: "text" as const,
-          text: "Dictation started. Speak naturally — text will be copied to clipboard after each pause. Say \"stop dictation\" when done.",
+          text: "Dictation started. Speak naturally — text accumulates across pauses and will be copied when dictation ends. Say \"stop dictation\" when done.",
         },
       ],
     };
