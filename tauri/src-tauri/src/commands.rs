@@ -87,6 +87,23 @@ pub struct RecoveryItem {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessingJobView {
+    pub id: String,
+    pub title: String,
+    pub mode: String,
+    pub state: String,
+    pub stage: Option<String>,
+    pub output_path: Option<String>,
+    pub audio_path: String,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub word_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct HotkeyChoice {
     pub value: String,
     pub label: String,
@@ -1675,6 +1692,37 @@ pub fn cmd_status(state: tauri::State<AppState>) -> serde_json::Value {
         .lock()
         .ok()
         .and_then(|notice| notice.clone());
+    let processing_jobs: Vec<ProcessingJobView> = minutes_core::jobs::active_jobs()
+        .into_iter()
+        .map(|job| ProcessingJobView {
+            id: job.id,
+            title: job.title.unwrap_or_else(|| "Queued recording".into()),
+            mode: match job.mode {
+                CaptureMode::Meeting => "meeting".into(),
+                CaptureMode::QuickThought => "quick-thought".into(),
+                CaptureMode::Dictation => "dictation".into(),
+                CaptureMode::LiveTranscript => "live-transcript".into(),
+            },
+            state: match job.state {
+                minutes_core::jobs::JobState::Queued => "queued".into(),
+                minutes_core::jobs::JobState::Transcribing => "transcribing".into(),
+                minutes_core::jobs::JobState::TranscriptOnly => "transcript-only".into(),
+                minutes_core::jobs::JobState::Diarizing => "diarizing".into(),
+                minutes_core::jobs::JobState::Summarizing => "summarizing".into(),
+                minutes_core::jobs::JobState::Saving => "saving".into(),
+                minutes_core::jobs::JobState::Complete => "complete".into(),
+                minutes_core::jobs::JobState::Failed => "failed".into(),
+            },
+            stage: job.stage,
+            output_path: job.output_path,
+            audio_path: job.audio_path,
+            error: job.error,
+            created_at: job.created_at.to_rfc3339(),
+            started_at: job.started_at.map(|ts| ts.to_rfc3339()),
+            finished_at: job.finished_at.map(|ts| ts.to_rfc3339()),
+            word_count: job.word_count,
+        })
+        .collect();
 
     // Get elapsed time if recording
     let elapsed = if recording || (status.recording && !processing) {
@@ -1715,6 +1763,7 @@ pub fn cmd_status(state: tauri::State<AppState>) -> serde_json::Value {
         "processingTitle": status.processing_title,
         "processingJobId": status.processing_job_id,
         "processingJobCount": status.processing_job_count,
+        "processingJobs": processing_jobs,
         "latestOutput": latest_output,
         "pid": status.pid,
         "elapsed": elapsed,

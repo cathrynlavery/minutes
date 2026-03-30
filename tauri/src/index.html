@@ -636,6 +636,70 @@
       flex: 1;
     }
 
+    .processing-summary {
+      font-size: 11px;
+      color: var(--text-tertiary, #888);
+      margin-top: 6px;
+    }
+
+    .processing-jobs {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .processing-job {
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(91, 143, 217, 0.12);
+    }
+
+    .processing-job-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .processing-job-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .processing-job-state {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .processing-job-detail {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .processing-job-meta {
+      font-size: 11px;
+      color: var(--text-tertiary, #888);
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .processing-job-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
     .processing-title {
       font-size: 13px;
       font-weight: 600;
@@ -1748,8 +1812,10 @@
         <div class="processing-title" id="processing-title">Processing recording</div>
         <div class="processing-stage" id="processing-stage">Preparing transcript...</div>
         <div class="processing-elapsed" id="processing-elapsed"></div>
+        <div class="processing-summary" id="processing-summary"></div>
       </div>
     </div>
+    <div class="processing-jobs" id="processing-jobs"></div>
   </div>
 
   <!-- Output notice -->
@@ -2302,6 +2368,8 @@
     const recordingTime = document.getElementById('recording-time');
     const processingStage = document.getElementById('processing-stage');
     const processingElapsed = document.getElementById('processing-elapsed');
+    const processingSummary = document.getElementById('processing-summary');
+    const processingJobsEl = document.getElementById('processing-jobs');
     const outputNotice = document.getElementById('output-notice');
     const outputNoticeIcon = document.getElementById('output-notice-icon');
     const outputNoticeTitle = document.getElementById('output-notice-title');
@@ -2346,6 +2414,7 @@
     let activeSearchQuery = '';
     let currentSetup = null;
     let latestOutput = null;
+    let processingJobs = [];
     let readinessItems = [];
     let recoveryItems = [];
     let notifyOnCompletion = true;
@@ -2467,6 +2536,103 @@
       return mode === 'quick-thought' ? 'Processing quick thought' : 'Processing recording';
     }
 
+    function formatIsoElapsed(isoString) {
+      if (!isoString) return '';
+      const start = new Date(isoString).getTime();
+      if (!Number.isFinite(start)) return '';
+      const secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return m > 0 ? `${m}:${String(s).padStart(2, '0')} elapsed` : `${s}s elapsed`;
+    }
+
+    function processingStateLabel(job) {
+      switch (job.state) {
+        case 'queued': return 'Queued';
+        case 'transcribing': return 'Transcribing';
+        case 'transcript-only': return 'Transcript Ready';
+        case 'diarizing': return 'Separating Speakers';
+        case 'summarizing': return 'Summarizing';
+        case 'saving': return 'Saving';
+        case 'complete': return 'Complete';
+        case 'failed': return 'Failed';
+        default: return 'Processing';
+      }
+    }
+
+    function renderProcessingJobs(jobs) {
+      processingJobs = Array.isArray(jobs) ? jobs : [];
+      processingJobsEl.replaceChildren();
+
+      if (!processingJobs.length) {
+        processingSummary.textContent = '';
+        return;
+      }
+
+      processingSummary.textContent =
+        processingJobs.length > 1
+          ? `${processingJobs.length} recordings are cooking in the background.`
+          : 'You can keep recording while this finishes.';
+
+      for (const job of processingJobs) {
+        const card = document.createElement('div');
+        card.className = 'processing-job';
+
+        const top = document.createElement('div');
+        top.className = 'processing-job-top';
+
+        const title = document.createElement('div');
+        title.className = 'processing-job-title';
+        title.textContent = job.title || 'Queued recording';
+
+        const state = document.createElement('div');
+        state.className = 'processing-job-state';
+        state.textContent = processingStateLabel(job);
+
+        top.appendChild(title);
+        top.appendChild(state);
+
+        const detail = document.createElement('div');
+        detail.className = 'processing-job-detail';
+        detail.textContent =
+          job.stage
+            || (job.state === 'transcript-only'
+              ? 'Transcript is ready. The richer summary is still running.'
+              : 'Waiting for background processing.');
+
+        const meta = document.createElement('div');
+        meta.className = 'processing-job-meta';
+        const elapsed = formatIsoElapsed(job.startedAt || job.createdAt);
+        const mode = job.mode === 'quick-thought' ? 'Quick thought' : 'Meeting';
+        meta.textContent = elapsed ? `${mode} · ${elapsed}` : mode;
+
+        card.appendChild(top);
+        card.appendChild(detail);
+        card.appendChild(meta);
+
+        if (job.outputPath) {
+          const actions = document.createElement('div');
+          actions.className = 'processing-job-actions';
+
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn btn-secondary btn-sm';
+          openBtn.textContent = job.state === 'transcript-only' ? 'Open Transcript' : 'Open';
+          openBtn.addEventListener('click', async () => {
+            try {
+              await openMeetingDetail(job.outputPath);
+            } catch (e) {
+              console.error('Open processing job:', e);
+            }
+          });
+          actions.appendChild(openBtn);
+
+          card.appendChild(actions);
+        }
+
+        processingJobsEl.appendChild(card);
+      }
+    }
+
     // ── Status polling ──
     async function checkStatus() {
       try {
@@ -2476,14 +2642,18 @@
         const mode = status.recordingMode || 'meeting';
         isRecording = status.recording;
         isProcessing = !!status.processing;
+        renderProcessingJobs(status.processingJobs || []);
         updateOutputNotice(status.latestOutput);
 
         if (isRecording) {
           statusPill.className = 'status-pill recording';
+          const queueCount = status.processingJobCount || 0;
           statusPill.textContent = mode === 'quick-thought' ? 'quick thought' : 'recording';
-          recordingLabel.textContent = currentModeLabel(mode);
+          recordingLabel.textContent = queueCount > 0
+            ? `${currentModeLabel(mode)} · ${queueCount} background job${queueCount === 1 ? '' : 's'}`
+            : currentModeLabel(mode);
           recordingBar.classList.add('active');
-          processingBar.classList.remove('active');
+          processingBar.classList.toggle('active', isProcessing);
           liveBar.classList.remove('active'); // T4: clear live bar if recording starts externally
           isLiveTranscript = false;
           footer.style.display = 'none';
@@ -2563,6 +2733,8 @@
           processingTitle.textContent = 'Processing recording';
           recordingBar.classList.remove('active');
           processingBar.classList.remove('active');
+          processingSummary.textContent = '';
+          processingJobsEl.replaceChildren();
           quickNote.classList.remove('active');
           footer.style.display = '';
 
