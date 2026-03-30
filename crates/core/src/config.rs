@@ -346,7 +346,7 @@ impl Default for DiarizationConfig {
 impl Default for SummarizationConfig {
     fn default() -> Self {
         Self {
-            engine: "none".into(),
+            engine: "auto".into(),
             agent_command: "claude".into(),
             chunk_max_tokens: 4000,
             ollama_url: "http://localhost:11434".into(),
@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(config.transcription.parakeet_model, "tdt-ctc-110m");
         assert_eq!(config.transcription.parakeet_vocab, "vocab.txt");
         assert_eq!(config.diarization.engine, "auto");
-        assert_eq!(config.summarization.engine, "none");
+        assert_eq!(config.summarization.engine, "auto");
         assert_eq!(config.search.engine, "builtin");
         assert!(!config.daily_notes.enabled);
         assert!(config.dictation.accumulate);
