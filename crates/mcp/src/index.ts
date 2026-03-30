@@ -39,7 +39,7 @@ import { execFile, spawn } from "child_process";
 import { promisify } from "util";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
-import { dirname, isAbsolute, join, relative } from "path";
+import { delimiter, dirname, isAbsolute, join, relative } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 
@@ -284,7 +284,7 @@ async function tryAutoInstall(): Promise<boolean> {
 
 async function checkCliVersion(): Promise<void> {
   try {
-    const { stdout } = await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
+    const { stdout } = await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
     // Output is like "minutes 0.8.0" or just "0.8.0"
     const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
     if (match) {
@@ -317,7 +317,7 @@ async function ensureWhisperModel(): Promise<void> {
   try {
     // health --json returns an array of { label, state, detail, optional } items.
     // The "Speech model" item has state "ready" when downloaded.
-    const { stdout } = await execFileAsync(MINUTES_BIN, ["health", "--json"], { timeout: 10000 });
+    const { stdout } = await execFileAsync(MINUTES_BIN, ["health", "--json"], { timeout: 10000, env: augmentedEnv() });
     const items = JSON.parse(stdout);
     const modelItem = Array.isArray(items) && items.find((i: any) => i.label === "Speech model");
     if (modelItem && modelItem.state === "ready") {
@@ -331,7 +331,7 @@ async function ensureWhisperModel(): Promise<void> {
   // Model not found — download tiny model in background
   console.error("[Minutes] Whisper model not found — downloading tiny model (~75MB)...");
   try {
-    await execFileAsync(MINUTES_BIN, ["setup", "--model", "tiny"], { timeout: 300000 });
+    await execFileAsync(MINUTES_BIN, ["setup", "--model", "tiny"], { timeout: 300000, env: augmentedEnv() });
     console.error("[Minutes] ✓ Whisper tiny model downloaded — recording is ready");
   } catch (e: any) {
     console.error(
@@ -356,7 +356,7 @@ async function isCliAvailable(): Promise<boolean> {
   if (cliAvailable === false && Date.now() - cliCheckedAt < CLI_CACHE_TTL_MS) return false;
 
   try {
-    await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
+    await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
     cliAvailable = true;
     cliCheckedAt = Date.now();
     console.error("[Minutes] CLI found — full mode (all tools enabled)");
@@ -369,7 +369,7 @@ async function isCliAvailable(): Promise<boolean> {
       const installed = await tryAutoInstall();
       if (installed) {
         try {
-          await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
+          await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
           cliAvailable = true;
           cliCheckedAt = Date.now();
           console.error("[Minutes] CLI now available after auto-install — full mode");
@@ -391,10 +391,28 @@ async function isCliAvailable(): Promise<boolean> {
 }
 
 const CLI_INSTALL_MSG =
-  "Recording requires the minutes CLI binary. Install it:\n" +
-  "  macOS:   brew tap silverstein/tap && brew install minutes\n" +
-  "  Any:     cargo install minutes-cli\n" +
-  "  Source:  https://github.com/silverstein/minutes";
+  `Recording requires the minutes CLI binary.\n` +
+  `Searched: ${MINUTES_BIN}\n\n` +
+  `Install it:\n` +
+  `  macOS:   brew tap silverstein/tap && brew install minutes\n` +
+  `  Any:     cargo install minutes-cli\n` +
+  `  Source:  https://github.com/silverstein/minutes\n\n` +
+  `If already installed via Homebrew, try:\n` +
+  `  sudo ln -s /opt/homebrew/bin/minutes /usr/local/bin/minutes`;
+
+// Common binary locations that may not be in Claude Desktop's restricted PATH.
+const EXTRA_PATH_DIRS = [
+  join(homedir(), ".local", "bin"),
+  join(homedir(), ".cargo", "bin"),
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+];
+
+function augmentedEnv(extra?: Record<string, string>): Record<string, string | undefined> {
+  const currentPath = process.env.PATH || "";
+  const augmentedPath = [...EXTRA_PATH_DIRS, currentPath].join(delimiter);
+  return { ...process.env, PATH: augmentedPath, ...extra };
+}
 
 // ── Helper: run minutes CLI command (uses execFile, not exec) ──
 
@@ -405,7 +423,7 @@ async function runMinutes(
   try {
     const { stdout, stderr } = await execFileAsync(MINUTES_BIN, args, {
       timeout: timeoutMs,
-      env: { ...process.env, RUST_LOG: "info" },
+      env: augmentedEnv({ RUST_LOG: "info" }),
     });
     return { stdout: stdout.trim(), stderr: stderr.trim() };
   } catch (error: any) {
@@ -572,14 +590,48 @@ server.tool(
       const { stdout, stderr } = await runMinutes(["stop"], 180000);
       const result = parseJsonOutput(stdout);
 
-      const message = result.file
-        ? `Recording saved: ${result.file}\nTitle: ${result.title}\nWords: ${result.words}`
-        : stderr || "Recording stopped.";
+      if (!result.file) {
+        return { content: [{ type: "text" as const, text: stderr || "Recording stopped." }] };
+      }
 
       // Trigger QMD re-index so new meeting is immediately searchable
-      if (result.file) triggerQmdIndex();
+      triggerQmdIndex();
 
-      return { content: [{ type: "text" as const, text: message }] };
+      // Build a rich summary by reading the meeting frontmatter
+      let summary = `## ${result.title ?? "Recording"}\n\n`;
+      summary += `**Saved:** ${result.file}\n`;
+      if (result.words != null) summary += `**Words:** ${result.words}\n`;
+
+      try {
+        const meeting = await reader.getMeeting(result.file);
+        if (meeting) {
+          const fm = meeting.frontmatter;
+          if (fm.duration) summary += `**Duration:** ${fm.duration}\n`;
+          if (fm.people?.length) summary += `**People:** ${fm.people.join(", ")}\n`;
+
+          const actions = fm.action_items?.filter((a: any) => a.status === "open") || [];
+          if (actions.length > 0) {
+            summary += `\n### Action Items\n`;
+            for (const item of actions) {
+              summary += `- [ ] ${item.task}`;
+              if (item.assignee) summary += ` (${item.assignee})`;
+              if (item.due) summary += ` — due ${item.due}`;
+              summary += `\n`;
+            }
+          }
+
+          if (fm.decisions?.length) {
+            summary += `\n### Decisions\n`;
+            for (const d of fm.decisions) {
+              summary += `- ${d.text}\n`;
+            }
+          }
+        }
+      } catch {
+        // Frontmatter read is best-effort — basic info is already in the summary
+      }
+
+      return { content: [{ type: "text" as const, text: summary }] };
     } catch (error: any) {
       return {
         content: [{ type: "text" as const, text: `Stop failed: ${error.message}` }],
