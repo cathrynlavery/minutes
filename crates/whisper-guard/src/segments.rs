@@ -22,7 +22,9 @@ pub struct CleanStats {
     pub after_consecutive_dedup: usize,
     pub after_interleaved_dedup: usize,
     pub after_script_filter: usize,
+    pub after_noise_markers: usize,
     pub after_trailing_trim: usize,
+    pub after_command_strip: usize,
     pub lines_removed: usize,
 }
 
@@ -45,16 +47,26 @@ pub fn clean_transcript(transcript: &str) -> (String, CleanStats) {
     let lines = strip_foreign_script(&lines);
     let after_script = lines.len();
 
+    // Noise marker collapse runs after foreign-script filter so the density
+    // calculation in Pass 2 isn't inflated by CJK/Cyrillic hallucination lines.
+    let lines = collapse_noise_markers(&lines);
+    let after_noise = lines.len();
+
     let lines = trim_trailing_noise(&lines);
     let after_trim = lines.len();
+
+    let lines = strip_trailing_commands(&lines);
+    let after_command = lines.len();
 
     let stats = CleanStats {
         original_lines: original_count,
         after_consecutive_dedup: after_consecutive,
         after_interleaved_dedup: after_interleaved,
         after_script_filter: after_script,
+        after_noise_markers: after_noise,
         after_trailing_trim: after_trim,
-        lines_removed: original_count.saturating_sub(after_trim),
+        after_command_strip: after_command,
+        lines_removed: original_count.saturating_sub(after_command),
     };
 
     (lines.join("\n"), stats)
@@ -312,6 +324,137 @@ pub fn dedup_interleaved(lines: &[String]) -> Vec<String> {
     }
 }
 
+/// Collapse runs of bracketed non-speech markers in any language.
+///
+/// Whisper emits non-speech audio events as bracketed text: `[music]`, `[laughter]`,
+/// `[applause]`, `[BLANK_AUDIO]`, etc. In non-English audio these appear in the
+/// source language: `[Śmiech]` (Polish laughter), `[Musik]` (German music),
+/// `[risas]` (Spanish laughter), etc.
+///
+/// The existing `trim_trailing_noise` only catches trailing English markers. This
+/// function is language-agnostic — it detects any line whose text (after timestamp)
+/// is a short bracketed expression `[word(s)]` and collapses consecutive runs of 3+.
+/// It also collapses scattered patterns when >50% of a window are noise markers.
+pub fn collapse_noise_markers(lines: &[String]) -> Vec<String> {
+    if lines.len() < 3 {
+        return lines.to_vec();
+    }
+
+    /// Return true if the text (after timestamp) is a bracketed non-speech marker.
+    ///
+    /// Matches patterns like `[music]`, `[Śmiech]`, `[BLANK_AUDIO]`, `[risas]`.
+    /// Excludes timestamp-like content `[0:00]` and collapse markers from prior
+    /// dedup passes `[...] [repeated ...]`.
+    fn is_noise_marker(text: &str) -> bool {
+        let t = text.trim();
+        if t.is_empty() {
+            return false;
+        }
+        // Collapse markers from prior passes are not noise
+        if t.starts_with("[...]") {
+            return false;
+        }
+        // Must start with '[' and end with ']' (optionally with trailing '.')
+        let t = t.strip_suffix('.').unwrap_or(t);
+        if !(t.starts_with('[') && t.ends_with(']')) {
+            return false;
+        }
+        let inner = &t[1..t.len() - 1];
+        // Reject timestamp-like patterns (digits and colons only)
+        if inner.chars().all(|c| c.is_ascii_digit() || c == ':') {
+            return false;
+        }
+        // Must be short (1-4 words, ≤40 chars) — non-speech markers are brief
+        let word_count = inner.split_whitespace().count();
+        (1..=4).contains(&word_count) && inner.len() <= 40
+    }
+
+    let markers: Vec<bool> = lines
+        .iter()
+        .map(|l| is_noise_marker(text_part(l)))
+        .collect();
+
+    // Pass 1: Collapse consecutive runs of 3+ noise markers
+    let mut result = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if markers[i] {
+            let run_start = i;
+            while i < lines.len() && markers[i] {
+                i += 1;
+            }
+            let run_len = i - run_start;
+            if run_len >= 3 {
+                result.push(lines[run_start].clone());
+                result.push(format!(
+                    "[...] [non-speech audio removed — {} markers collapsed]",
+                    run_len - 1
+                ));
+                tracing::debug!(
+                    run_start = run_start,
+                    collapsed = run_len - 1,
+                    sample = text_part(&lines[run_start]),
+                    "collapsed consecutive noise markers"
+                );
+            } else {
+                // Short run (1-2): keep as-is
+                for line in lines.iter().take(i).skip(run_start) {
+                    result.push(line.clone());
+                }
+            }
+        } else {
+            result.push(lines[i].clone());
+            i += 1;
+        }
+    }
+
+    // Pass 2: Ratio check — if ≥2/3 of remaining lines are noise markers, strip them all.
+    // After pass 1 collapses consecutive runs, scattered markers that still dominate
+    // the transcript are almost certainly hallucination. Real recordings rarely have
+    // this density (e.g., a comedy show might have 30-40% [laughter] annotations, not 66%+).
+    let remaining_markers = result
+        .iter()
+        .filter(|l| is_noise_marker(text_part(l)))
+        .count();
+    let content_lines = result.len().saturating_sub(remaining_markers);
+    if remaining_markers > 0 && content_lines > 0 {
+        let ratio = remaining_markers as f64 / result.len() as f64;
+        if ratio >= 0.66 && remaining_markers >= 8 {
+            tracing::info!(
+                markers = remaining_markers,
+                total = result.len(),
+                ratio = format!("{:.0}%", ratio * 100.0),
+                "high noise marker density — stripping scattered markers"
+            );
+            let mut stripped = Vec::with_capacity(content_lines + 1);
+            let mut removed = 0usize;
+            for line in &result {
+                if is_noise_marker(text_part(line)) {
+                    removed += 1;
+                } else {
+                    stripped.push(line.clone());
+                }
+            }
+            stripped.push(format!(
+                "[{} scattered non-speech markers removed]",
+                removed
+            ));
+            return stripped;
+        }
+    }
+
+    let removed = lines.len() - result.len();
+    if removed > 0 {
+        tracing::info!(
+            original = lines.len(),
+            removed = removed,
+            "collapsed noise markers"
+        );
+    }
+
+    result
+}
+
 /// Detect and remove lines with hallucinated foreign script.
 ///
 /// When whisper processes silence or very low-signal audio, it often hallucinates
@@ -495,6 +638,50 @@ pub fn trim_trailing_noise(lines: &[String]) -> Vec<String> {
     } else {
         lines.to_vec()
     }
+}
+
+/// Strip trailing voice command phrases that get captured by the mic.
+///
+/// Users commonly say "stop recording" or "end recording" out loud to signal
+/// they're done. The microphone captures these phrases and Whisper transcribes
+/// them as part of the meeting. This function removes them from the last 1-2
+/// lines of the transcript.
+pub fn strip_trailing_commands(lines: &[String]) -> Vec<String> {
+    const COMMANDS: &[&str] = &[
+        "stop recording",
+        "stop the recording",
+        "end recording",
+        "end the recording",
+        "stop transcription",
+        "end transcription",
+        "stop transcribing",
+        "hey minutes stop",
+        "minutes stop",
+        "okay stop",
+        "ok stop",
+    ];
+
+    let mut result = lines.to_vec();
+    // Check last 2 lines — the command might be split across whisper segments
+    for _ in 0..2 {
+        if let Some(last) = result.last() {
+            let text = text_part(last).trim().to_lowercase();
+            let text = text.trim_end_matches('.');
+            if COMMANDS
+                .iter()
+                .any(|cmd| text == *cmd || text.ends_with(cmd))
+            {
+                tracing::debug!(
+                    line = result.last().map(|l| l.as_str()).unwrap_or(""),
+                    "stripping trailing voice command"
+                );
+                result.pop();
+            } else {
+                break;
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -826,5 +1013,311 @@ mod tests {
         let (cleaned, stats) = clean_transcript(input);
         assert!(!cleaned.contains("スパイシー"));
         assert!(stats.after_script_filter < stats.after_interleaved_dedup);
+    }
+
+    // ── noise marker collapse ──
+
+    #[test]
+    fn noise_markers_collapses_polish_laughter() {
+        // Polish whisper hallucination: [Śmiech] = laughter
+        let mut lines: Vec<String> = vec!["[0:00] Cześć, jak się masz?".into()];
+        for i in 1..=10 {
+            lines.push(format!("[0:{:02}] [Śmiech]", i * 3));
+        }
+        lines.push("[0:33] Dobrze, dziękuję".into());
+
+        let result = collapse_noise_markers(&lines);
+        assert!(
+            result.len() <= 4,
+            "got {} lines: {:?}",
+            result.len(),
+            result
+        );
+        assert!(result[0].contains("Cześć"));
+        assert!(result
+            .iter()
+            .any(|l| l.contains("non-speech audio removed")));
+        assert!(result.last().unwrap().contains("Dobrze"));
+    }
+
+    #[test]
+    fn noise_markers_collapses_english_mixed() {
+        let lines = vec![
+            "[0:00] Good morning everyone".into(),
+            "[0:05] [music]".into(),
+            "[0:10] [laughter]".into(),
+            "[0:15] [applause]".into(),
+            "[0:20] [music]".into(),
+            "[0:25] Thank you for coming".into(),
+        ];
+        let result = collapse_noise_markers(&lines);
+        assert!(
+            result.len() <= 4,
+            "got {} lines: {:?}",
+            result.len(),
+            result
+        );
+        assert!(result[0].contains("Good morning"));
+        assert!(result.last().unwrap().contains("Thank you"));
+    }
+
+    #[test]
+    fn noise_markers_preserves_short_runs() {
+        // 1-2 markers should be kept (legitimate non-speech annotations)
+        let lines = vec![
+            "[0:00] Hello world".into(),
+            "[0:05] [laughter]".into(),
+            "[0:10] That was funny".into(),
+        ];
+        let result = collapse_noise_markers(&lines);
+        assert_eq!(result, lines);
+    }
+
+    #[test]
+    fn noise_markers_handles_empty() {
+        assert!(collapse_noise_markers(&[]).is_empty());
+    }
+
+    #[test]
+    fn noise_markers_handles_single_line() {
+        let lines = vec!["[0:00] [music]".into()];
+        let result = collapse_noise_markers(&lines);
+        assert_eq!(result, lines);
+    }
+
+    #[test]
+    fn noise_markers_handles_two_lines() {
+        let lines = vec!["[0:00] [music]".into(), "[0:03] [laughter]".into()];
+        let result = collapse_noise_markers(&lines);
+        assert_eq!(result, lines);
+    }
+
+    #[test]
+    fn noise_markers_ignores_timestamps() {
+        // Timestamps like [0:00] are NOT noise markers
+        let lines = vec![
+            "[0:00] Hello".into(),
+            "[0:05] World".into(),
+            "[0:10] Test".into(),
+        ];
+        let result = collapse_noise_markers(&lines);
+        assert_eq!(result, lines);
+    }
+
+    #[test]
+    fn noise_markers_ignores_collapse_markers() {
+        // Prior dedup pass markers should not be treated as noise
+        let lines = vec![
+            "[0:00] Hello world".into(),
+            "[...] [repeated audio removed — 5 identical segments collapsed]".into(),
+            "[0:30] Something else".into(),
+            "[...] [hallucinated repetition removed — 10 lines collapsed]".into(),
+            "[1:00] Final line".into(),
+        ];
+        let result = collapse_noise_markers(&lines);
+        assert_eq!(result, lines);
+    }
+
+    #[test]
+    fn noise_markers_multilingual_markers() {
+        // Various languages' non-speech markers
+        let mut lines = Vec::new();
+        lines.push("[0:00] Bonjour".into());
+        // French: [rires] = laughter, [musique] = music
+        for i in 1..=4 {
+            lines.push(format!("[0:{:02}] [rires]", i * 3));
+        }
+        // German: [Musik], [Gelächter]
+        for i in 5..=7 {
+            lines.push(format!("[0:{:02}] [Musik]", i * 3));
+        }
+        lines.push("[0:30] Au revoir".into());
+
+        let result = collapse_noise_markers(&lines);
+        assert!(
+            result.len() <= 5,
+            "got {} lines: {:?}",
+            result.len(),
+            result
+        );
+        assert!(result[0].contains("Bonjour"));
+        assert!(result.last().unwrap().contains("Au revoir"));
+    }
+
+    #[test]
+    fn noise_markers_scattered_high_density() {
+        // Pass 2 fires at ≥66% ratio with ≥8 remaining markers after pass 1.
+        // Use pairs of markers (runs of 2, below pass 1's threshold of 3)
+        // interleaved with single content lines: 5 content + 10 markers = 66.7%.
+        let lines = vec![
+            "[0:00] Real content one".into(),
+            "[0:03] [Śmiech]".into(),
+            "[0:06] [muzyka]".into(),
+            "[0:09] Real content two".into(),
+            "[0:12] [cisza]".into(),
+            "[0:15] [oklaski]".into(),
+            "[0:18] Real content three".into(),
+            "[0:21] [Śmiech]".into(),
+            "[0:24] [muzyka]".into(),
+            "[0:27] Real content four".into(),
+            "[0:30] [cisza]".into(),
+            "[0:33] [oklaski]".into(),
+            "[0:36] Real content five".into(),
+            "[0:39] [Śmiech]".into(),
+            "[0:42] [muzyka]".into(),
+        ];
+        let result = collapse_noise_markers(&lines);
+        // All 5 content lines should survive
+        let content_count = result.iter().filter(|l| l.contains("Real content")).count();
+        assert_eq!(content_count, 5, "all content lines preserved");
+        // Pass 2 should have stripped the scattered markers
+        assert!(
+            result
+                .iter()
+                .any(|l| l.contains("non-speech markers removed")),
+            "expected pass 2 removal summary, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn noise_markers_below_threshold_kept() {
+        // 50% markers (5 of 10) — below the 66% threshold, all kept
+        let lines = vec![
+            "[0:00] Real content one".into(),
+            "[0:03] [laughter]".into(),
+            "[0:06] Real content two".into(),
+            "[0:09] [applause]".into(),
+            "[0:12] Real content three".into(),
+            "[0:15] [laughter]".into(),
+            "[0:18] Real content four".into(),
+            "[0:21] [music]".into(),
+            "[0:24] Real content five".into(),
+            "[0:27] [laughter]".into(),
+        ];
+        let result = collapse_noise_markers(&lines);
+        // No markers stripped — density is too low for pass 2
+        assert_eq!(result, lines);
+    }
+
+    #[test]
+    fn noise_markers_handles_blank_audio() {
+        let mut lines: Vec<String> = vec!["[0:00] Some content".into()];
+        for i in 1..=6 {
+            lines.push(format!("[0:{:02}] [BLANK_AUDIO]", i * 5));
+        }
+        lines.push("[0:35] More content".into());
+
+        let result = collapse_noise_markers(&lines);
+        assert!(result.len() <= 4);
+        assert!(result
+            .iter()
+            .any(|l| l.contains("non-speech audio removed")));
+    }
+
+    #[test]
+    fn clean_transcript_includes_noise_markers() {
+        // Use varied markers so consecutive dedup doesn't catch them first.
+        // This ensures the noise marker layer has work to do.
+        let input = "[0:00] Hello world\n\
+            [0:03] [Śmiech]\n\
+            [0:06] [muzyka]\n\
+            [0:09] [cisza]\n\
+            [0:12] [oklaski]\n\
+            [0:15] [Śmiech]\n\
+            [0:18] [muzyka]\n\
+            [0:21] [cisza]\n\
+            [0:24] Goodbye\n";
+
+        let (cleaned, stats) = clean_transcript(input);
+        // Noise marker filter runs after script filter; should have removed some lines
+        assert!(
+            stats.after_noise_markers < stats.after_script_filter,
+            "noise markers: {}, script filter: {}",
+            stats.after_noise_markers,
+            stats.after_script_filter
+        );
+        assert!(cleaned.contains("Hello world"));
+        assert!(cleaned.contains("Goodbye"));
+    }
+
+    // ── strip_trailing_commands ──
+
+    #[test]
+    fn strip_command_removes_stop_recording() {
+        let lines = vec![
+            "[0:00] Great meeting everyone".into(),
+            "[0:05] Let's wrap up".into(),
+            "[0:10] Stop recording.".into(),
+        ];
+        let result = strip_trailing_commands(&lines);
+        assert_eq!(result.len(), 2);
+        assert!(result[1].contains("wrap up"));
+    }
+
+    #[test]
+    fn strip_command_removes_with_timestamp() {
+        let lines = vec!["[0:00] First point".into(), "[0:30] Stop recording".into()];
+        let result = strip_trailing_commands(&lines);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("First point"));
+    }
+
+    #[test]
+    fn strip_command_removes_end_recording() {
+        let lines = vec![
+            "[0:00] Discussion content".into(),
+            "[0:10] End recording".into(),
+        ];
+        let result = strip_trailing_commands(&lines);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn strip_command_removes_two_trailing_commands() {
+        let lines = vec![
+            "[0:00] Content".into(),
+            "[0:10] Okay stop.".into(),
+            "[0:12] Stop recording.".into(),
+        ];
+        let result = strip_trailing_commands(&lines);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].contains("Content"));
+    }
+
+    #[test]
+    fn strip_command_preserves_non_command_lines() {
+        let lines = vec![
+            "[0:00] We need to stop recording expenses".into(),
+            "[0:05] The stop recording policy is important".into(),
+        ];
+        let result = strip_trailing_commands(&lines);
+        assert_eq!(result.len(), 2, "non-command lines should be preserved");
+    }
+
+    #[test]
+    fn strip_command_handles_empty() {
+        let result = strip_trailing_commands(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn strip_command_case_insensitive() {
+        let lines = vec![
+            "[0:00] Meeting notes".into(),
+            "[0:05] STOP RECORDING".into(),
+        ];
+        let result = strip_trailing_commands(&lines);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn clean_transcript_strips_trailing_command() {
+        let input =
+            "[0:00] Important discussion\n[0:05] Action item for Bob\n[0:10] Stop recording.\n";
+        let (cleaned, stats) = clean_transcript(input);
+        assert!(!cleaned.contains("Stop recording"));
+        assert!(cleaned.contains("Action item for Bob"));
+        assert!(stats.after_command_strip < stats.after_trailing_trim);
     }
 }

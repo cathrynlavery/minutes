@@ -251,7 +251,11 @@ fn transcribe_with_whisper(
     // Layer 5: Remove foreign-script hallucination (e.g., CJK in a Latin transcript)
     let lines = strip_foreign_script(lines);
 
-    // Layer 6: Trim trailing noise ([music], [BLANK_AUDIO]) from the end
+    // Layer 6: Collapse bracketed non-speech markers ([Śmiech], [music], [risas], etc.)
+    // Runs after foreign-script filter so density calculation isn't inflated by CJK lines.
+    let lines = collapse_noise_markers(lines);
+
+    // Layer 7: Trim trailing noise ([music], [BLANK_AUDIO]) from the end
     let lines = trim_trailing_noise(lines);
 
     let transcript = lines.join("\n");
@@ -563,6 +567,9 @@ fn trim_trailing_noise(lines: Vec<String>) -> Vec<String> {
 }
 fn strip_foreign_script(lines: Vec<String>) -> Vec<String> {
     wg_segments::strip_foreign_script(&lines)
+}
+fn collapse_noise_markers(lines: Vec<String>) -> Vec<String> {
+    wg_segments::collapse_noise_markers(&lines)
 }
 
 // ── Noise reduction ──────────────────────────────────────────
@@ -976,6 +983,7 @@ fn parse_parakeet_output(raw_output: &str, config: &Config) -> Result<String, Tr
     let lines = dedup_segments(lines);
     let lines = dedup_interleaved(lines);
     let lines = strip_foreign_script(lines);
+    let lines = collapse_noise_markers(lines);
     let lines = trim_trailing_noise(lines);
 
     let transcript = lines.join("\n");

@@ -260,7 +260,7 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 - **whisper-rs** (whisper.cpp) for transcription — local, Apple Silicon optimized, params match whisper-cli defaults (best_of=5, entropy/logprob thresholds)
 - **ffmpeg preferred for audio decoding** — shells out to ffmpeg for m4a/mp3/ogg when available (identical to whisper-cli's pipeline). Falls back to symphonia (pure Rust) when ffmpeg isn't installed. This matters for non-English audio — symphonia's AAC decoder produces subtly different samples that trigger whisper hallucination loops (issue #21).
 - **Silero VAD** (via whisper-rs) — ML-based voice activity detection integrated directly into whisper's transcription params. Prevents hallucination loops by skipping silence segments. Auto-downloaded during `minutes setup`.
-- **whisper-guard** crate — standalone anti-hallucination toolkit extracted from minutes-core. 5-layer defense: Silero VAD gating, no_speech probability filtering (>80% = skip), consecutive segment dedup (3+ similar collapsed), interleaved A/B/A/B pattern detection, trailing noise trimming. Publishable to crates.io independently.
+- **whisper-guard** crate — standalone anti-hallucination toolkit extracted from minutes-core. 6-layer defense: Silero VAD gating, no_speech probability filtering (>80% = skip), consecutive segment dedup (3+ similar collapsed), interleaved A/B/A/B pattern detection, foreign-script hallucination detection, language-agnostic noise marker collapse (`[Śmiech]`, `[music]`, `[risas]`, etc.), trailing noise trimming. Publishable to crates.io independently.
 - **nnnoiseless** (optional) — pure Rust RNNoise port for noise reduction. Behind `denoise` feature flag, controlled by `config.transcription.noise_reduction`. Processes at 48kHz with first-frame priming. Batch path only (not streaming).
 - **pyannote-rs** for speaker diarization — native Rust, ONNX models (~34MB), no Python. Works in CLI, Tauri desktop app, and via MCP. Behind the `diarize` Cargo feature flag.
 - **Speaker attribution** — confidence-aware system mapping SPEAKER_X labels to real names. Four levels: L0 (deterministic 1-on-1 via calendar+identity), L1 (LLM suggestions capped at Medium confidence), L2 (voice enrollment in `voices.db`), L3 (confirmed-only learning). Wrong names are worse than anonymous — only High-confidence attributions rewrite transcript labels. `speaker_map` in YAML frontmatter is the canonical attribution data. Voice profiles stored in `~/.minutes/voices.db` (separate from `graph.db` which wipes on rebuild).
@@ -291,8 +291,8 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 
 ## Test Coverage
 
-~255 tests total:
-- 27 whisper-guard unit tests (resample, normalize, strip_silence, dedup_segments, dedup_interleaved, trim_trailing_noise, clean_transcript + 1 doctest)
+~277 tests total:
+- 49 whisper-guard unit tests (resample, normalize, strip_silence, dedup_segments, dedup_interleaved, collapse_noise_markers, strip_foreign_script, trim_trailing_noise, clean_transcript + 1 doctest)
 - 124 core unit tests (all modules including screen, calendar, config, watch, streaming whisper, vault, dictation, live_transcript, health, vad, hotkey)
 - 10 integration tests (pipeline, permissions, collisions, search filters)
 - 23 Tauri unit tests (commands, call detection)

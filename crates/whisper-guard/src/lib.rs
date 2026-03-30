@@ -14,8 +14,10 @@
 //! **Post-transcription segment cleaning** (`segments` module):
 //! - Consecutive repetition detection (3+ similar segments collapsed)
 //! - Interleaved A/B/A/B hallucination pattern detection
+//! - Bracketed noise marker collapse (`[Śmiech]`, `[music]`, `[risas]`, any language)
 //! - Foreign script hallucination detection (e.g., CJK in a Latin transcript)
 //! - Trailing noise trimming (`[music]`, `[BLANK_AUDIO]`, filler)
+//! - Voice command stripping ("stop recording", "end recording")
 //!
 //! **Whisper parameter presets** (`params` module, requires `whisper` feature):
 //! - Batch transcription params matching whisper-cli defaults
@@ -39,4 +41,4 @@ pub mod params;
 
 // Re-export the most common entry points
 pub use audio::{normalize_audio, resample, strip_silence};
-pub use segments::{clean_transcript, CleanStats};
+pub use segments::{clean_transcript, strip_trailing_commands, CleanStats};
