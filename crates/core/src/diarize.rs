@@ -684,7 +684,9 @@ mod tests {
 
     #[test]
     fn models_installed_returns_false_when_missing() {
-        let config = Config::default();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.diarization.model_path = dir.path().join("missing-models");
         assert!(!models_installed(&config));
     }
 
