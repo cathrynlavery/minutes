@@ -27,6 +27,7 @@ pub struct Config {
     pub dictation: DictationConfig,
     pub voice: VoiceConfig,
     pub live_transcript: LiveTranscriptConfig,
+    pub recording: RecordingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +222,26 @@ impl Default for VaultConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct RecordingConfig {
+    /// Seconds of continuous silence before sending a reminder notification.
+    /// Set to 0 to disable. Default: 300 (5 minutes).
+    pub silence_reminder_secs: u64,
+    /// Audio level (0–100) below which audio is considered silence.
+    /// The level comes from RMS energy of the mic input. Default: 3.
+    pub silence_threshold: u32,
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self {
+            silence_reminder_secs: 300,
+            silence_threshold: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LiveTranscriptConfig {
     /// Whisper model to use for live transcription.
     /// Empty string means "use the dictation model".
@@ -312,6 +333,7 @@ impl Default for Config {
             dictation: DictationConfig::default(),
             voice: VoiceConfig::default(),
             live_transcript: LiveTranscriptConfig::default(),
+            recording: RecordingConfig::default(),
         }
     }
 }

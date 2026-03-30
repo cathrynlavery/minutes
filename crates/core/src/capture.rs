@@ -273,6 +273,12 @@ pub fn record_to_wav(
         None
     };
 
+    // Silence detection state
+    let silence_threshold = config.recording.silence_threshold;
+    let silence_reminder_secs = config.recording.silence_reminder_secs;
+    let mut silence_start: Option<std::time::Instant> = None;
+    let mut silence_notified = false;
+
     // Wait for stop signal (Ctrl+C sets stop_flag, `minutes stop` writes sentinel)
     while !stop_flag.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -285,6 +291,30 @@ pub fn record_to_wav(
         if crate::pid::check_and_clear_sentinel() {
             tracing::info!("stop sentinel detected — stopping recording");
             break;
+        }
+
+        // Silence reminder: notify if audio has been below threshold for too long
+        if silence_reminder_secs > 0 {
+            let level = audio_level();
+            if level <= silence_threshold {
+                let start = silence_start.get_or_insert_with(std::time::Instant::now);
+                let silent_secs = start.elapsed().as_secs();
+                if silent_secs >= silence_reminder_secs && !silence_notified {
+                    silence_notified = true;
+                    tracing::info!(
+                        silent_secs,
+                        "silence detected — sending reminder notification"
+                    );
+                    send_silence_notification(silent_secs);
+                }
+            } else {
+                // Audio resumed — reset silence tracking
+                if silence_notified {
+                    tracing::info!("audio resumed after silence notification");
+                }
+                silence_start = None;
+                silence_notified = false;
+            }
         }
     }
 
@@ -403,6 +433,42 @@ fn get_macos_default_input_name() -> Option<String> {
     }
 
     None
+}
+
+/// Send a macOS notification when silence is detected during recording.
+fn send_silence_notification(silent_secs: u64) {
+    let minutes = silent_secs / 60;
+    let body = if minutes >= 2 {
+        format!(
+            "No audio detected for {} minutes. Still recording — run `minutes stop` when done.",
+            minutes
+        )
+    } else {
+        format!(
+            "No audio detected for {} seconds. Still recording — run `minutes stop` when done.",
+            silent_secs
+        )
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{}\" with title \"Minutes\" sound name \"Submarine\"",
+            body.replace('\\', "\\\\").replace('"', "\\\"")
+        );
+        match std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .output()
+        {
+            Ok(_) => tracing::debug!("silence notification sent"),
+            Err(e) => tracing::warn!("failed to send notification: {}", e),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("[minutes] {}", body);
+    }
 }
 
 /// List available audio input devices (for diagnostics / `minutes setup`).
