@@ -4,8 +4,9 @@ use crate::config::Config;
 // LLM summarization module (pluggable).
 //
 // Supported engines:
-//   "none"    → Skip summarization — Claude summarizes via MCP when asked (default)
-//   "agent"   → Agent CLI (claude -p, codex exec) — uses existing subscription, no API key
+//   "auto"    → Detect installed AI CLI (claude > codex > gemini), skip if none found (default)
+//   "none"    → Skip summarization — Claude summarizes via MCP when asked
+//   "agent"   → Agent CLI (claude -p, codex exec, gemini -p) — uses existing subscription, no API key
 //   "ollama"  → Local Ollama server (no API key needed)
 //   "claude"  → Anthropic Claude API (ANTHROPIC_API_KEY env var, legacy)
 //   "openai"  → OpenAI API (OPENAI_API_KEY env var, legacy)
@@ -49,6 +50,15 @@ pub fn summarize_with_screens(
     tracing::info!(engine = %engine, "running LLM summarization");
 
     let result = match engine.as_str() {
+        "auto" => {
+            if let Some(agent) = detect_agent_cli() {
+                tracing::info!(agent = %agent, "auto-detected AI CLI for summarization");
+                summarize_with_agent_cmd(transcript, config, &agent)
+            } else {
+                tracing::info!("no AI CLI found (claude, codex, gemini), skipping summarization");
+                return None;
+            }
+        }
         "agent" => summarize_with_agent(transcript, config),
         "claude" => summarize_with_claude(transcript, screen_files, config),
         "openai" => summarize_with_openai(transcript, screen_files, config),
@@ -262,11 +272,33 @@ fn parse_summary_response(response: &str) -> Summary {
 // No API keys needed — uses the agent's own auth (subscription, OAuth, etc.)
 //
 // Supported agents:
-//   "claude" → `claude -p "prompt" --no-input` (Claude Code CLI)
-//   "codex"  → `codex exec "prompt"` (OpenAI Codex CLI)
+//   "claude" → `claude -p - --no-input` (Claude Code CLI)
+//   "codex"  → `codex exec - -s read-only` (OpenAI Codex CLI)
+//   "gemini" → `gemini -p -` (Gemini CLI)
 //   Any other → treated as a command that accepts a prompt on stdin
 //
 // The agent command is configurable via [summarization] agent_command.
+
+/// Detect the first available AI CLI in preference order: claude > codex > gemini.
+/// Returns the resolved path if found and executable, None otherwise.
+fn detect_agent_cli() -> Option<String> {
+    for cmd in &["claude", "codex", "gemini"] {
+        let resolved = resolve_agent_path(cmd);
+        // resolve_agent_path returns the bare name if not found — check if we got a real path
+        if resolved != *cmd || std::path::Path::new(&resolved).exists() {
+            if std::process::Command::new(&resolved)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok()
+            {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
 
 /// Resolve a command name to a full path, searching common install locations.
 /// GUI apps (like Tauri) run with a minimal PATH that doesn't include
@@ -311,21 +343,34 @@ fn resolve_agent_path(cmd: &str) -> String {
     cmd.to_string()
 }
 
+/// Summarize using a specific agent command (used by the "auto" engine).
+fn summarize_with_agent_cmd(
+    transcript: &str,
+    config: &Config,
+    cmd: &str,
+) -> Result<Summary, Box<dyn std::error::Error>> {
+    summarize_with_agent_impl(transcript, config, cmd.to_string())
+}
+
 fn summarize_with_agent(
     transcript: &str,
     config: &Config,
 ) -> Result<Summary, Box<dyn std::error::Error>> {
-    use std::io::Write;
-
     let agent_cmd = if config.summarization.agent_command.is_empty() {
         "claude".to_string()
     } else {
         config.summarization.agent_command.clone()
     };
-
-    // Resolve full path — GUI apps have a minimal PATH and won't find
-    // binaries in ~/.cargo/bin, ~/.local/bin, /opt/homebrew/bin, etc.
     let agent_cmd = resolve_agent_path(&agent_cmd);
+    summarize_with_agent_impl(transcript, config, agent_cmd)
+}
+
+fn summarize_with_agent_impl(
+    transcript: &str,
+    _config: &Config,
+    agent_cmd: String,
+) -> Result<Summary, Box<dyn std::error::Error>> {
+    use std::io::Write;
 
     // Truncate at a safe UTF-8 char boundary to avoid panics
     let max_transcript = 100_000;
@@ -354,6 +399,8 @@ fn summarize_with_agent(
         (&agent_cmd, vec!["-p", "-", "--no-input"])
     } else if agent_cmd == "codex" || agent_cmd.ends_with("/codex") {
         (&agent_cmd, vec!["exec", "-", "-s", "read-only"])
+    } else if agent_cmd == "gemini" || agent_cmd.ends_with("/gemini") {
+        (&agent_cmd, vec!["-p", "-"])
     } else {
         (&agent_cmd, vec![])
     };
@@ -1053,6 +1100,8 @@ fn run_speaker_mapping_via_agent(
         (&agent_cmd, vec!["-p", "-", "--no-input"])
     } else if agent_cmd == "codex" || agent_cmd.ends_with("/codex") {
         (&agent_cmd, vec!["exec", "-", "-s", "read-only"])
+    } else if agent_cmd == "gemini" || agent_cmd.ends_with("/gemini") {
+        (&agent_cmd, vec!["-p", "-"])
     } else {
         (&agent_cmd, vec![])
     };
