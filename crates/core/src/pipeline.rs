@@ -596,9 +596,8 @@ fn title_from_transcript(transcript: &str) -> Option<String> {
             .iter()
             .filter(|c| {
                 c.is_ascii_alphabetic()
-                    || ('\u{00C0}'..='\u{024F}').contains(c) // Latin Extended-A/B
+                    || ('\u{00C0}'..='\u{024F}').contains(c) // Latin-1 Supplement + Extended-A/B
                     || ('\u{1E00}'..='\u{1EFF}').contains(c) // Latin Extended Additional
-                    || ('\u{0100}'..='\u{017F}').contains(c) // Latin Extended-A (ł, etc.)
             })
             .count();
         let latin_ratio = latin_count as f64 / alpha_chars.len() as f64;
@@ -1223,6 +1222,15 @@ mod tests {
     fn generate_title_allows_polish_with_extended_latin() {
         // Polish city name: Łódź has mostly non-ASCII but all Latin-extended chars.
         let transcript = "Meeting in Łódź about the project";
+        let title = generate_title(transcript, None);
+        assert_ne!(title, "Untitled Recording");
+    }
+
+    #[test]
+    fn generate_title_allows_purely_accented_latin() {
+        // All non-ASCII but entirely Latin-script — must NOT be rejected.
+        // Łódź: Ł(\u{0141}) ó(\u{00F3}) d(ASCII) ź(\u{017A}) — 3/4 extended, 1/4 ASCII
+        let transcript = "Łódź Gdańsk Wrocław";
         let title = generate_title(transcript, None);
         assert_ne!(title, "Untitled Recording");
     }
