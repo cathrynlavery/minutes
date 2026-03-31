@@ -71,6 +71,10 @@ pub struct Frontmatter {
     pub visibility: Option<Visibility>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub speaker_map: Vec<crate::diarize::SpeakerAttribution>,
+    /// Diagnostic string from the transcription filter pipeline.
+    /// Not serialized to YAML — only used for the NoSpeech hint in rendered markdown.
+    #[serde(skip)]
+    pub filter_diagnosis: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -171,6 +175,9 @@ fn render_markdown(
 
     if frontmatter.status == Some(OutputStatus::NoSpeech) {
         content.push_str("*No speech detected in this recording.*\n\n");
+        if let Some(diagnosis) = &frontmatter.filter_diagnosis {
+            content.push_str(&format!("**Diagnosis**: {}\n\n", diagnosis));
+        }
         content.push_str(&format!(
             "To retry with a different model:\n`minutes process {} --model large-v3`\n\n",
             path_for_no_speech_hint.display()
@@ -413,6 +420,7 @@ mod tests {
             recorded_by: None,
             visibility: None,
             speaker_map: vec![],
+            filter_diagnosis: None,
         }
     }
 
@@ -650,12 +658,15 @@ mod tests {
 
         let fm = Frontmatter {
             status: Some(OutputStatus::NoSpeech),
+            filter_diagnosis: Some("audio: 5.0s, whisper produced 3 segments, no_speech filter: -3 → 0, final: 0 words".into()),
             ..test_frontmatter()
         };
 
         let result = write(&fm, "", None, None, &config).unwrap();
         let content = fs::read_to_string(&result.path).unwrap();
         assert!(content.contains("No speech detected"));
+        assert!(content.contains("**Diagnosis**:"));
+        assert!(content.contains("no_speech filter"));
         assert!(content.contains("minutes process"));
     }
 }

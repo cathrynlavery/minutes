@@ -138,14 +138,16 @@ pub fn transcribe_to_artifact(
     }
 
     let step_start = std::time::Instant::now();
-    let transcript = transcribe::transcribe(audio_path, config)?;
+    let result = transcribe::transcribe(audio_path, config)?;
     let transcribe_ms = step_start.elapsed().as_millis() as u64;
+    let transcript = result.text;
+    let filter_stats = result.stats;
     let word_count = transcript.split_whitespace().count();
     logging::log_step(
         "transcribe",
         &audio_path.display().to_string(),
         transcribe_ms,
-        serde_json::json!({"words": word_count, "mode": "background"}),
+        serde_json::json!({"words": word_count, "mode": "background", "diagnosis": filter_stats.diagnosis()}),
     );
 
     let status = if word_count < config.transcription.min_words {
@@ -236,6 +238,11 @@ pub fn transcribe_to_artifact(
         recorded_by: config.identity.name.clone(),
         visibility: None,
         speaker_map: vec![],
+        filter_diagnosis: if status == Some(OutputStatus::NoSpeech) {
+            Some(filter_stats.diagnosis())
+        } else {
+            None
+        },
     };
 
     let write_result = if let Some(path) = existing_output_path {
@@ -569,20 +576,23 @@ where
     on_progress(PipelineStage::Transcribing);
     tracing::info!(step = "transcribe", file = %audio_path.display(), "transcribing audio");
     let step_start = std::time::Instant::now();
-    let transcript = transcribe::transcribe(audio_path, config)?;
+    let result = transcribe::transcribe(audio_path, config)?;
     let transcribe_ms = step_start.elapsed().as_millis() as u64;
+    let transcript = result.text;
+    let filter_stats = result.stats;
 
     let word_count = transcript.split_whitespace().count();
     tracing::info!(
         step = "transcribe",
         words = word_count,
+        diagnosis = filter_stats.diagnosis(),
         "transcription complete"
     );
     logging::log_step(
         "transcribe",
         &audio_path.display().to_string(),
         transcribe_ms,
-        serde_json::json!({"words": word_count}),
+        serde_json::json!({"words": word_count, "diagnosis": filter_stats.diagnosis()}),
     );
 
     // Check minimum word threshold
@@ -590,6 +600,7 @@ where
         tracing::warn!(
             words = word_count,
             min = config.transcription.min_words,
+            diagnosis = filter_stats.diagnosis(),
             "below minimum word threshold — marking as no-speech"
         );
         Some(OutputStatus::NoSpeech)
@@ -893,6 +904,11 @@ where
         recorded_by: config.identity.name.clone(),
         visibility: None,
         speaker_map,
+        filter_diagnosis: if status == Some(OutputStatus::NoSpeech) {
+            Some(filter_stats.diagnosis())
+        } else {
+            None
+        },
     };
 
     tracing::info!(step = "write", "writing markdown");

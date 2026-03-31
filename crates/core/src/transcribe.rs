@@ -10,6 +10,101 @@ pub use whisper_guard::audio::{normalize_audio, resample, strip_silence};
 pub use whisper_guard::params::{default_whisper_params, streaming_whisper_params};
 pub use whisper_guard::segments::{clean_transcript, CleanStats};
 
+/// Diagnostics from the transcription filtering pipeline.
+/// Tracks how many segments survived each anti-hallucination layer,
+/// so blank transcripts can be diagnosed.
+#[derive(Debug, Clone, Default)]
+pub struct FilterStats {
+    /// Total audio duration in seconds (after loading)
+    pub audio_duration_secs: f64,
+    /// Samples after silence stripping (0 = all silence)
+    pub samples_after_silence_strip: usize,
+    /// Raw segments from whisper/parakeet before any filtering
+    pub raw_segments: usize,
+    /// Segments skipped by whisper's no_speech_prob > 0.8
+    pub skipped_no_speech: usize,
+    /// Segments with non-empty text after no_speech filter
+    pub after_no_speech_filter: usize,
+    /// After consecutive dedup
+    pub after_dedup: usize,
+    /// After interleaved dedup
+    pub after_interleaved: usize,
+    /// After foreign-script filter
+    pub after_script_filter: usize,
+    /// After noise marker collapse
+    pub after_noise_markers: usize,
+    /// After trailing noise trim
+    pub after_trailing_trim: usize,
+    /// Final word count
+    pub final_words: usize,
+}
+
+impl FilterStats {
+    /// Human-readable summary of what each layer removed.
+    pub fn diagnosis(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(format!("audio: {:.1}s", self.audio_duration_secs));
+        if self.samples_after_silence_strip == 0 {
+            parts.push("silence strip removed ALL audio".into());
+            return parts.join(", ");
+        }
+        parts.push(format!("whisper produced {} segments", self.raw_segments));
+        if self.raw_segments == 0 {
+            return parts.join(", ");
+        }
+        if self.skipped_no_speech > 0 {
+            parts.push(format!(
+                "no_speech filter: -{} → {}",
+                self.skipped_no_speech, self.after_no_speech_filter
+            ));
+        }
+        if self.after_dedup < self.after_no_speech_filter {
+            parts.push(format!(
+                "dedup: -{} → {}",
+                self.after_no_speech_filter - self.after_dedup,
+                self.after_dedup
+            ));
+        }
+        if self.after_interleaved < self.after_dedup {
+            parts.push(format!(
+                "interleaved: -{} → {}",
+                self.after_dedup - self.after_interleaved,
+                self.after_interleaved
+            ));
+        }
+        if self.after_script_filter < self.after_interleaved {
+            parts.push(format!(
+                "script filter: -{} → {}",
+                self.after_interleaved - self.after_script_filter,
+                self.after_script_filter
+            ));
+        }
+        if self.after_noise_markers < self.after_script_filter {
+            parts.push(format!(
+                "noise markers: -{} → {}",
+                self.after_script_filter - self.after_noise_markers,
+                self.after_noise_markers
+            ));
+        }
+        if self.after_trailing_trim < self.after_noise_markers {
+            parts.push(format!(
+                "trailing trim: -{} → {}",
+                self.after_noise_markers - self.after_trailing_trim,
+                self.after_trailing_trim
+            ));
+        }
+        parts.push(format!("final: {} words", self.final_words));
+        parts.join(", ")
+    }
+}
+
+/// Result from the transcription pipeline, including filter diagnostics.
+#[derive(Debug, Clone)]
+pub struct TranscribeResult {
+    pub text: String,
+    pub stats: FilterStats,
+}
+
 // ──────────────────────────────────────────────────────────────
 // Transcription pipeline:
 //
@@ -36,7 +131,7 @@ pub use whisper_guard::segments::{clean_transcript, CleanStats};
 ///
 /// Handles format conversion (m4a/mp3/ogg → PCM) automatically via symphonia.
 /// Both engines produce identical output format: `[M:SS] text` lines.
-pub fn transcribe(audio_path: &Path, config: &Config) -> Result<String, TranscribeError> {
+pub fn transcribe(audio_path: &Path, config: &Config) -> Result<TranscribeResult, TranscribeError> {
     match config.transcription.engine.as_str() {
         "whisper" => transcribe_whisper_dispatch(audio_path, config),
         "parakeet" => transcribe_parakeet_dispatch(audio_path, config),
@@ -54,9 +149,12 @@ pub fn transcribe(audio_path: &Path, config: &Config) -> Result<String, Transcri
 fn transcribe_whisper_dispatch(
     audio_path: &Path,
     config: &Config,
-) -> Result<String, TranscribeError> {
+) -> Result<TranscribeResult, TranscribeError> {
+    let mut stats = FilterStats::default();
+
     // Step 1: Load audio as 16kHz mono f32 PCM samples
     let samples = load_audio_samples(audio_path)?;
+    stats.audio_duration_secs = samples.len() as f64 / 16000.0;
 
     if samples.is_empty() {
         return Err(TranscribeError::EmptyAudio);
@@ -85,22 +183,27 @@ fn transcribe_whisper_dispatch(
     } else {
         strip_silence(&samples, 16000)
     };
+    stats.samples_after_silence_strip = samples.len();
 
     if samples.is_empty() {
+        tracing::warn!(
+            audio_duration_secs = stats.audio_duration_secs,
+            "silence stripping removed all audio — entire recording was below energy threshold"
+        );
         return Err(TranscribeError::EmptyAudio);
     }
 
     // Step 3: Transcribe
     #[cfg(feature = "whisper")]
     {
-        transcribe_with_whisper(&samples, audio_path, config)
+        transcribe_with_whisper(&samples, audio_path, config, stats)
     }
 
     #[cfg(not(feature = "whisper"))]
     {
         let _ = config; // suppress unused warning
         let duration_secs = samples.len() as f64 / 16000.0;
-        Ok(format!(
+        let text = format!(
             "[Transcription placeholder — whisper feature not enabled]\n\
              Audio file: {}\n\
              Duration: {:.1}s ({} samples at 16kHz)\n\
@@ -110,7 +213,8 @@ fn transcribe_whisper_dispatch(
             audio_path.display(),
             duration_secs,
             samples.len(),
-        ))
+        );
+        Ok(TranscribeResult { text, stats })
     }
 }
 
@@ -118,7 +222,7 @@ fn transcribe_whisper_dispatch(
 fn transcribe_parakeet_dispatch(
     audio_path: &Path,
     config: &Config,
-) -> Result<String, TranscribeError> {
+) -> Result<TranscribeResult, TranscribeError> {
     #[cfg(feature = "parakeet")]
     {
         transcribe_with_parakeet(audio_path, config)
@@ -137,7 +241,8 @@ fn transcribe_with_whisper(
     samples: &[f32],
     _audio_path: &Path,
     config: &Config,
-) -> Result<String, TranscribeError> {
+    mut stats: FilterStats,
+) -> Result<TranscribeResult, TranscribeError> {
     // Load whisper model
     let model_path = resolve_model_path(config)?;
     tracing::info!(model = %model_path.display(), "loading whisper model");
@@ -198,6 +303,7 @@ fn transcribe_with_whisper(
     })?;
 
     let num_segments = state.full_n_segments();
+    stats.raw_segments = num_segments as usize;
 
     // Collect segments, filtering by no_speech probability
     let mut lines: Vec<String> = Vec::new();
@@ -235,28 +341,37 @@ fn transcribe_with_whisper(
         lines.push(format!("[{}:{:02}] {}", mins, secs, text));
     }
 
+    stats.skipped_no_speech = skipped_no_speech as usize;
+    stats.after_no_speech_filter = lines.len();
+
     if skipped_no_speech > 0 {
         tracing::info!(
             skipped = skipped_no_speech,
+            remaining = lines.len(),
             "filtered segments with high no_speech probability"
         );
     }
 
     // Layer 2: Remove repetition loops — detect consecutive near-identical segments
     let lines = dedup_segments(lines);
+    stats.after_dedup = lines.len();
 
     // Layer 4: Remove interleaved repetition (A/B/A/B patterns, filler-separated loops)
     let lines = dedup_interleaved(lines);
+    stats.after_interleaved = lines.len();
 
     // Layer 5: Remove foreign-script hallucination (e.g., CJK in a Latin transcript)
     let lines = strip_foreign_script(lines);
+    stats.after_script_filter = lines.len();
 
     // Layer 6: Collapse bracketed non-speech markers ([Śmiech], [music], [risas], etc.)
     // Runs after foreign-script filter so density calculation isn't inflated by CJK lines.
     let lines = collapse_noise_markers(lines);
+    stats.after_noise_markers = lines.len();
 
     // Layer 7: Trim trailing noise ([music], [BLANK_AUDIO]) from the end
     let lines = trim_trailing_noise(lines);
+    stats.after_trailing_trim = lines.len();
 
     let transcript = lines.join("\n");
     let transcript = if transcript.is_empty() {
@@ -266,13 +381,26 @@ fn transcribe_with_whisper(
     };
 
     let word_count = transcript.split_whitespace().count();
+    stats.final_words = word_count;
+
     tracing::info!(
         segments = num_segments,
         words = word_count,
+        diagnosis = stats.diagnosis(),
         "transcription complete"
     );
 
-    Ok(transcript)
+    if word_count == 0 && num_segments > 0 {
+        tracing::warn!(
+            diagnosis = stats.diagnosis(),
+            "all segments filtered out — transcript is blank"
+        );
+    }
+
+    Ok(TranscribeResult {
+        text: transcript,
+        stats,
+    })
 }
 
 /// Load audio from any supported format as 16kHz mono f32 samples.
@@ -814,8 +942,13 @@ const VALID_PARAKEET_MODELS: &[&str] = &["tdt-ctc-110m", "tdt-600m"];
 
 /// Transcribe using parakeet.cpp as a subprocess.
 #[cfg(feature = "parakeet")]
-fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String, TranscribeError> {
+fn transcribe_with_parakeet(
+    audio_path: &Path,
+    config: &Config,
+) -> Result<TranscribeResult, TranscribeError> {
     use std::process::Command;
+
+    let mut stats = FilterStats::default();
 
     // Validate model name before doing any work
     if !VALID_PARAKEET_MODELS.contains(&config.transcription.parakeet_model.as_str()) {
@@ -828,6 +961,7 @@ fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String
 
     // Step 1: Load audio and convert to 16kHz mono (reuse existing pipeline)
     let samples = load_audio_samples(audio_path)?;
+    stats.audio_duration_secs = samples.len() as f64 / 16000.0;
     if samples.is_empty() {
         return Err(TranscribeError::EmptyAudio);
     }
@@ -842,6 +976,7 @@ fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String
 
     // Strip silence (parakeet benefits from the same pre-processing)
     let samples = strip_silence(&samples, 16000);
+    stats.samples_after_silence_strip = samples.len();
     if samples.is_empty() {
         return Err(TranscribeError::EmptyAudio);
     }
@@ -907,12 +1042,28 @@ fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String
 
     // Step 5: Parse output and format as [M:SS] lines
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let transcript = parse_parakeet_output(&stdout, config)?;
+    let (transcript, pstats) = parse_parakeet_output(&stdout, config)?;
+
+    stats.raw_segments = pstats.raw_segments;
+    stats.after_no_speech_filter = pstats.raw_segments; // parakeet doesn't have no_speech filter
+    stats.after_dedup = pstats.after_dedup;
+    stats.after_interleaved = pstats.after_interleaved;
+    stats.after_script_filter = pstats.after_script_filter;
+    stats.after_noise_markers = pstats.after_noise_markers;
+    stats.after_trailing_trim = pstats.after_trailing_trim;
 
     let word_count = transcript.split_whitespace().count();
-    tracing::info!(words = word_count, "parakeet transcription complete");
+    stats.final_words = word_count;
+    tracing::info!(
+        words = word_count,
+        diagnosis = stats.diagnosis(),
+        "parakeet transcription complete"
+    );
 
-    Ok(transcript)
+    Ok(TranscribeResult {
+        text: transcript,
+        stats,
+    })
 }
 
 /// Parse parakeet.cpp text output into `[M:SS] text` lines matching whisper format.
@@ -924,7 +1075,20 @@ fn transcribe_with_parakeet(audio_path: &Path, config: &Config) -> Result<String
 /// Applies the full anti-hallucination pipeline: dedup_segments, dedup_interleaved,
 /// and trim_trailing_noise — matching the whisper path exactly.
 #[cfg(feature = "parakeet")]
-fn parse_parakeet_output(raw_output: &str, config: &Config) -> Result<String, TranscribeError> {
+struct ParakeetFilterStats {
+    raw_segments: usize,
+    after_dedup: usize,
+    after_interleaved: usize,
+    after_script_filter: usize,
+    after_noise_markers: usize,
+    after_trailing_trim: usize,
+}
+
+#[cfg(feature = "parakeet")]
+fn parse_parakeet_output(
+    raw_output: &str,
+    config: &Config,
+) -> Result<(String, ParakeetFilterStats), TranscribeError> {
     let raw = raw_output.trim();
     if raw.is_empty() {
         return Err(TranscribeError::EmptyTranscript(
@@ -964,6 +1128,8 @@ fn parse_parakeet_output(raw_output: &str, config: &Config) -> Result<String, Tr
         // Non-timestamp line — skip (don't fake [0:00] timestamps)
     }
 
+    let raw_segments = lines.len();
+
     if lines.is_empty() {
         if !has_timestamps {
             // No parseable output at all — include a snippet in the error for debugging
@@ -981,10 +1147,24 @@ fn parse_parakeet_output(raw_output: &str, config: &Config) -> Result<String, Tr
 
     // Full anti-hallucination pipeline (same as whisper path)
     let lines = dedup_segments(lines);
+    let after_dedup = lines.len();
     let lines = dedup_interleaved(lines);
+    let after_interleaved = lines.len();
     let lines = strip_foreign_script(lines);
+    let after_script_filter = lines.len();
     let lines = collapse_noise_markers(lines);
+    let after_noise_markers = lines.len();
     let lines = trim_trailing_noise(lines);
+    let after_trailing_trim = lines.len();
+
+    let pstats = ParakeetFilterStats {
+        raw_segments,
+        after_dedup,
+        after_interleaved,
+        after_script_filter,
+        after_noise_markers,
+        after_trailing_trim,
+    };
 
     let transcript = lines.join("\n");
     if transcript.is_empty() {
@@ -992,7 +1172,7 @@ fn parse_parakeet_output(raw_output: &str, config: &Config) -> Result<String, Tr
             config.transcription.min_words,
         ));
     }
-    Ok(format!("{}\n", transcript))
+    Ok((format!("{}\n", transcript), pstats))
 }
 
 /// Write f32 samples as a 16kHz mono 16-bit WAV file.
