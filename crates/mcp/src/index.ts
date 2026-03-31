@@ -182,8 +182,9 @@ function findMinutesBinary(): string {
 let MINUTES_BIN = findMinutesBinary();
 
 // ── Expected CLI version (must match this MCP server release) ──
-const EXPECTED_CLI_VERSION = "0.8.4";
-const RELEASE_TAG = "v0.8.4";
+const MCP_SERVER_VERSION = "0.9.1";
+const EXPECTED_CLI_VERSION = MCP_SERVER_VERSION;
+const RELEASE_TAG = `v${EXPECTED_CLI_VERSION}`;
 
 // ── CLI auto-install ────────────────────────────────────────
 // When installed via MCPB or `npx minutes-mcp`, the Rust CLI binary
@@ -449,7 +450,7 @@ function parseJsonOutput(stdout: string): any {
 
 const server = new McpServer({
   name: "minutes",
-  version: "0.9.1",
+  version: MCP_SERVER_VERSION,
 });
 
 // Declare MCP Apps extension support so hosts classify this server as interactive.
@@ -1880,9 +1881,9 @@ server.tool(
 
 server.tool(
   "get_meeting_insights",
-  "Query structured insights extracted from meetings — decisions, commitments, approvals, questions, blockers, follow-ups, and risks. Each insight has a confidence level (tentative/inferred/strong/explicit). Use this to find what was decided, who committed to what, and what's still open across all meetings. External systems can subscribe to these events for workflow automation.",
+  "Query structured insights extracted from meetings — decisions, commitments, and questions with confidence levels. Use this to find what was decided, who committed to what, and what's still open across all meetings. External systems can subscribe to these events for workflow automation.",
   {
-    kind: z.enum(["decision", "commitment", "approval", "question", "blocker", "follow_up", "risk"]).optional().describe("Filter by insight type"),
+    kind: z.enum(["decision", "commitment", "question"]).optional().describe("Filter by insight type"),
     confidence: z.enum(["tentative", "inferred", "strong", "explicit"]).optional().describe("Minimum confidence level"),
     participant: z.string().optional().describe("Filter by participant name (partial match)"),
     since: z.string().optional().describe("Only insights since this date (YYYY-MM-DD)"),

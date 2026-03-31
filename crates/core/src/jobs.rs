@@ -294,10 +294,8 @@ pub fn list_jobs() -> Vec<ProcessingJob> {
 pub fn display_jobs(limit: Option<usize>, include_terminal: bool) -> Vec<ProcessingJob> {
     let mut jobs = list_jobs();
     jobs.sort_by(|a, b| {
-        let a_active = !a.state.is_terminal();
-        let b_active = !b.state.is_terminal();
-        b_active
-            .cmp(&a_active)
+        job_sort_bucket(a)
+            .cmp(&job_sort_bucket(b))
             .then_with(|| b.created_at.cmp(&a.created_at))
     });
 
@@ -350,6 +348,16 @@ pub fn requeue_job(job_id: &str) -> std::io::Result<Option<ProcessingJob>> {
 
 pub fn processing_summary() -> Option<ProcessingJob> {
     active_jobs().into_iter().next()
+}
+
+fn job_sort_bucket(job: &ProcessingJob) -> u8 {
+    if job.state.is_terminal() {
+        2
+    } else if job.state == JobState::Queued {
+        1
+    } else {
+        0
+    }
 }
 
 pub fn next_pending_job() -> Option<ProcessingJob> {
@@ -707,6 +715,61 @@ mod tests {
             assert_eq!(requeued.state, JobState::Queued);
             assert_eq!(requeued.error, None);
             assert_eq!(requeued.finished_at, None);
+        });
+    }
+
+    #[test]
+    fn processing_summary_prefers_active_work_over_newer_queued_jobs() {
+        with_temp_home(|_| {
+            let active = ProcessingJob {
+                id: "job-active".into(),
+                mode: CaptureMode::Meeting,
+                content_type: ContentType::Meeting,
+                title: Some("Older active job".into()),
+                audio_path: "/tmp/old.wav".into(),
+                output_path: None,
+                state: JobState::Transcribing,
+                stage: Some("Transcribing meeting".into()),
+                created_at: Local::now() - chrono::Duration::minutes(5),
+                started_at: Some(Local::now() - chrono::Duration::minutes(4)),
+                finished_at: None,
+                recording_started_at: None,
+                recording_finished_at: None,
+                user_notes: None,
+                pre_context: None,
+                calendar_event: None,
+                word_count: None,
+                error: None,
+                owner_pid: None,
+            };
+            let queued = ProcessingJob {
+                id: "job-queued".into(),
+                mode: CaptureMode::Meeting,
+                content_type: ContentType::Meeting,
+                title: Some("Newer queued job".into()),
+                audio_path: "/tmp/new.wav".into(),
+                output_path: None,
+                state: JobState::Queued,
+                stage: Some("Queued for processing".into()),
+                created_at: Local::now(),
+                started_at: None,
+                finished_at: None,
+                recording_started_at: None,
+                recording_finished_at: None,
+                user_notes: None,
+                pre_context: None,
+                calendar_event: None,
+                word_count: None,
+                error: None,
+                owner_pid: None,
+            };
+
+            write_job(&active).unwrap();
+            write_job(&queued).unwrap();
+
+            let summary = processing_summary().unwrap();
+            assert_eq!(summary.id, "job-active");
+            assert_eq!(summary.state, JobState::Transcribing);
         });
     }
 }

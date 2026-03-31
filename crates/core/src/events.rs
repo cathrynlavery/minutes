@@ -53,7 +53,7 @@ impl InsightConfidence {
 }
 
 /// The type of structured insight extracted from a meeting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InsightKind {
     /// "We decided X" — has rationale, optional deadline.
@@ -394,13 +394,15 @@ pub fn emit_insights_from_summary(
     meeting_title: &str,
     participants: &[String],
 ) {
+    let mut existing_keys = existing_insight_keys_for_meeting(meeting_path);
     // Track emitted commitment content to avoid duplicates across action_items + commitments
     let mut seen_commitments: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for decision in &summary.decisions {
         let confidence = infer_decision_confidence(decision);
-        append_event(MinutesEvent::MeetingInsightExtracted {
-            insight: MeetingInsight {
+        append_insight_if_new(
+            &mut existing_keys,
+            MeetingInsight {
                 kind: InsightKind::Decision,
                 content: decision.clone(),
                 confidence,
@@ -410,8 +412,8 @@ pub fn emit_insights_from_summary(
                 topic: infer_topic_from_text(decision),
                 source_meeting: meeting_path.to_string(),
             },
-            meeting_title: meeting_title.to_string(),
-        });
+            meeting_title,
+        );
     }
 
     for item in &summary.action_items {
@@ -423,8 +425,9 @@ pub fn emit_insights_from_summary(
             InsightConfidence::Inferred
         };
         seen_commitments.insert(task.to_lowercase());
-        append_event(MinutesEvent::MeetingInsightExtracted {
-            insight: MeetingInsight {
+        append_insight_if_new(
+            &mut existing_keys,
+            MeetingInsight {
                 kind: InsightKind::Commitment,
                 content: task,
                 confidence,
@@ -434,8 +437,8 @@ pub fn emit_insights_from_summary(
                 topic: None,
                 source_meeting: meeting_path.to_string(),
             },
-            meeting_title: meeting_title.to_string(),
-        });
+            meeting_title,
+        );
     }
 
     for commitment in &summary.commitments {
@@ -445,8 +448,9 @@ pub fn emit_insights_from_summary(
             continue;
         }
         let deadline = extract_inline_deadline(commitment);
-        append_event(MinutesEvent::MeetingInsightExtracted {
-            insight: MeetingInsight {
+        append_insight_if_new(
+            &mut existing_keys,
+            MeetingInsight {
                 kind: InsightKind::Commitment,
                 content,
                 confidence: InsightConfidence::Strong,
@@ -456,14 +460,15 @@ pub fn emit_insights_from_summary(
                 topic: None,
                 source_meeting: meeting_path.to_string(),
             },
-            meeting_title: meeting_title.to_string(),
-        });
+            meeting_title,
+        );
     }
 
     for question in &summary.open_questions {
         let (who, content) = parse_owner_prefix(question);
-        append_event(MinutesEvent::MeetingInsightExtracted {
-            insight: MeetingInsight {
+        append_insight_if_new(
+            &mut existing_keys,
+            MeetingInsight {
                 kind: InsightKind::Question,
                 content,
                 // Questions represent uncertainty, not decisions — Inferred, not actionable
@@ -474,9 +479,59 @@ pub fn emit_insights_from_summary(
                 topic: None,
                 source_meeting: meeting_path.to_string(),
             },
-            meeting_title: meeting_title.to_string(),
-        });
+            meeting_title,
+        );
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct InsightKey {
+    kind: InsightKind,
+    content: String,
+    owner: Option<String>,
+    deadline: Option<String>,
+    topic: Option<String>,
+    source_meeting: String,
+}
+
+fn normalize_insight_field(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn insight_key(insight: &MeetingInsight) -> InsightKey {
+    InsightKey {
+        kind: insight.kind,
+        content: normalize_insight_field(&insight.content),
+        owner: insight.owner.as_deref().map(normalize_insight_field),
+        deadline: insight.deadline.as_deref().map(normalize_insight_field),
+        topic: insight.topic.as_deref().map(normalize_insight_field),
+        source_meeting: normalize_insight_field(&insight.source_meeting),
+    }
+}
+
+fn existing_insight_keys_for_meeting(meeting_path: &str) -> std::collections::HashSet<InsightKey> {
+    let meeting_key = normalize_insight_field(meeting_path);
+    read_insights(&InsightFilter::default())
+        .into_iter()
+        .map(|(_, insight, _)| insight)
+        .filter(|insight| normalize_insight_field(&insight.source_meeting) == meeting_key)
+        .map(|insight| insight_key(&insight))
+        .collect()
+}
+
+fn append_insight_if_new(
+    existing_keys: &mut std::collections::HashSet<InsightKey>,
+    insight: MeetingInsight,
+    meeting_title: &str,
+) {
+    let key = insight_key(&insight);
+    if !existing_keys.insert(key) {
+        return;
+    }
+    append_event(MinutesEvent::MeetingInsightExtracted {
+        insight,
+        meeting_title: meeting_title.to_string(),
+    });
 }
 
 /// Heuristic: decisions with explicit language get Explicit confidence.
@@ -956,5 +1011,36 @@ mod tests {
             let parsed: InsightKind = serde_json::from_str(&json).unwrap();
             assert_eq!(*kind, parsed);
         }
+    }
+
+    #[test]
+    fn emit_insights_from_summary_is_idempotent_for_same_meeting() {
+        with_temp_home(|_| {
+            let summary = crate::summarize::Summary {
+                text: "summary".into(),
+                decisions: vec!["We decided to ship it".into()],
+                action_items: vec!["@mat: Send the recap by Friday".into()],
+                open_questions: vec!["Who owns rollout?".into()],
+                commitments: vec!["@mat: Send the recap by Friday".into()],
+                key_points: vec![],
+                participants: vec!["Mat".into(), "Alex".into()],
+            };
+
+            emit_insights_from_summary(
+                &summary,
+                "/meetings/2026-03-31-demo.md",
+                "Demo Meeting",
+                &summary.participants,
+            );
+            emit_insights_from_summary(
+                &summary,
+                "/meetings/2026-03-31-demo.md",
+                "Demo Meeting",
+                &summary.participants,
+            );
+
+            let insights = read_insights(&InsightFilter::default());
+            assert_eq!(insights.len(), 3);
+        });
     }
 }

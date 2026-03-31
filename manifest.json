@@ -116,7 +116,7 @@
     },
     {
       "name": "get_meeting_insights",
-      "description": "Query structured meeting insights (decisions, commitments, approvals, questions, blockers) with confidence filtering"
+      "description": "Query structured meeting insights (decisions, commitments, questions) with confidence filtering"
     },
     {
       "name": "start_live_transcript",

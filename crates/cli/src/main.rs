@@ -354,9 +354,9 @@ enum Commands {
         since: Option<String>,
     },
 
-    /// Query structured meeting insights (decisions, commitments, approvals, etc.)
+    /// Query structured meeting insights (decisions, commitments, questions)
     Insights {
-        /// Filter by insight type: decision, commitment, approval, question, blocker, follow_up, risk
+        /// Filter by insight type: decision, commitment, question
         #[arg(short, long)]
         kind: Option<String>,
 
@@ -2711,11 +2711,7 @@ fn cmd_insights(
     let kind_filter = match kind.as_deref() {
         Some("decision") => Some(InsightKind::Decision),
         Some("commitment") => Some(InsightKind::Commitment),
-        Some("approval") => Some(InsightKind::Approval),
         Some("question") => Some(InsightKind::Question),
-        Some("blocker") => Some(InsightKind::Blocker),
-        Some("follow_up") | Some("followup") => Some(InsightKind::FollowUp),
-        Some("risk") => Some(InsightKind::Risk),
         Some(other) => {
             eprintln!("warning: unknown insight kind '{}', showing all", other);
             None
