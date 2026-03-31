@@ -1043,4 +1043,60 @@ mod tests {
             assert_eq!(insights.len(), 3);
         });
     }
+
+    #[test]
+    fn emit_insights_from_summary_adds_only_new_items_on_retry() {
+        with_temp_home(|_| {
+            let initial = crate::summarize::Summary {
+                text: "summary".into(),
+                decisions: vec!["We decided to ship it".into()],
+                action_items: vec!["@mat: Send the recap by Friday".into()],
+                open_questions: vec![],
+                commitments: vec![],
+                key_points: vec![],
+                participants: vec!["Mat".into(), "Alex".into()],
+            };
+            let retried = crate::summarize::Summary {
+                text: "summary".into(),
+                decisions: vec![
+                    "We decided to ship it".into(),
+                    "Use weekly rollout checkpoints".into(),
+                ],
+                action_items: vec!["@mat: Send the recap by Friday".into()],
+                open_questions: vec!["Who owns rollout?".into()],
+                commitments: vec![],
+                key_points: vec![],
+                participants: vec!["Mat".into(), "Alex".into()],
+            };
+
+            emit_insights_from_summary(
+                &initial,
+                "/meetings/2026-03-31-demo.md",
+                "Demo Meeting",
+                &initial.participants,
+            );
+            emit_insights_from_summary(
+                &retried,
+                "/meetings/2026-03-31-demo.md",
+                "Demo Meeting",
+                &retried.participants,
+            );
+
+            let insights = read_insights(&InsightFilter::default());
+            assert_eq!(insights.len(), 4);
+            let contents = insights
+                .into_iter()
+                .map(|(_, insight, _)| insight.content)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                contents,
+                vec![
+                    "We decided to ship it",
+                    "Send the recap by Friday",
+                    "Use weekly rollout checkpoints",
+                    "Who owns rollout?",
+                ]
+            );
+        });
+    }
 }

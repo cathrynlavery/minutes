@@ -40,7 +40,7 @@ import { execFile, spawn } from "child_process";
 import { promisify } from "util";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
-import { delimiter, dirname, isAbsolute, join, relative } from "path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 
@@ -53,6 +53,7 @@ import {
 } from "./paths.js";
 
 const UI_RESOURCE_URI = "ui://minutes/dashboard";
+export const MEETING_INSIGHT_KINDS = ["decision", "commitment", "question"] as const;
 
 const execFileAsync = promisify(execFile);
 
@@ -1883,7 +1884,7 @@ server.tool(
   "get_meeting_insights",
   "Query structured insights extracted from meetings — decisions, commitments, and questions with confidence levels. Use this to find what was decided, who committed to what, and what's still open across all meetings. External systems can subscribe to these events for workflow automation.",
   {
-    kind: z.enum(["decision", "commitment", "question"]).optional().describe("Filter by insight type"),
+    kind: z.enum(MEETING_INSIGHT_KINDS).optional().describe("Filter by insight type"),
     confidence: z.enum(["tentative", "inferred", "strong", "explicit"]).optional().describe("Minimum confidence level"),
     participant: z.string().optional().describe("Filter by participant name (partial match)"),
     since: z.string().optional().describe("Only insights since this date (YYYY-MM-DD)"),
@@ -2107,7 +2108,9 @@ async function main() {
   console.error("Minutes MCP server running on stdio");
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}
