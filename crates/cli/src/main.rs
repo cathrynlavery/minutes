@@ -601,9 +601,14 @@ fn main() -> Result<()> {
         Commands::Schema => cmd_schema(),
         Commands::Get { slug } => cmd_get(&slug, &config),
         Commands::Events { limit, since } => cmd_events(limit, since, &config),
-        Commands::Insights { kind, confidence, participant, since, limit, actionable } => {
-            cmd_insights(kind, confidence, participant, since, limit, actionable)
-        }
+        Commands::Insights {
+            kind,
+            confidence,
+            participant,
+            since,
+            limit,
+            actionable,
+        } => cmd_insights(kind, confidence, participant, since, limit, actionable),
         Commands::Import { from, dir, dry_run } => {
             cmd_import(&from, dir.as_deref(), dry_run, &config)
         }

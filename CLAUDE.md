@@ -225,7 +225,7 @@ minutes/
 │   ├── cli/                   # CLI binary — 32 commands
 │   ├── reader/                # Lightweight read-only meeting parser (no audio deps)
 │   ├── assets/                # Bundled assets (demo.wav)
-│   └── mcp/                   # MCP server — 22 tools + 6 resources + MCP App dashboard
+│   └── mcp/                   # MCP server — 23 tools + 6 resources + MCP App dashboard
 │       └── ui/                # Interactive dashboard (vanilla TS, builds to single-file HTML)
 ├── site/                      # Landing page (Next.js + Remotion demo player)
 ├── tauri/                     # Tauri v2 menu bar app + singleton AI Assistant

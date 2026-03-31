@@ -484,8 +484,7 @@ fn extract_inline_deadline(text: &str) -> Option<String> {
     // Bare "by " — require word boundary (not preceded by a letter) to avoid
     // false positives on "nearby", "standby", "Abby", etc.
     if let Some(start) = lower.find("by ") {
-        let at_word_boundary =
-            start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphabetic();
+        let at_word_boundary = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphabetic();
         if at_word_boundary {
             let after = &lower[start + 3..];
             let deadline: String = after
