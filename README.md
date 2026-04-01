@@ -584,8 +584,8 @@ The desktop app adds a system tray icon, recording controls, audio visualizer, R
 
 Release workflow details live in:
 
-- [docs/RELEASE-MACOS.md](/Users/silverbook/Sites/minutes/docs/RELEASE-MACOS.md)
-- [docs/RELEASE-WINDOWS.md](/Users/silverbook/Sites/minutes/docs/RELEASE-WINDOWS.md)
+- [docs/RELEASE-MACOS.md](docs/RELEASE-MACOS.md)
+- [docs/RELEASE-WINDOWS.md](docs/RELEASE-WINDOWS.md)
 
 For macOS development, use a dedicated signed dev app identity:
 
