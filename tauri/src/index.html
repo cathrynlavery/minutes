@@ -1776,7 +1776,7 @@
 
     .footer-actions {
       display: grid;
-      grid-template-columns: 1.4fr 0.6fr 1fr 0.7fr;
+      grid-template-columns: 1.3fr 0.55fr 1fr 0.7fr;
       gap: 5px;
       background: var(--bg-elevated);
       border: 1px solid rgba(255,255,255,0.06);
@@ -1788,6 +1788,8 @@
     .footer-actions .btn {
       width: 100%;
       border-radius: var(--radius);
+      font-size: 12px;
+      white-space: nowrap;
     }
 
     /* ── Buttons ── */
@@ -2062,7 +2064,7 @@
     <div class="footer-actions">
       <button class="btn btn-primary" id="btn-record">Start Recording</button>
       <button class="btn btn-secondary" id="btn-live" title="Start live transcription — ask your agent in Recall for coaching" aria-label="Start live transcription">Live</button>
-      <button class="btn btn-secondary" id="btn-quick-thought">Thought</button>
+      <button class="btn btn-secondary" id="btn-quick-thought">Quick Thought</button>
       <button class="btn btn-secondary" id="btn-assistant" aria-expanded="false">Recall <span class="recall-nudge" id="recall-nudge" aria-label="Recall has new content"></span></button>
     </div>
   </div>
