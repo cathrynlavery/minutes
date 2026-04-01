@@ -3,7 +3,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { expandHomeLikePath, validatePathInDirectory } from "./paths.js";
+import { expandHomeLikePath, isWithinDirectory, validatePathInDirectory } from "./paths.js";
 
 const tempRoots: string[] = [];
 
@@ -33,5 +33,19 @@ describe("path normalization", () => {
     const configuredRoot = `\${HOME}/${tempRoot.slice(homedir().length + 1)}/meetings`;
 
     expect(validatePathInDirectory(meetingPath, configuredRoot, [".md"])).toBe(meetingPath);
+  });
+});
+
+describe("isWithinDirectory", () => {
+  it("rejects paths that share a prefix but are not children", () => {
+    // ~/meetings-evil should NOT be within ~/meetings
+    expect(isWithinDirectory("/home/user/meetings-evil", "/home/user/meetings")).toBe(false);
+    expect(isWithinDirectory("/home/user/meetings-evil/file.md", "/home/user/meetings")).toBe(false);
+  });
+
+  it("accepts exact root match and direct children", () => {
+    expect(isWithinDirectory("/home/user/meetings", "/home/user/meetings")).toBe(true);
+    expect(isWithinDirectory("/home/user/meetings/file.md", "/home/user/meetings")).toBe(true);
+    expect(isWithinDirectory("/home/user/meetings/sub/file.md", "/home/user/meetings")).toBe(true);
   });
 });

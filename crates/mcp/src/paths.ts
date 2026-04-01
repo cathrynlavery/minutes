@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "fs";
 import { homedir } from "os";
-import { extname, join, resolve } from "path";
+import { extname, join, resolve, sep } from "path";
 
 export function expandHomeLikePath(input: string): string {
   const home = homedir();
@@ -41,7 +41,9 @@ export function canonicalizeRoot(root: string): string {
 
 export function isWithinDirectory(candidate: string, root: string): boolean {
   // Ensure root ends with separator to prevent prefix attacks (e.g. ~/meetings-evil)
-  const rootWithSep = root.endsWith("/") ? root : root + "/";
+  // Use path.sep for cross-platform correctness — realpathSync returns OS-native
+  // separators, so on Windows the root will use backslashes.
+  const rootWithSep = root.endsWith(sep) ? root : root + sep;
   return candidate === root || candidate.startsWith(rootWithSep);
 }
 
