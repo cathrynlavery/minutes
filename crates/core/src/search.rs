@@ -752,7 +752,10 @@ fn process_file(
     }
     if let Some(ref recorded_by) = filters.recorded_by {
         let recorded = extract_field(frontmatter_str, "recorded_by").unwrap_or_default();
-        if !recorded.to_lowercase().contains(&recorded_by.to_lowercase()) {
+        if !recorded
+            .to_lowercase()
+            .contains(&recorded_by.to_lowercase())
+        {
             return Ok(None);
         }
     }
