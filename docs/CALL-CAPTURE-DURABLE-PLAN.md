@@ -29,11 +29,11 @@ The CLI can remain a great engine for:
 
 But "just work" system audio capture on macOS depends on app-bundle permissions and platform APIs. The desktop app is the right owner for that job. MCP and CLI should route into that owner when the user intent is "record this call."
 
-One more product stance:
+One more product stance (updated 2026-03-31):
 
-**When a known call app is active and the user starts recording, Minutes should auto-switch to `call` intent by default.**
+**Call capture should be explicit, not automatic.** When a known call app is detected, Minutes shows a banner offering to record the call. The user clicks "Record" on the banner to start call capture. Pressing the normal "Start Recording" button always starts a standard mic recording.
 
-Do not ask the user to classify the obvious case. The escape hatch is an override, not a questionnaire.
+The original plan called for aggressive auto-switching to call intent. In practice, process-based detection has too many false positives (Slack and FaceTime run as background processes on every Mac). Aggressive auto-switch caused broken recordings and stuck UIs when the call-capture sources weren't available. The current stance: detect calls, offer to record them, let the user decide.
 
 ## Constraints
 
@@ -73,8 +73,9 @@ Minutes should expose three user intents:
    Default capture: microphone only.
 
 3. `call`
-   Use for Zoom, Meet, Teams, FaceTime, Slack huddles, and similar.
+   Use for Zoom, Teams, Webex, and similar video/audio calls.
    Default capture: microphone + system audio.
+   Triggered explicitly via the call detection banner or `--intent call`.
 
 This is the product contract. Device routing is an implementation detail below it.
 
@@ -108,13 +109,15 @@ If one source is missing, Minutes should not quietly record anyway in the defaul
 
 That is the trust boundary.
 
-When the user starts recording while Zoom, Teams, Meet, FaceTime, or a similar app is active, the default behavior should be:
+When Minutes detects an active call (Zoom, Teams, Webex), it shows a call detection banner. The user can:
 
-- infer `call` intent automatically
-- attempt dual capture automatically
-- only interrupt the flow if Minutes cannot actually satisfy the `call` contract
+- click "Record" on the banner to start call capture with dual sources
+- click "Dismiss" to ignore the detection
+- press the normal "Start Recording" button for a standard mic recording regardless
 
-That gives us aggressive detection without silent degradation.
+This gives us reliable detection with explicit user intent. The `auto_call_intent` config flag exists for users who prefer the aggressive auto-switch path.
+
+Default detection apps: Zoom, Teams, Webex. Slack and FaceTime were removed from defaults because they run as background processes on every Mac, producing constant false positives.
 
 ## Architectural Decision
 
@@ -138,11 +141,11 @@ Intent is user-facing. Route is implementation-facing.
 
 Intent inference policy:
 
-- if the user explicitly chose an intent, respect it
-- if the user starts recording while a call app is active, infer `Call`
-- otherwise infer `Memo` or `Room` from the initiating surface and surrounding context
+- if the user explicitly chose an intent (e.g. clicked "Record" on call banner), respect it
+- if the user presses the normal "Start Recording" button, always use `Room` or `Memo`
+- `auto_call_intent` config exists for users who want the aggressive path, but defaults to `false`
 
-This should be aggressive. The common case should not require a prompt.
+The original plan called for aggressive auto-inference. Field testing showed process-based detection is too noisy for that. The architecture supports it (the flag is one config change), but the default is conservative.
 
 ### 2. Make the Tauri app the system-audio capture owner
 
@@ -390,26 +393,23 @@ This matters because support, debugging, and trust all come from being able to a
 
 ### Phase 1A: Product contract and shared preflight
 
-**Status:** Complete
+**Status:** Complete (product stance revised)
 
 What shipped:
 
-- first-class `RecordingIntent`
-- shared `CapturePreflight`
-- aggressive auto-switch to `call` intent when call context is active
-- blocking degraded-mode policy for `call`
+- first-class `RecordingIntent` (Memo, Room, Call)
+- shared `CapturePreflight` with blocking degraded-mode policy
 - source-aware wording and behavior across CLI, MCP, and Tauri
-
-Ship first:
-
-- `RecordingIntent`
-- `CapturePreflight`
-- aggressive auto-switch to `call` intent when call context is active
-- blocking degraded-mode policy for `call`
-- source-aware wording in MCP, CLI, and Tauri
 - capture provenance in artifacts
 
-Exit criteria:
+Product stance change (v0.9.2):
+
+- `auto_call_intent` defaults to `false` — normal recordings never auto-route into call capture
+- Slack and FaceTime removed from default detection list (always-running background processes)
+- Call capture is triggered explicitly via the call detection banner or `--intent call`
+- The architecture still supports aggressive auto-switch (one config change), but the default is conservative after field testing showed process-based detection produces too many false positives
+
+Exit criteria (met):
 
 - no call recording can start silently in mic-only mode unless the user explicitly accepts degradation
 
@@ -443,30 +443,31 @@ Exit criteria:
 
 ### Phase 2: Tauri source health UI
 
-**Status:** In progress
+**Status:** Partially shipped, design under active revision
 
 What shipped:
 
 - source-aware backend liveness for `mic_live` and `call_audio_live`
+- health chips showing "Mic live/missing" and "Call audio live/missing" during call capture
 - basic status exposure through desktop app state
-- minimal in-app recording status text for both sources
+
+Design feedback (v0.9.2):
+
+- health chips are only shown during call-capture recordings (not normal mic recordings)
+- current chip design was flagged as visually heavy/alarming in design review
+- the health UI needs refinement to feel like status, not like errors
 
 What remains:
 
-- dedicated visual meters or badges
-- clearer degraded-state affordances
-- route-drop warnings that are more visible than status text alone
-
-Ship:
-
-- mic meter
-- system-audio meter
-- readiness badges
+- dedicated visual meters (not just text chips)
+- clearer degraded-state affordances that feel like status, not alarms
 - route-drop warnings during capture
+- design pass on the call-capture recording bar to match the calmer normal recording bar
 
 Exit criteria:
 
 - a user can tell within 5 seconds whether Minutes hears both sides of the call
+- the health UI feels informational, not alarming
 
 ### Phase 3: MCP delegation to desktop owner
 
@@ -500,18 +501,14 @@ What shipped:
 - honest `--intent call`
 - `--allow-degraded`
 - explicit preflight failure before silent bad starts
+- `auto_call_intent` config flag for users who want the aggressive auto-switch path
 
 What remains:
 
 - better power-user setup guidance
 - more polished backend-selection diagnostics
 - future Windows/Linux-specific fallback paths
-
-Ship:
-
-- honest `--intent call`
-- BlackHole validation/setup hints
-- explicit degraded mode
+- smarter call detection that checks for active audio sessions, not just running processes
 
 Exit criteria:
 
