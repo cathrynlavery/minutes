@@ -24,7 +24,7 @@ This is **not** a standalone architecture. It extends the existing Call Capture 
 
 1. Source-aware artifacts for better speaker attribution
 2. Energy-based stem attribution in `diarize.rs` (skip pyannote for 1-on-1 calls)
-3. CLI `--source` as a power-user escape hatch (not the primary UX)
+3. CLI `--source` as an escape hatch for unusual setups
 4. `minutes sources` as a diagnostic command
 5. `MultiAudioStream` for live mode speaker tags
 6. Linux PipeWire source-preserving backend (after macOS is proven)
@@ -37,21 +37,21 @@ Secondary: Linux users (issue #34) want multi-device recording without manually 
 
 ## Product contract
 
-The product surface is intent-driven. `--call` is the primary UX. Device selection is a power-user escape hatch.
+The product surface is intent-driven. `--call` is the primary UX. `--source` is an escape hatch for unusual setups (not "power user" -- stock Linux with PipeWire is a normal setup, not a power-user scenario).
 
 ```bash
 # Primary UX (intent-driven, unchanged from durable plan)
 minutes record --intent call          # Tauri routes through ScreenCaptureKit
-minutes record --call                 # shorthand
+minutes record --call                 # shorthand, auto-detects loopback on all platforms
 
-# Power-user escape hatch (new, not prominent in docs)
+# Escape hatch for unusual setups
 minutes record --source "Yeti" --source "BlackHole 2ch"
 
 # Diagnostic command (new)
 minutes sources                       # categorized device list
 ```
 
-`minutes sources` shows devices grouped by category (Microphones / System Audio / Virtual Devices). It's for debugging and setup, not everyday use.
+`minutes sources` shows devices grouped by category (Microphones / System Audio / Virtual Devices). It's for debugging and initial setup, not everyday use.
 
 ## Architecture
 
@@ -301,10 +301,10 @@ Ordered by dependency (build bottom-up):
 
 ### Files that don't change
 
-- `transcribe.rs` -- still receives a single `mixed.wav`
+- `transcribe.rs` -- receives `mixed.wav` by default; per-stem transcription (v1 step 5) adds an optional multi-file path but the single-file interface is unchanged
 - `summarize.rs` -- receives attributed transcript
 - `markdown.rs` -- speaker labels already flow through
-- `whisper-guard/` -- operates on the mixed audio
+- `whisper-guard/` -- operates on each audio input (mixed or per-stem)
 - `call_capture.rs` -- ScreenCaptureKit helper unchanged
 
 ## Clock drift
@@ -323,21 +323,23 @@ For the fallback path: linear resample after recording may be good enough for ba
 
 ### v1: Stem splitting + attribution + live speaker tags
 
-**Sequence:** macOS first, Linux after dogfood.
+**Sequence:** macOS stems and attribution first. PipeWire device auto-detection ships alongside (not after) macOS, since the desktop app is confirmed working on Linux (Discussion #44). Full source-aware attribution pipeline on Linux ships after macOS dogfood.
 
 1. DRY consolidation (shared resampler)
 2. Prove ScreenCaptureKit artifact separability or extend the helper to write explicit stems
 3. Stem materialization path in pipeline (`ffmpeg` only when artifact is already separable)
 4. Energy-based stem attribution in `diarize.rs`
-5. `AudioChunk` timestamps + `MultiAudioStream`
-6. Sync windowing for live speaker tags from `TaggedChunk`
-7. Config `[recording.sources]` + CLI `--source` + `minutes sources`
-8. Per-device `DeviceMonitor`
+5. Per-stem transcription path (transcribe each stem separately, merge by timestamp, compare quality against mixed -- promote to default if quality proves out) ([Discussion #43](https://github.com/silverstein/minutes/discussions/43))
+6. `AudioChunk` timestamps + `MultiAudioStream`
+7. Sync windowing for live speaker tags from `TaggedChunk`
+8. Config `[recording.sources]` + CLI `--source` + `minutes sources`
+9. PipeWire `*.monitor` source auto-detection for `--call` on Linux ([#62](https://github.com/silverstein/minutes/issues/62))
+10. Per-device `DeviceMonitor`
 
-### v2: Aggregate device + Linux
+### v2: Aggregate device + full Linux attribution
 
 - CoreAudio aggregate device creation (programmatic, no BlackHole needed for CLI)
-- Linux PipeWire source-preserving backend
+- Linux PipeWire source-preserving backend (full stem-based attribution)
 - PulseAudio fallback
 
 ### v3: Arbitrary multi-source + smart defaults
@@ -350,7 +352,7 @@ For the fallback path: linear resample after recording may be good enough for ba
 ## NOT in scope (v1)
 
 - CoreAudio aggregate device creation (deferred to v2, ~400 lines unsafe code)
-- Linux PipeWire backend (deferred to v2, macOS first)
+- Full Linux PipeWire source-aware attribution (deferred to v2; PipeWire device auto-detection is v1)
 - Arbitrary N-device capture (v3)
 - Echo cancellation / sidetone cleanup (post-launch quality)
 - Windows system audio capture implementation (backend deferred, likely WASAPI loopback)
