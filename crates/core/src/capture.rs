@@ -4,6 +4,7 @@ use crate::pid::CaptureMode;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Shared audio level (0–100 scale) for UI visualization.
 /// Updated ~10x per second from the cpal callback.
@@ -12,6 +13,331 @@ static AUDIO_LEVEL: AtomicU32 = AtomicU32::new(0);
 /// Get the current audio input level (0–100).
 pub fn audio_level() -> u32 {
     AUDIO_LEVEL.load(Ordering::Relaxed)
+}
+
+// ──────────────────────────────────────────────────────────────
+// Recording Safety Guard — protects against forgotten recordings
+// ──────────────────────────────────────────────────────────────
+
+/// Why the guard wants to stop the recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    Silence,
+    TimeCapReached,
+    DiskSpaceLow,
+}
+
+/// Action the caller should take after a safety check.
+#[derive(Debug)]
+pub enum SafetyAction {
+    /// No action needed.
+    None,
+    /// Show a non-urgent notification (silence nudge).
+    Nudge(String),
+    /// Show an urgent warning (auto-stop approaching).
+    Warning(String),
+    /// Stop the recording immediately.
+    Stop(StopReason, String),
+}
+
+/// Reusable guard that monitors recording health and signals when to nudge,
+/// warn, or auto-stop. Used by `record_to_wav`, native call capture, and
+/// live transcript (time cap + disk only).
+pub struct RecordingSafetyGuard {
+    silence_reminder_secs: u64,
+    silence_auto_stop_secs: u64,
+    silence_threshold: u32,
+    max_duration_secs: u64,
+    min_disk_space_mb: u64,
+    output_path: std::path::PathBuf,
+
+    recording_start: Instant,
+    silence_start: Option<Instant>,
+    nudge_count: u32,
+    grace_start: Option<Instant>,
+    last_disk_check: Instant,
+    last_available_mb: Option<u64>,
+    time_cap_warned: bool,
+    intent: Option<RecordingIntent>,
+    extended: bool,
+}
+
+/// Nudge schedule: 5 min, 15 min, 30 min, then every 30 min.
+fn nudge_threshold_secs(base: u64, count: u32) -> u64 {
+    match count {
+        0 => base,
+        1 => base * 3,
+        _ => base * 6,
+    }
+}
+
+/// Grace period before auto-stop: if audio resumes, defer.
+const GRACE_PERIOD_SECS: u64 = 60;
+
+impl RecordingSafetyGuard {
+    pub fn new(config: &crate::config::RecordingConfig, output_path: &Path) -> Self {
+        let now = Instant::now();
+        Self {
+            silence_reminder_secs: config.silence_reminder_secs,
+            silence_auto_stop_secs: config.silence_auto_stop_secs,
+            silence_threshold: config.silence_threshold,
+            max_duration_secs: config.max_duration_secs,
+            min_disk_space_mb: config.min_disk_space_mb,
+            output_path: output_path.to_path_buf(),
+            recording_start: now,
+            silence_start: None,
+            nudge_count: 0,
+            grace_start: None,
+            last_disk_check: now,
+            last_available_mb: None,
+            time_cap_warned: false,
+            intent: None,
+            extended: false,
+        }
+    }
+
+    pub fn with_intent(mut self, intent: RecordingIntent) -> Self {
+        self.intent = Some(intent);
+        self
+    }
+
+    /// Reset the silence timer (called when user clicks "Keep Recording").
+    pub fn extend(&mut self) {
+        self.silence_start = None;
+        self.nudge_count = 0;
+        self.grace_start = None;
+        self.extended = true;
+    }
+
+    /// Check all safety tiers. Call this every ~100ms from the capture loop.
+    pub fn check(&mut self, current_audio_level: u32, call_app_active: bool) -> SafetyAction {
+        // Tier 4: Disk space guard (checked first, most urgent)
+        if let Some(action) = self.check_disk_space() {
+            return action;
+        }
+
+        // Tier 3: Hard time cap
+        if let Some(action) = self.check_time_cap() {
+            return action;
+        }
+
+        // Tier 1+2: Silence detection (nudge + auto-stop)
+        self.check_silence(current_audio_level, call_app_active)
+    }
+
+    /// Check only time cap and disk space (for live transcript mode).
+    pub fn check_time_and_disk(&mut self) -> SafetyAction {
+        if let Some(action) = self.check_disk_space() {
+            return action;
+        }
+        if let Some(action) = self.check_time_cap() {
+            return action;
+        }
+        SafetyAction::None
+    }
+
+    fn check_disk_space(&mut self) -> Option<SafetyAction> {
+        if self.min_disk_space_mb == 0 {
+            return None;
+        }
+
+        let check_interval = match self.last_available_mb {
+            Some(mb) if mb < 500 => std::time::Duration::from_secs(2),
+            Some(mb) if mb < 1000 => std::time::Duration::from_secs(10),
+            _ => std::time::Duration::from_secs(60),
+        };
+
+        if self.last_disk_check.elapsed() < check_interval {
+            return None;
+        }
+        self.last_disk_check = Instant::now();
+
+        match available_disk_space_mb(&self.output_path) {
+            Some(available_mb) => {
+                self.last_available_mb = Some(available_mb);
+                if available_mb < self.min_disk_space_mb {
+                    Some(SafetyAction::Stop(
+                        StopReason::DiskSpaceLow,
+                        format!(
+                            "Disk space critically low ({}MB remaining). Recording auto-stopped to prevent data loss.",
+                            available_mb
+                        ),
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn check_time_cap(&mut self) -> Option<SafetyAction> {
+        if self.max_duration_secs == 0 {
+            return None;
+        }
+
+        let elapsed = self.recording_start.elapsed().as_secs();
+
+        if elapsed >= self.max_duration_secs {
+            let hours = self.max_duration_secs / 3600;
+            return Some(SafetyAction::Stop(
+                StopReason::TimeCapReached,
+                format!(
+                    "Recording reached the {}-hour time limit. Auto-stopped and processing.",
+                    hours
+                ),
+            ));
+        }
+
+        // Warn at 90% of cap
+        let warn_at = self.max_duration_secs * 9 / 10;
+        if elapsed >= warn_at && !self.time_cap_warned {
+            self.time_cap_warned = true;
+            let remaining_min = (self.max_duration_secs - elapsed) / 60;
+            return Some(SafetyAction::Warning(format!(
+                "Recording will auto-stop in {} minutes (time limit).",
+                remaining_min.max(1)
+            )));
+        }
+
+        None
+    }
+
+    fn check_silence(&mut self, current_audio_level: u32, call_app_active: bool) -> SafetyAction {
+        if self.silence_reminder_secs == 0 && self.silence_auto_stop_secs == 0 {
+            return SafetyAction::None;
+        }
+
+        if current_audio_level > self.silence_threshold {
+            // Audio resumed
+            if self.silence_start.is_some() {
+                self.silence_start = None;
+                self.nudge_count = 0;
+                self.grace_start = None;
+                self.extended = false;
+            }
+            return SafetyAction::None;
+        }
+
+        // Audio is silent
+        let start = self.silence_start.get_or_insert_with(Instant::now);
+        let silent_secs = start.elapsed().as_secs();
+
+        // Suppress silence actions for active calls (user is likely muted/listening)
+        let is_active_call = self.intent == Some(RecordingIntent::Call) && call_app_active;
+
+        // Tier 2: Auto-stop on prolonged silence
+        if self.silence_auto_stop_secs > 0 && !is_active_call {
+            let effective_limit = if self.intent == Some(RecordingIntent::Call) {
+                // Call intent but no active call app: use 2x threshold
+                self.silence_auto_stop_secs * 2
+            } else {
+                self.silence_auto_stop_secs
+            };
+
+            if silent_secs >= effective_limit {
+                // Grace period: check if audio just resumed
+                if let Some(grace) = self.grace_start {
+                    if grace.elapsed().as_secs() >= GRACE_PERIOD_SECS {
+                        // Grace period expired, still silent: stop
+                        let minutes = silent_secs / 60;
+                        return SafetyAction::Stop(
+                            StopReason::Silence,
+                            format!(
+                                "No audio for {} minutes. Recording auto-stopped and processing.",
+                                minutes
+                            ),
+                        );
+                    }
+                    // Still in grace period, wait
+                    return SafetyAction::None;
+                }
+                // Enter grace period
+                self.grace_start = Some(Instant::now());
+                let minutes = silent_secs / 60;
+                return SafetyAction::Warning(format!(
+                    "No audio for {} minutes. Auto-stopping in 1 minute unless audio resumes.",
+                    minutes
+                ));
+            }
+        }
+
+        // Tier 1: Silence nudges (escalating)
+        if self.silence_reminder_secs > 0 && !is_active_call {
+            let next_nudge_at = nudge_threshold_secs(self.silence_reminder_secs, self.nudge_count);
+            if silent_secs >= next_nudge_at {
+                self.nudge_count += 1;
+                let minutes = silent_secs / 60;
+                let msg = if minutes >= 2 {
+                    format!(
+                        "No audio detected for {} minutes. Still recording.",
+                        minutes
+                    )
+                } else {
+                    format!(
+                        "No audio detected for {} seconds. Still recording.",
+                        silent_secs
+                    )
+                };
+                return SafetyAction::Nudge(msg);
+            }
+        }
+
+        SafetyAction::None
+    }
+
+    /// Whether silence was detected long enough to trigger a device reconnect check.
+    pub fn silence_duration_secs(&self) -> Option<u64> {
+        self.silence_start.map(|start| start.elapsed().as_secs())
+    }
+}
+
+/// Get available disk space in MB for the filesystem containing the given path.
+#[allow(clippy::unnecessary_cast)] // statvfs field types vary across platforms
+pub fn available_disk_space_mb(path: &Path) -> Option<u64> {
+    let check_path = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(Path::new("/")).to_path_buf()
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut c_path = check_path.as_os_str().as_bytes().to_vec();
+        c_path.push(0);
+        unsafe {
+            let mut stat: libc::statvfs = std::mem::zeroed();
+            if libc::statvfs(c_path.as_ptr() as *const libc::c_char, &mut stat) == 0 {
+                let available_bytes = (stat.f_bavail as u64) * (stat.f_frsize as u64);
+                return Some(available_bytes / (1024 * 1024));
+            }
+        }
+        None
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = check_path;
+        None
+    }
+}
+
+/// Check for an extend sentinel (used by CLI `minutes extend`).
+pub fn check_and_clear_extend_sentinel() -> bool {
+    let sentinel = crate::config::Config::minutes_dir().join("extend.sentinel");
+    if sentinel.exists() {
+        std::fs::remove_file(&sentinel).ok();
+        true
+    } else {
+        false
+    }
+}
+
+/// Write the extend sentinel (used by CLI `minutes extend` command).
+pub fn write_extend_sentinel() -> std::io::Result<()> {
+    let sentinel = crate::config::Config::minutes_dir().join("extend.sentinel");
+    std::fs::write(&sentinel, b"extend")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -250,11 +576,16 @@ pub fn record_to_wav(
         None
     };
 
-    // Silence detection state
-    let silence_threshold = config.recording.silence_threshold;
-    let silence_reminder_secs = config.recording.silence_reminder_secs;
-    let mut silence_start: Option<std::time::Instant> = None;
-    let mut silence_notified = false;
+    // Safety guard for auto-stop on silence, time cap, disk space
+    let preflight_intent = config
+        .recording
+        .auto_call_intent
+        .then(|| detect_active_call_app(config).map(|_| RecordingIntent::Call))
+        .flatten();
+    let mut safety_guard = RecordingSafetyGuard::new(&config.recording, output_path);
+    if let Some(intent) = preflight_intent {
+        safety_guard = safety_guard.with_intent(intent);
+    }
 
     // Wait for stop signal (Ctrl+C sets stop_flag, `minutes stop` writes sentinel)
     while !stop_flag.load(Ordering::Relaxed) {
@@ -263,6 +594,31 @@ pub fn record_to_wav(
         if crate::pid::check_and_clear_sentinel() {
             tracing::info!("stop sentinel detected — stopping recording");
             break;
+        }
+
+        // Check for extend sentinel from CLI `minutes extend`
+        if check_and_clear_extend_sentinel() {
+            tracing::info!("extend sentinel detected — resetting safety timers");
+            safety_guard.extend();
+        }
+
+        // Safety guard check (silence, time cap, disk space)
+        let call_app_active = detect_active_call_app(config).is_some();
+        match safety_guard.check(audio_level(), call_app_active) {
+            SafetyAction::None => {}
+            SafetyAction::Nudge(msg) => {
+                tracing::info!("{}", msg);
+                send_silence_notification_msg(&msg);
+            }
+            SafetyAction::Warning(msg) => {
+                tracing::warn!("{}", msg);
+                send_silence_notification_msg(&msg);
+            }
+            SafetyAction::Stop(reason, msg) => {
+                tracing::warn!(reason = ?reason, "{}", msg);
+                send_silence_notification_msg(&msg);
+                break;
+            }
         }
 
         // Check for stream error or device change → attempt reconnection
@@ -276,36 +632,14 @@ pub fn record_to_wav(
             false
         };
 
-        // Also check for silence-triggered device change (device went silent because it changed)
-        let silence_triggered_reconnect = if !should_reconnect && silence_reminder_secs > 0 {
-            let level = audio_level();
-            if level <= silence_threshold {
-                let start = silence_start.get_or_insert_with(std::time::Instant::now);
-                let silent_secs = start.elapsed().as_secs();
-
-                // Check device change after a few seconds of silence (faster than silence reminder)
-                if silent_secs >= DEVICE_CHECK_SILENCE_SECS && device_monitor.has_device_changed() {
-                    true
-                } else if silent_secs >= silence_reminder_secs && !silence_notified {
-                    silence_notified = true;
-                    tracing::info!(
-                        silent_secs,
-                        "silence detected — sending reminder notification"
-                    );
-                    send_silence_notification(silent_secs);
-                    false
-                } else {
-                    false
-                }
-            } else {
-                // Audio resumed — reset silence tracking
-                if silence_notified {
-                    tracing::info!("audio resumed after silence notification");
-                }
-                silence_start = None;
-                silence_notified = false;
-                false
-            }
+        // Also check for silence-triggered device change
+        let silence_triggered_reconnect = if !should_reconnect {
+            safety_guard
+                .silence_duration_secs()
+                .map(|secs| {
+                    secs >= DEVICE_CHECK_SILENCE_SECS && device_monitor.has_device_changed()
+                })
+                .unwrap_or(false)
         } else {
             false
         };
@@ -342,8 +676,7 @@ pub fn record_to_wav(
                     current_device_name = new_name;
                     device_monitor.update_device(&current_device_name);
                     stream = Some(new_stream);
-                    silence_start = None;
-                    silence_notified = false;
+                    safety_guard.extend(); // reset silence timers after reconnect
 
                     eprintln!(
                         "[minutes] Audio device switched: {} → {}",
@@ -688,20 +1021,7 @@ pub fn preflight_recording(
 }
 
 /// Send a macOS notification when silence is detected during recording.
-fn send_silence_notification(silent_secs: u64) {
-    let minutes = silent_secs / 60;
-    let body = if minutes >= 2 {
-        format!(
-            "No audio detected for {} minutes. Still recording — run `minutes stop` when done.",
-            minutes
-        )
-    } else {
-        format!(
-            "No audio detected for {} seconds. Still recording — run `minutes stop` when done.",
-            silent_secs
-        )
-    };
-
+fn send_silence_notification_msg(body: &str) {
     #[cfg(target_os = "macos")]
     {
         let script = format!(
@@ -712,7 +1032,7 @@ fn send_silence_notification(silent_secs: u64) {
             .args(["-e", &script])
             .output()
         {
-            Ok(_) => tracing::debug!("silence notification sent"),
+            Ok(_) => tracing::debug!("safety notification sent"),
             Err(e) => tracing::warn!("failed to send notification: {}", e),
         }
     }
@@ -919,5 +1239,128 @@ mod tests {
         assert!(preflight.blocking_reason.is_none());
         assert!(preflight.allow_degraded);
         assert!(!preflight.warnings.is_empty());
+    }
+
+    fn test_config() -> crate::config::RecordingConfig {
+        crate::config::RecordingConfig {
+            silence_reminder_secs: 10,
+            silence_threshold: 3,
+            silence_auto_stop_secs: 30,
+            max_duration_secs: 60,
+            min_disk_space_mb: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn safety_guard_no_action_when_audio_present() {
+        let config = test_config();
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"));
+        assert!(matches!(guard.check(50, false), SafetyAction::None));
+    }
+
+    #[test]
+    fn safety_guard_escalating_nudge_schedule() {
+        assert_eq!(nudge_threshold_secs(300, 0), 300);
+        assert_eq!(nudge_threshold_secs(300, 1), 900);
+        assert_eq!(nudge_threshold_secs(300, 2), 1800);
+        assert_eq!(nudge_threshold_secs(300, 3), 1800);
+    }
+
+    #[test]
+    fn safety_guard_suppresses_for_active_call() {
+        let config = test_config();
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"))
+            .with_intent(RecordingIntent::Call);
+        assert!(matches!(guard.check(0, true), SafetyAction::None));
+    }
+
+    #[test]
+    fn safety_guard_extend_resets_silence() {
+        let config = test_config();
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"));
+        guard.check(0, false);
+        assert!(guard.silence_start.is_some());
+        guard.extend();
+        assert!(guard.silence_start.is_none());
+        assert_eq!(guard.nudge_count, 0);
+    }
+
+    #[test]
+    fn safety_guard_audio_resume_resets_silence() {
+        let config = test_config();
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"));
+        guard.check(0, false);
+        assert!(guard.silence_start.is_some());
+        guard.check(50, false);
+        assert!(guard.silence_start.is_none());
+    }
+
+    #[test]
+    fn safety_guard_time_cap_warning_at_90_percent() {
+        let config = crate::config::RecordingConfig {
+            max_duration_secs: 10,
+            silence_reminder_secs: 0,
+            silence_auto_stop_secs: 0,
+            min_disk_space_mb: 0,
+            ..Default::default()
+        };
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"));
+        guard.recording_start = Instant::now() - std::time::Duration::from_secs(9);
+        let action = guard.check(50, false);
+        assert!(matches!(action, SafetyAction::Warning(_)));
+        assert!(guard.time_cap_warned);
+    }
+
+    #[test]
+    fn safety_guard_time_cap_stops_at_limit() {
+        let config = crate::config::RecordingConfig {
+            max_duration_secs: 10,
+            silence_reminder_secs: 0,
+            silence_auto_stop_secs: 0,
+            min_disk_space_mb: 0,
+            ..Default::default()
+        };
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"));
+        guard.recording_start = Instant::now() - std::time::Duration::from_secs(11);
+        guard.time_cap_warned = true;
+        let action = guard.check(50, false);
+        assert!(matches!(
+            action,
+            SafetyAction::Stop(StopReason::TimeCapReached, _)
+        ));
+    }
+
+    #[test]
+    fn safety_guard_disabled_when_zeros() {
+        let config = crate::config::RecordingConfig {
+            silence_reminder_secs: 0,
+            silence_auto_stop_secs: 0,
+            max_duration_secs: 0,
+            min_disk_space_mb: 0,
+            ..Default::default()
+        };
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"));
+        assert!(matches!(guard.check(0, false), SafetyAction::None));
+    }
+
+    #[test]
+    fn safety_guard_call_intent_doubles_auto_stop_threshold() {
+        let config = test_config();
+        let mut guard = RecordingSafetyGuard::new(&config, Path::new("/tmp/test.wav"))
+            .with_intent(RecordingIntent::Call);
+        guard.silence_start = Some(Instant::now() - std::time::Duration::from_secs(31));
+        let action = guard.check(0, false);
+        assert!(!matches!(
+            action,
+            SafetyAction::Stop(StopReason::Silence, _)
+        ));
+    }
+
+    #[test]
+    fn available_disk_space_returns_some_for_valid_path() {
+        let result = available_disk_space_mb(Path::new("/tmp"));
+        assert!(result.is_some());
+        assert!(result.unwrap() > 0);
     }
 }

@@ -1531,6 +1531,13 @@ pub fn cmd_vault_unlink() -> Result<String, String> {
     Ok(format!("Vault unlinked (was: {})", old))
 }
 
+fn is_hidden_or_system_file(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with('.'))
+        .unwrap_or(false)
+}
+
 fn recovery_title(path: &std::path::Path, fallback: &str) -> String {
     path.file_stem()
         .and_then(|stem| stem.to_str())
@@ -1564,7 +1571,7 @@ fn scan_recovery_items(config: &Config) -> Vec<RecoveryItem> {
     if let Ok(entries) = std::fs::read_dir(&failed_captures) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
+            if path.is_file() && !is_hidden_or_system_file(&path) {
                 let modified = entry
                     .metadata()
                     .ok()
@@ -1591,7 +1598,7 @@ fn scan_recovery_items(config: &Config) -> Vec<RecoveryItem> {
         if let Ok(entries) = std::fs::read_dir(&failed_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_file() {
+                if path.is_file() && !is_hidden_or_system_file(&path) {
                     let modified = entry
                         .metadata()
                         .ok()
@@ -2263,6 +2270,11 @@ pub fn cmd_start_recording(
 #[tauri::command]
 pub fn cmd_stop_recording(state: tauri::State<AppState>) -> Result<(), String> {
     request_stop(&state.recording, &state.stop_flag)
+}
+
+#[tauri::command]
+pub fn cmd_extend_recording() -> Result<(), String> {
+    minutes_core::capture::write_extend_sentinel().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

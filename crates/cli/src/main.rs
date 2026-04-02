@@ -78,6 +78,9 @@ enum Commands {
     /// Stop recording and process the audio
     Stop,
 
+    /// Keep a recording alive (reset auto-stop timers)
+    Extend,
+
     /// Hidden worker that processes queued jobs.
     #[command(hide = true)]
     ProcessQueue,
@@ -622,6 +625,15 @@ fn main() -> Result<()> {
         }
         Commands::Note { text, meeting } => cmd_note(&text, meeting.as_deref(), &config),
         Commands::Stop => cmd_stop(&config),
+        Commands::Extend => {
+            if !minutes_core::pid::status().recording {
+                eprintln!("No active recording to extend.");
+                std::process::exit(1);
+            }
+            minutes_core::capture::write_extend_sentinel()?;
+            eprintln!("Recording extended — auto-stop timers reset.");
+            Ok(())
+        }
         Commands::ProcessQueue => cmd_process_queue(&config),
         Commands::PreflightRecord {
             mode,

@@ -242,6 +242,15 @@ pub struct RecordingConfig {
     /// Audio level (0–100) below which audio is considered silence.
     /// The level comes from RMS energy of the mic input. Default: 3.
     pub silence_threshold: u32,
+    /// Seconds of continuous silence before auto-stopping the recording.
+    /// Set to 0 to disable. Default: 1800 (30 minutes).
+    pub silence_auto_stop_secs: u64,
+    /// Maximum recording duration in seconds. Auto-stops at this limit.
+    /// Set to 0 to disable. Default: 28800 (8 hours).
+    pub max_duration_secs: u64,
+    /// Minimum free disk space (MB) before auto-stopping. Set to 0 to disable.
+    /// Default: 500.
+    pub min_disk_space_mb: u64,
     /// Audio input device name override. When set, Minutes uses this device
     /// instead of the system default. Use `minutes devices` to list available names.
     pub device: Option<String>,
@@ -274,6 +283,9 @@ impl Default for RecordingConfig {
         Self {
             silence_reminder_secs: 300,
             silence_threshold: 3,
+            silence_auto_stop_secs: 1800,
+            max_duration_secs: 28800,
+            min_disk_space_mb: 500,
             device: None,
             auto_call_intent: false,
             allow_degraded_call_capture: false,

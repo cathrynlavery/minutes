@@ -1009,6 +1009,7 @@ fn main() {
             commands::cmd_add_note,
             commands::cmd_start_recording,
             commands::cmd_stop_recording,
+            commands::cmd_extend_recording,
             commands::cmd_open_file,
             commands::cmd_clear_latest_output,
             commands::cmd_set_completion_notifications,
