@@ -120,7 +120,7 @@ export default function Home() {
                                Ollama`}
         </pre>
         <p className="text-sm text-[#888] leading-relaxed max-w-[640px]">
-          Your audio never leaves your machine. Transcription is local via whisper.cpp with GPU acceleration. Summarization is optional — Claude does it conversationally when you ask, using your existing subscription. No API keys needed.
+          Your audio never leaves your machine. Transcription is local via whisper.cpp with GPU acceleration. Summarization is optional. Claude does it conversationally when you ask, using your existing subscription. No API keys needed.
         </p>
       </section>
 
@@ -133,12 +133,12 @@ export default function Home() {
             {
               icon: "cpu",
               title: "AI agents",
-              desc: "15 MCP tools. 7 resources. Relationship graph. Commitment tracking. Any agent that speaks MCP can use Minutes as its memory layer.",
+              desc: "24 MCP tools. 7 resources. Relationship graph. Commitment tracking. Any agent that speaks MCP can use Minutes as its memory layer.",
             },
             {
               icon: "terminal",
               title: "Developers",
-              desc: "15 CLI commands. 136 tests. Rust engine, single binary, MIT license. Homebrew, cross-platform CI. TypeScript SDK.",
+              desc: "41 CLI commands. 400+ tests. Rust engine, single binary, MIT license. Homebrew, cross-platform CI. TypeScript SDK.",
             },
             {
               icon: "mic",
@@ -186,7 +186,7 @@ export default function Home() {
                 <div key={title} className="flex gap-3 items-start text-sm">
                   <span className="text-[#333] font-mono text-[12px] mt-0.5 shrink-0">&gt;</span>
                   <p className="text-[#888] leading-snug">
-                    <strong className="text-[#ededed] font-medium">{title}</strong> — {desc}
+                    <strong className="text-[#ededed] font-medium">{title}.</strong> {desc}
                   </p>
                 </div>
               ))}
@@ -206,7 +206,7 @@ export default function Home() {
                 <div key={title} className="flex gap-3 items-start text-sm">
                   <span className="text-[#333] font-mono text-[12px] mt-0.5 shrink-0">&gt;</span>
                   <p className="text-[#888] leading-snug">
-                    <strong className="text-[#ededed] font-medium">{title}</strong> — {desc}
+                    <strong className="text-[#ededed] font-medium">{title}.</strong> {desc}
                   </p>
                 </div>
               ))}
@@ -219,14 +219,14 @@ export default function Home() {
             <div className="grid sm:grid-cols-2 gap-x-8 gap-y-3">
               {[
                 ["Desktop app", "Tauri v2 menu bar app. One-click recording, dictation hotkey, calendar integration."],
-                ["Claude-native", "15 MCP tools for Claude Desktop, Cowork, Dispatch. 12 Claude Code skills."],
+                ["Claude-native", "24 MCP tools for Claude Desktop, Cowork, Dispatch. 12 Claude Code skills."],
                 ["Any LLM", "Ollama for local. OpenAI if you prefer. Or skip summarization entirely."],
                 ["Markdown is the truth", "YAML frontmatter. Works with Obsidian, grep, QMD, or anything."],
               ].map(([title, desc]) => (
                 <div key={title} className="flex gap-3 items-start text-sm">
                   <span className="text-[#333] font-mono text-[12px] mt-0.5 shrink-0">&gt;</span>
                   <p className="text-[#888] leading-snug">
-                    <strong className="text-[#ededed] font-medium">{title}</strong> — {desc}
+                    <strong className="text-[#ededed] font-medium">{title}.</strong> {desc}
                   </p>
                 </div>
               ))}
@@ -255,7 +255,7 @@ export default function Home() {
                 ["Local transcription", "No", "No", "Yes", "Yes"],
                 ["Open source", "No", "No", "Yes", "MIT"],
                 ["Free", "$18/mo", "Freemium", "Free", "Free"],
-                ["AI agent integration", "No", "No", "No", "10 MCP tools"],
+                ["AI agent integration", "No", "No", "No", "24 MCP tools"],
                 ["Cross-meeting intelligence", "No", "No", "No", "Yes"],
                 ["Dictation mode", "No", "No", "No", "Yes"],
                 ["Voice memos", "No", "No", "No", "iPhone pipeline"],
