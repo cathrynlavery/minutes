@@ -1771,6 +1771,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_post_record_hook_executes_and_receives_path() {
         let dir = tempfile::TempDir::new().unwrap();
         let marker = dir.path().join("hook-ran.txt");
@@ -1809,11 +1810,7 @@ mod tests {
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success(),
-            "hook failed (stderr={})",
-            stderr
-        );
+        assert!(output.status.success(), "hook failed (stderr={})", stderr);
         assert!(marker.exists(), "hook should have created the marker file");
         let contents = std::fs::read_to_string(&marker).unwrap();
         assert_eq!(contents, "test content");

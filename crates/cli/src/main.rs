@@ -2955,7 +2955,10 @@ life (qmd://life/)
 
             cmd_delete("2026-04-01-force", true, true, &config).unwrap();
             assert!(!md.exists(), "md should be gone");
-            assert!(!wav.exists(), "wav should be gone with --with-audio --force");
+            assert!(
+                !wav.exists(),
+                "wav should be gone with --with-audio --force"
+            );
             assert!(
                 !meetings.join("archive/2026-04-01-force.md").exists(),
                 "nothing in archive for force delete"
