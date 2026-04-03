@@ -5915,6 +5915,22 @@
       recallEndBtn.style.display = '';
     });
 
+    // ── Restore window size when exiting fullscreen with recall panel open ──
+    // Track prior fullscreen state so the snap only fires on the actual
+    // fullscreen → windowed transition, not on every user drag-resize
+    // (which would also risk a resize loop since setSize triggers onResized).
+    let wasFullscreen = false;
+    currentWindow.onResized(async () => {
+      const fs = await currentWindow.isFullscreen().catch(() => false);
+      if (wasFullscreen && !fs && recallExpanded) {
+        await currentWindow.setSize(
+          new window.__TAURI__.window.LogicalSize(EXPANDED_WIDTH, 640)
+        ).catch(() => {});
+        if (recallFitAddon) recallFitAddon.fit();
+      }
+      wasFullscreen = fs;
+    });
+
     // ── Button handlers ──
     assistantBtn.addEventListener('click', () => toggleRecallPanel());
 
