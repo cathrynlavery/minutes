@@ -941,7 +941,9 @@ pub fn find_open_actions(
                         continue;
                     }
                     if let Some(filter) = assignee {
-                        if !item_assignee.eq_ignore_ascii_case(filter) {
+                        let a = item_assignee.to_lowercase();
+                        let f = filter.to_lowercase();
+                        if a != f && !a.contains(&f) {
                             continue;
                         }
                     }
