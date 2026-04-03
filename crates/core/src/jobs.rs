@@ -435,10 +435,16 @@ fn preserve_audio_alongside_output(job: &ProcessingJob) {
         fs::set_permissions(&audio_dest, fs::Permissions::from_mode(0o600)).ok();
     }
     // Clean up any screen capture artifacts left in the jobs dir
-    let screens_dir = crate::screen::screens_dir_for(&PathBuf::from(&audio_src));
+    let screens_dir = crate::screen::screens_dir_for(&audio_src);
     if screens_dir.exists() {
         fs::remove_dir_all(screens_dir).ok();
     }
+    // Update the job record so audio_path points to the new location
+    let dest_str = audio_dest.display().to_string();
+    update_job_state(&job.id, |j| {
+        j.audio_path = dest_str.clone();
+    })
+    .ok();
     tracing::info!(
         path = %audio_dest.display(),
         "preserved audio alongside transcript"
