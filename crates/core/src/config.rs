@@ -432,7 +432,7 @@ impl Default for DiarizationConfig {
         Self {
             engine: "auto".into(),
             model_path: minutes_dir().join("models").join("diarization"),
-            threshold: 0.5,
+            threshold: 0.4,
         }
     }
 }

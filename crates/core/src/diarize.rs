@@ -626,26 +626,189 @@ fn diarize_with_pyannote_rs(
         });
     }
 
+    // Average embeddings per speaker (before merge), keeping segment counts for weighted re-averaging
+    let avg_with_counts: std::collections::HashMap<String, (Vec<f32>, usize)> = embedding_accum
+        .into_iter()
+        .map(|(label, (sum, count))| {
+            let avg: Vec<f32> = sum.into_iter().map(|v| v / count as f32).collect();
+            (label, (avg, count))
+        })
+        .collect();
+    let avg_embeddings: std::collections::HashMap<String, Vec<f32>> = avg_with_counts
+        .iter()
+        .map(|(label, (emb, _))| (label.clone(), emb.clone()))
+        .collect();
+
+    // Post-clustering merge: collapse speaker fragments whose averaged embeddings
+    // are similar. This catches cascading fragmentation where the same person gets
+    // split into multiple clusters (common on phone/FaceTime calls where audio
+    // quality shifts mid-conversation and the initial single-embedding per speaker
+    // drifts out of threshold range).
+    let merge_threshold = 0.35_f32;
+    let merge_map = build_merge_map(&avg_embeddings, merge_threshold);
+
+    // Apply merge: rewrite segment labels
+    if !merge_map.is_empty() {
+        let merged_count: usize = merge_map.len();
+        tracing::info!(
+            merged_speakers = merged_count,
+            merge_threshold = merge_threshold,
+            "post-clustering merge: collapsed fragmented speakers"
+        );
+        for seg in &mut segments {
+            if let Some(canonical) = merge_map.get(&seg.speaker) {
+                seg.speaker = canonical.clone();
+            }
+        }
+    }
+
+    // Rebuild averaged embeddings after merge (weighted by original segment count)
+    let speaker_embeddings = if merge_map.is_empty() {
+        avg_embeddings
+    } else {
+        let mut merged_accum: std::collections::HashMap<String, (Vec<f32>, usize)> =
+            std::collections::HashMap::new();
+        for (label, (emb, seg_count)) in &avg_with_counts {
+            let canonical = merge_map.get(label).unwrap_or(label);
+            let entry = merged_accum
+                .entry(canonical.clone())
+                .or_insert_with(|| (vec![0.0f32; emb.len()], 0));
+            for (i, val) in emb.iter().enumerate() {
+                entry.0[i] += val * *seg_count as f32;
+            }
+            entry.1 += seg_count;
+        }
+        merged_accum
+            .into_iter()
+            .map(|(label, (sum, count))| {
+                let avg = sum.into_iter().map(|v| v / count as f32).collect();
+                (label, avg)
+            })
+            .collect()
+    };
+
     let num_speakers = segments
         .iter()
         .map(|s| s.speaker.as_str())
         .collect::<std::collections::HashSet<_>>()
         .len();
 
-    // Average embeddings per speaker
-    let speaker_embeddings: std::collections::HashMap<String, Vec<f32>> = embedding_accum
-        .into_iter()
-        .map(|(label, (sum, count))| {
-            let avg = sum.into_iter().map(|v| v / count as f32).collect();
-            (label, avg)
-        })
-        .collect();
-
     Ok(DiarizationResult {
         segments,
         num_speakers,
         speaker_embeddings,
     })
+}
+
+/// Build a merge map for fragmented speakers. Compares averaged embeddings
+/// pairwise and groups speakers whose cosine similarity exceeds `merge_threshold`.
+/// Returns a map from fragment label → canonical label (the lowest-numbered
+/// speaker in the group, i.e. the first detected, becomes canonical).
+#[cfg(feature = "diarize")]
+fn build_merge_map(
+    avg_embeddings: &std::collections::HashMap<String, Vec<f32>>,
+    merge_threshold: f32,
+) -> std::collections::HashMap<String, String> {
+    use std::collections::{HashMap, HashSet};
+
+    let labels: Vec<&String> = avg_embeddings.keys().collect();
+    if labels.len() <= 1 {
+        return HashMap::new();
+    }
+
+    // Build adjacency: speakers that should be merged
+    let mut groups: Vec<HashSet<String>> = Vec::new();
+
+    for i in 0..labels.len() {
+        for j in (i + 1)..labels.len() {
+            let emb_a = &avg_embeddings[labels[i]];
+            let emb_b = &avg_embeddings[labels[j]];
+            let sim = cosine_similarity_vec(emb_a, emb_b);
+            tracing::debug!(
+                a = %labels[i], b = %labels[j], similarity = format!("{:.3}", sim),
+                "speaker pair similarity"
+            );
+            if sim > merge_threshold {
+                // Find existing groups containing either label
+                let mut found_group = None;
+                for (idx, group) in groups.iter_mut().enumerate() {
+                    if group.contains(labels[i]) || group.contains(labels[j]) {
+                        group.insert(labels[i].clone());
+                        group.insert(labels[j].clone());
+                        found_group = Some(idx);
+                        break;
+                    }
+                }
+                if found_group.is_none() {
+                    let mut new_group = HashSet::new();
+                    new_group.insert(labels[i].clone());
+                    new_group.insert(labels[j].clone());
+                    groups.push(new_group);
+                }
+            }
+        }
+    }
+
+    // Merge overlapping groups (a speaker could bridge two groups)
+    let mut merged = true;
+    while merged {
+        merged = false;
+        for i in 0..groups.len() {
+            for j in (i + 1)..groups.len() {
+                if groups[i].intersection(&groups[j]).next().is_some() {
+                    let other = groups[j].clone();
+                    groups[i].extend(other);
+                    groups[j].clear();
+                    merged = true;
+                }
+            }
+        }
+        groups.retain(|g| !g.is_empty());
+    }
+
+    // Build merge map: each fragment → the canonical label (lowest numbered speaker)
+    let mut merge_map = HashMap::new();
+    for group in &groups {
+        if group.len() <= 1 {
+            continue;
+        }
+        // Canonical = the label with the lowest speaker number (most likely the first detected)
+        let canonical = group
+            .iter()
+            .min_by_key(|label| {
+                label
+                    .strip_prefix("SPEAKER_")
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .unwrap_or(usize::MAX)
+            })
+            .unwrap();
+        for label in group {
+            if label != canonical {
+                merge_map.insert(label.clone(), canonical.clone());
+            }
+        }
+        tracing::debug!(
+            canonical = %canonical,
+            fragments = ?group.iter().filter(|l| *l != canonical).collect::<Vec<_>>(),
+            "merging speaker fragments"
+        );
+    }
+
+    merge_map
+}
+
+#[cfg(feature = "diarize")]
+fn cosine_similarity_vec(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
 }
 
 /// Load audio file as mono 16-bit PCM samples using symphonia.
@@ -996,6 +1159,6 @@ mod tests {
         let mut config = Config::default();
         config.diarization.engine = "pyannote-rs".into();
         assert_eq!(config.diarization.engine, "pyannote-rs");
-        assert_eq!(config.diarization.threshold, 0.5);
+        assert_eq!(config.diarization.threshold, 0.4);
     }
 }
