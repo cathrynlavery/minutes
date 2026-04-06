@@ -169,10 +169,15 @@ pub fn events_overlapping_now() -> Vec<CalendarEvent> {
         return Vec::new();
     }
     #[cfg(target_os = "macos")]
-    // Query events in a 2-hour window centered on now (covers most meetings)
-    // The AppleScript returns events starting within the window;
-    // we also look backward to catch events that started before recording began.
-    query_events_with_attendees()
+    {
+        // Try EventKit helper first (sub-second, no CalDAV round-trips).
+        // Pass lookahead=120, lookback=120 for a 4-hour window centered on now.
+        if let Some(events) = query_overlap_via_eventkit() {
+            return events;
+        }
+        // AppleScript fallback: only reached when EventKit helper is missing
+        query_events_with_attendees()
+    }
 }
 
 /// AppleScript query that fetches current/recent events WITH attendee names.
@@ -283,6 +288,31 @@ fn query_via_eventkit(lookahead_minutes: u32) -> Option<Vec<CalendarEvent>> {
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
 
+    Some(events)
+}
+
+/// Query overlapping events via EventKit helper with a backward+forward window.
+/// Returns None if the helper is missing or fails (triggers AppleScript fallback).
+fn query_overlap_via_eventkit() -> Option<Vec<CalendarEvent>> {
+    let helper = find_calendar_helper()?;
+
+    let mut cmd = Command::new(&helper);
+    cmd.arg("120").arg("120"); // lookahead=120min, lookback=120min
+    let output = output_with_timeout(cmd, SUBPROCESS_TIMEOUT)?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut events: Vec<CalendarEvent> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    events.sort_by_key(|e| (e.minutes_until.abs(), e.title.clone()));
+    events.dedup_by(|a, b| a.title == b.title);
     Some(events)
 }
 
