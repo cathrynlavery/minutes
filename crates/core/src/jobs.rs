@@ -498,7 +498,7 @@ fn job_context(job: &ProcessingJob) -> BackgroundPipelineContext {
         user_notes: job.user_notes.clone(),
         pre_context: job.pre_context.clone(),
         calendar_event: job.calendar_event.clone(),
-        recorded_at: job.recording_finished_at.or(job.recording_started_at),
+        recorded_at: job.recording_started_at.or(job.recording_finished_at),
     }
 }
 

@@ -984,10 +984,16 @@ where
         }
     };
 
+    // Use sidecar captured_at, then audio file creation time, then now() as last resort
+    let recording_date = sidecar
+        .and_then(|s| s.captured_at)
+        .or_else(|| metadata.created().ok().map(|t| DateTime::<Local>::from(t)))
+        .unwrap_or_else(Local::now);
+
     let frontmatter = Frontmatter {
         title: auto_title,
         r#type: content_type,
-        date: Local::now(),
+        date: recording_date,
         duration,
         source,
         status,
