@@ -585,9 +585,13 @@ where
         );
     }
 
-    if let Err(error) =
-        crate::daily_notes::append_backlink(&result, frontmatter.date, summary.as_deref(), config)
-    {
+    if let Err(error) = crate::daily_notes::append_backlink(
+        &result,
+        frontmatter.date,
+        summary.as_deref(),
+        Some(&frontmatter),
+        config,
+    ) {
         tracing::warn!(
             error = %error,
             output = %result.path.display(),
@@ -606,6 +610,34 @@ where
         Ok(None) => {}
         Err(error) => {
             tracing::warn!(error = %error, output = %result.path.display(), "vault sync failed");
+        }
+    }
+
+    if config.knowledge.enabled {
+        match crate::knowledge::update_from_meeting(&result, &frontmatter, &transcript, config) {
+            Ok(update) => {
+                if update.facts_written > 0 {
+                    tracing::info!(
+                        facts_written = update.facts_written,
+                        facts_skipped = update.facts_skipped,
+                        people = ?update.people_updated,
+                        "knowledge base updated"
+                    );
+                    crate::events::append_event(crate::events::MinutesEvent::KnowledgeUpdated {
+                        meeting_path: result.path.display().to_string(),
+                        facts_written: update.facts_written,
+                        facts_skipped: update.facts_skipped,
+                        people_updated: update.people_updated,
+                    });
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    meeting = %result.path.display(),
+                    "knowledge update failed"
+                );
+            }
         }
     }
 
@@ -995,9 +1027,13 @@ where
         crate::voice::save_meeting_embeddings(&result.path, &diarization_embeddings);
     }
 
-    if let Err(error) =
-        crate::daily_notes::append_backlink(&result, frontmatter.date, summary.as_deref(), config)
-    {
+    if let Err(error) = crate::daily_notes::append_backlink(
+        &result,
+        frontmatter.date,
+        summary.as_deref(),
+        Some(&frontmatter),
+        config,
+    ) {
         tracing::warn!(
             error = %error,
             output = %result.path.display(),

@@ -281,7 +281,7 @@ fn parse_summary_response(response: &str) -> Summary {
 
 /// Detect the first available AI CLI in preference order: claude > codex > gemini.
 /// Returns the resolved path if found and executable, None otherwise.
-fn detect_agent_cli() -> Option<String> {
+pub(crate) fn detect_agent_cli() -> Option<String> {
     for cmd in &["claude", "codex", "gemini"] {
         let resolved = resolve_agent_path(cmd);
         // resolve_agent_path returns the bare name if not found — check if we got a real path
@@ -302,7 +302,7 @@ fn detect_agent_cli() -> Option<String> {
 /// Resolve a command name to a full path, searching common install locations.
 /// GUI apps (like Tauri) run with a minimal PATH that doesn't include
 /// ~/.cargo/bin, ~/.local/bin, or /opt/homebrew/bin.
-fn resolve_agent_path(cmd: &str) -> String {
+pub(crate) fn resolve_agent_path(cmd: &str) -> String {
     use std::path::PathBuf;
 
     // Already an absolute path

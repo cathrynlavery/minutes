@@ -14,7 +14,9 @@
     { "name": "minutes-prep", "path": "skills/minutes-prep/SKILL.md" },
     { "name": "minutes-debrief", "path": "skills/minutes-debrief/SKILL.md" },
     { "name": "minutes-weekly", "path": "skills/minutes-weekly/SKILL.md" },
-    { "name": "minutes-ideas", "path": "skills/minutes-ideas/SKILL.md" }
+    { "name": "minutes-ideas", "path": "skills/minutes-ideas/SKILL.md" },
+    { "name": "minutes-lint", "path": "skills/minutes-lint/SKILL.md" },
+    { "name": "minutes-ingest", "path": "skills/minutes-ingest/SKILL.md" }
   ],
   "agents": [
     { "name": "meeting-analyst", "path": "agents/meeting-analyst.md" }

@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::markdown::{ContentType, WriteResult};
+use crate::markdown::{ContentType, Frontmatter, WriteResult};
 use chrono::{DateTime, Local};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -8,6 +8,7 @@ pub fn append_backlink(
     result: &WriteResult,
     note_date: DateTime<Local>,
     summary: Option<&str>,
+    frontmatter: Option<&Frontmatter>,
     config: &Config,
 ) -> std::io::Result<Option<PathBuf>> {
     if !config.daily_notes.enabled {
@@ -30,6 +31,14 @@ pub fn append_backlink(
         format!("- [{}]({})", result.title, link_target)
     };
 
+    // Build sub-bullets from structured frontmatter data
+    let sub_bullets = format_structured_data(frontmatter);
+    let full_entry = if sub_bullets.is_empty() {
+        format!("{}\n", bullet)
+    } else {
+        format!("{}\n{}", bullet, sub_bullets)
+    };
+
     let mut content = if note_path.exists() {
         fs::read_to_string(&note_path)?
     } else {
@@ -46,7 +55,7 @@ pub fn append_backlink(
         if position > 0 && !content[..position].ends_with('\n') {
             content.insert(position, '\n');
         }
-        content.insert_str(position, &format!("{}\n", bullet));
+        content.insert_str(position, &full_entry);
     } else {
         if !content.ends_with("\n\n") {
             if !content.ends_with('\n') {
@@ -54,11 +63,58 @@ pub fn append_backlink(
             }
             content.push('\n');
         }
-        content.push_str(&format!("## {}\n\n{}\n", section, bullet));
+        content.push_str(&format!("## {}\n\n{}", section, full_entry));
     }
 
     fs::write(&note_path, content)?;
     Ok(Some(note_path))
+}
+
+fn format_structured_data(frontmatter: Option<&Frontmatter>) -> String {
+    let fm = match frontmatter {
+        Some(fm) => fm,
+        None => return String::new(),
+    };
+
+    let mut lines = Vec::new();
+
+    for decision in &fm.decisions {
+        let topic_suffix = decision
+            .topic
+            .as_deref()
+            .map(|t| format!(" ({})", t))
+            .unwrap_or_default();
+        lines.push(format!(
+            "  - **Decision**: {}{}",
+            decision.text, topic_suffix
+        ));
+    }
+
+    for item in &fm.action_items {
+        if item.status == "done" {
+            continue;
+        }
+        let due_suffix = item
+            .due
+            .as_deref()
+            .map(|d| format!(", due {}", d))
+            .unwrap_or_default();
+        lines.push(format!(
+            "  - [ ] @{}: {}{}",
+            item.assignee, item.task, due_suffix
+        ));
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        let mut out = String::new();
+        for line in lines {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
 }
 
 fn section_insert_position(section_text: &str) -> Option<usize> {
@@ -124,6 +180,7 @@ fn relative_path(from_dir: &Path, target: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::markdown::{ActionItem, Decision};
     use chrono::TimeZone;
     use tempfile::TempDir;
 
@@ -155,6 +212,7 @@ mod tests {
             &result,
             Local.with_ymd_and_hms(2026, 3, 19, 9, 0, 0).unwrap(),
             Some("## Summary\n\n- Locked pricing at monthly billing.\n"),
+            None,
             &config,
         )
         .unwrap()
@@ -185,11 +243,85 @@ mod tests {
         let result = write_result(memo_path, "Onboarding Idea", ContentType::Memo);
         let date = Local.with_ymd_and_hms(2026, 3, 19, 9, 0, 0).unwrap();
 
-        append_backlink(&result, date, Some("Short memo summary"), &config).unwrap();
-        append_backlink(&result, date, Some("Short memo summary"), &config).unwrap();
+        append_backlink(&result, date, Some("Short memo summary"), None, &config).unwrap();
+        append_backlink(&result, date, Some("Short memo summary"), None, &config).unwrap();
 
         let note = fs::read_to_string(daily_dir.join("2026-03-19.md")).unwrap();
         assert_eq!(note.matches("[Onboarding Idea](").count(), 1);
         assert!(note.contains("## Voice Memos"));
+    }
+
+    #[test]
+    fn append_backlink_includes_decisions_and_action_items() {
+        let dir = TempDir::new().unwrap();
+        let meetings_dir = dir.path().join("meetings");
+        let daily_dir = dir.path().join("daily");
+        fs::create_dir_all(&meetings_dir).unwrap();
+        let meeting_path = meetings_dir.join("2026-03-19-strategy-call.md");
+        fs::write(&meeting_path, "# Strategy Call\n").unwrap();
+
+        let mut config = Config::default();
+        config.output_dir = meetings_dir.clone();
+        config.daily_notes.enabled = true;
+        config.daily_notes.path = daily_dir.clone();
+
+        let mut fm = Frontmatter {
+            title: "Strategy Call".into(),
+            r#type: ContentType::Meeting,
+            date: Local.with_ymd_and_hms(2026, 3, 19, 9, 0, 0).unwrap(),
+            duration: "30m".into(),
+            source: None,
+            status: None,
+            tags: vec![],
+            attendees: vec![],
+            calendar_event: None,
+            people: vec![],
+            entities: Default::default(),
+            device: None,
+            captured_at: None,
+            context: None,
+            action_items: vec![],
+            decisions: vec![],
+            intents: vec![],
+            recorded_by: None,
+            visibility: None,
+            speaker_map: vec![],
+            filter_diagnosis: None,
+        };
+        fm.decisions = vec![Decision {
+            text: "Switch to monthly billing".into(),
+            topic: Some("pricing".into()),
+        }];
+        fm.action_items = vec![
+            ActionItem {
+                assignee: "mat".into(),
+                task: "Send pricing doc".into(),
+                due: Some("2026-03-22".into()),
+                status: "open".into(),
+            },
+            ActionItem {
+                assignee: "dan".into(),
+                task: "Already done task".into(),
+                due: None,
+                status: "done".into(),
+            },
+        ];
+
+        let result = write_result(meeting_path, "Strategy Call", ContentType::Meeting);
+        let note_path = append_backlink(
+            &result,
+            Local.with_ymd_and_hms(2026, 3, 19, 9, 0, 0).unwrap(),
+            Some("Strategy discussion"),
+            Some(&fm),
+            &config,
+        )
+        .unwrap()
+        .unwrap();
+
+        let note = fs::read_to_string(note_path).unwrap();
+        assert!(note.contains("**Decision**: Switch to monthly billing (pricing)"));
+        assert!(note.contains("- [ ] @mat: Send pricing doc, due 2026-03-22"));
+        // "done" items should be excluded
+        assert!(!note.contains("Already done task"));
     }
 }

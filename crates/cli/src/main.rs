@@ -255,6 +255,20 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Ingest meetings into the knowledge base (extract facts, update person profiles)
+    Ingest {
+        /// Path to a meeting .md file, or omit to process all meetings
+        path: Option<PathBuf>,
+
+        /// Process all meetings in the output directory
+        #[arg(long)]
+        all: bool,
+
+        /// Show what would be extracted without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Clean up hallucinated repetitions in existing transcripts
     Clean {
         /// Path to meeting .md file, or "all" to clean all meetings
@@ -714,6 +728,7 @@ fn main() -> Result<()> {
             content_type,
             output,
         } => cmd_export(content_type, output, &config),
+        Commands::Ingest { path, all, dry_run } => cmd_ingest(path, all, dry_run, &config),
         Commands::Clean { meeting, apply } => cmd_clean(&meeting, apply, &config),
         Commands::Process {
             path,
@@ -1824,6 +1839,141 @@ fn parse_intent_kind(kind: &str) -> Result<minutes_core::markdown::IntentKind> {
             other
         ),
     }
+}
+
+fn cmd_ingest(path: Option<PathBuf>, all: bool, dry_run: bool, config: &Config) -> Result<()> {
+    if !config.knowledge.enabled || config.knowledge.path.as_os_str().is_empty() {
+        eprintln!("Knowledge base is not configured.");
+        eprintln!("Add this to ~/.config/minutes/config.toml:\n");
+        eprintln!("[knowledge]");
+        eprintln!("enabled = true");
+        eprintln!("path = \"/path/to/your/knowledge/base\"");
+        eprintln!("adapter = \"wiki\"  # or \"para\", \"obsidian\"");
+        return Ok(());
+    }
+
+    let files: Vec<PathBuf> = if all {
+        let mut found = Vec::new();
+        for entry_result in walkdir::WalkDir::new(&config.output_dir)
+            .max_depth(2)
+            .into_iter()
+        {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("  WARN: {}", e);
+                    continue;
+                }
+            };
+            let p = entry.path();
+            if p.extension().is_some_and(|ext| ext == "md")
+                && !p.starts_with(config.output_dir.join("memos"))
+            {
+                found.push(p.to_path_buf());
+            }
+        }
+        found.sort();
+        found
+    } else if let Some(ref p) = path {
+        if !p.exists() {
+            anyhow::bail!("File not found: {}", p.display());
+        }
+        vec![p.clone()]
+    } else {
+        eprintln!("Usage: minutes ingest <path> or minutes ingest --all");
+        return Ok(());
+    };
+
+    eprintln!(
+        "Ingesting {} meeting(s) into knowledge base at {}",
+        files.len(),
+        config.knowledge.path.display()
+    );
+    if dry_run {
+        eprintln!("(dry run — no files will be written)\n");
+    }
+
+    let mut total_written = 0usize;
+    let mut total_skipped = 0usize;
+    let mut total_people = std::collections::HashSet::new();
+    let mut errors = 0usize;
+
+    for file in &files {
+        let filename = file.file_name().unwrap_or_default().to_string_lossy();
+
+        if dry_run {
+            // Read and extract but don't write
+            let content = match std::fs::read_to_string(file) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("  SKIP {}: {}", filename, e);
+                    errors += 1;
+                    continue;
+                }
+            };
+            let (fm_str, _body) = minutes_core::markdown::split_frontmatter(&content);
+            if fm_str.is_empty() {
+                eprintln!("  SKIP {}: no frontmatter", filename);
+                continue;
+            }
+            let fm: minutes_core::markdown::Frontmatter = match serde_yaml::from_str(fm_str) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("  SKIP {}: {}", filename, e);
+                    errors += 1;
+                    continue;
+                }
+            };
+            let facts = minutes_core::knowledge_extract::extract_from_frontmatter(
+                &fm,
+                &file.display().to_string(),
+            );
+            let fact_count: usize = facts.iter().map(|pf| pf.facts.len()).sum();
+            let people: Vec<&str> = facts.iter().map(|pf| pf.name.as_str()).collect();
+            if fact_count > 0 {
+                eprintln!(
+                    "  {} — {} fact(s) for: {}",
+                    filename,
+                    fact_count,
+                    people.join(", ")
+                );
+            }
+            total_written += fact_count;
+        } else {
+            match minutes_core::knowledge::ingest_file(file, config) {
+                Ok(result) => {
+                    if result.facts_written > 0 {
+                        eprintln!(
+                            "  {} — {} written, {} skipped — {}",
+                            filename,
+                            result.facts_written,
+                            result.facts_skipped,
+                            result.people_updated.join(", ")
+                        );
+                    }
+                    total_written += result.facts_written;
+                    total_skipped += result.facts_skipped;
+                    for p in result.people_updated {
+                        total_people.insert(p);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  SKIP {}: {}", filename, e);
+                    errors += 1;
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "\nDone. {} fact(s) written, {} skipped, {} error(s), {} people updated.",
+        total_written,
+        total_skipped,
+        errors,
+        total_people.len()
+    );
+
+    Ok(())
 }
 
 fn cmd_clean(meeting: &str, apply: bool, config: &Config) -> Result<()> {

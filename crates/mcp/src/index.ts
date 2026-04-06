@@ -2214,6 +2214,133 @@ server.tool(
   }
 );
 
+// ── Tool: ingest_meeting ────────────────────────────────────
+
+server.tool(
+  "ingest_meeting",
+  "Extract facts from a meeting and update the knowledge base (person profiles, log, index). Requires [knowledge] to be configured in config.toml. Uses structured frontmatter data only by default (zero hallucination risk). Set engine to 'agent' for richer LLM-based extraction.",
+  {
+    path: z.string().optional().describe("Path to a specific meeting .md file. Omit to process all meetings."),
+    all: z.boolean().optional().default(false).describe("Process all meetings in the output directory"),
+    dry_run: z.boolean().optional().default(false).describe("Show what would be extracted without writing anything"),
+  },
+  { title: "Ingest Meeting", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ path, all, dry_run }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    const args = ["ingest"];
+    if (path) {
+      // Validate path is within the meetings directory to prevent path traversal
+      const resolved = validatePathInDirectory(path, await getEffectiveMeetingsDir(), [".md"]);
+      args.push(resolved);
+    }
+    if (all) args.push("--all");
+    if (dry_run) args.push("--dry-run");
+
+    if (!path && !all) {
+      return {
+        content: [{ type: "text" as const, text: "Provide a meeting path or use all=true to process all meetings." }],
+        isError: true,
+      };
+    }
+
+    try {
+      const { stdout, stderr } = await runMinutes(args);
+      const output = stderr || stdout;
+      return { content: [{ type: "text" as const, text: output }] };
+    } catch (error: any) {
+      const msg = error?.stderr || error?.message || String(error);
+      return {
+        content: [{ type: "text" as const, text: `Knowledge ingestion failed: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: knowledge_status ──────────────────────────────────
+
+server.tool(
+  "knowledge_status",
+  "Show the current state of the knowledge base — whether it's configured, which adapter is in use, and how many person profiles and log entries exist.",
+  {},
+  { title: "Knowledge Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    try {
+      const { stdout } = await runMinutes(["paths", "--json"]);
+      const paths = parseJsonOutput(stdout);
+      const configPath = paths?.config || "unknown";
+
+      // Read config to check knowledge settings
+      const { readFile: readFileAsync } = await import("fs/promises");
+      let configContent = "";
+      try {
+        configContent = await readFileAsync(configPath, "utf-8");
+      } catch {
+        // Try default location
+        try {
+          configContent = await readFileAsync(join(homedir(), ".config", "minutes", "config.toml"), "utf-8");
+        } catch {
+          return { content: [{ type: "text" as const, text: "Knowledge base: not configured.\n\nAdd [knowledge] section to ~/.config/minutes/config.toml with enabled = true and a path." }] };
+        }
+      }
+
+      const knowledgeMatch = configContent.match(/\[knowledge\][\s\S]*?(?=\n\[|$)/);
+      if (!knowledgeMatch || !configContent.includes("enabled = true")) {
+        return { content: [{ type: "text" as const, text: "Knowledge base: not configured or disabled.\n\nAdd [knowledge] section to ~/.config/minutes/config.toml with enabled = true and a path." }] };
+      }
+
+      const pathMatch = configContent.match(/\[knowledge\][\s\S]*?path\s*=\s*"([^"]+)"/);
+      const adapterMatch = configContent.match(/\[knowledge\][\s\S]*?adapter\s*=\s*"([^"]+)"/);
+      const engineMatch = configContent.match(/\[knowledge\][\s\S]*?engine\s*=\s*"([^"]+)"/);
+      const rawKbPath = pathMatch?.[1] || "unknown";
+      const kbPath = rawKbPath.startsWith("~") ? join(homedir(), rawKbPath.slice(1)) : rawKbPath;
+      const adapter = adapterMatch?.[1] || "wiki";
+      const engine = engineMatch?.[1] || "none";
+
+      // Count people and log entries
+      const { readdir, stat: statAsync } = await import("fs/promises");
+      let peopleCount = 0;
+      let logEntries = 0;
+
+      try {
+        const peopleDir = adapter === "para" ? join(kbPath, "areas", "people") : join(kbPath, "people");
+        const entries = await readdir(peopleDir, { withFileTypes: true });
+        peopleCount = entries.filter(e => e.isDirectory() || e.name.endsWith(".md")).length;
+      } catch { /* dir may not exist yet */ }
+
+      try {
+        const logPath = adapter === "para" ? join(kbPath, "memory", "log.md") : join(kbPath, "log.md");
+        const logContent = await readFileAsync(logPath, "utf-8");
+        logEntries = (logContent.match(/^## \[/gm) || []).length;
+      } catch { /* log may not exist yet */ }
+
+      const lines = [
+        `Knowledge base: **enabled**`,
+        `Path: ${kbPath}`,
+        `Adapter: ${adapter}`,
+        `Extraction engine: ${engine}`,
+        `People profiles: ${peopleCount}`,
+        `Log entries: ${logEntries}`,
+      ];
+
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (error: any) {
+      const msg = error?.stderr || error?.message || String(error);
+      return {
+        content: [{ type: "text" as const, text: `Failed to check knowledge status: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // ── Dashboard ───────────────────────────────────────────────
 
 server.tool(

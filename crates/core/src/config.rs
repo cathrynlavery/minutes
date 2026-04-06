@@ -30,6 +30,7 @@ pub struct Config {
     pub live_transcript: LiveTranscriptConfig,
     pub recording: RecordingConfig,
     pub hooks: HooksConfig,
+    pub knowledge: KnowledgeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +301,47 @@ impl Default for RecordingConfig {
     }
 }
 
+/// Knowledge base integration — Karpathy-style LLM wiki maintained from meeting data.
+/// After each meeting, extract facts about people and decisions, update person profiles,
+/// append to a chronological log, and maintain an index. Opt-in (disabled by default).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KnowledgeConfig {
+    /// Enable knowledge base updates after each meeting.
+    pub enabled: bool,
+    /// Root path of the knowledge base (e.g., ~/wiki or ~/Documents/life).
+    pub path: PathBuf,
+    /// Output adapter: "wiki" (flat markdown), "para" (PARA areas/people/), "obsidian" (wiki + [[links]]).
+    pub adapter: String,
+    /// Fact extraction engine: "agent" (shells out to agent_command), "ollama", "none" (structured data only).
+    /// "none" extracts only from YAML frontmatter (decisions, action_items, entities) — no LLM call, zero hallucination risk.
+    pub engine: String,
+    /// Agent CLI to invoke for extraction. Default: "claude".
+    pub agent_command: String,
+    /// Chronological append-only log filename inside knowledge path.
+    pub log_file: String,
+    /// Content-oriented index filename inside knowledge path.
+    pub index_file: String,
+    /// Minimum confidence for facts to be written. "explicit" (safest), "strong", "inferred", "tentative".
+    /// Facts below this threshold are logged but not written to person profiles.
+    pub min_confidence: String,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: PathBuf::new(),
+            adapter: "wiki".into(),
+            engine: "none".into(),
+            agent_command: "claude".into(),
+            log_file: "log.md".into(),
+            index_file: "index.md".into(),
+            min_confidence: "strong".into(),
+        }
+    }
+}
+
 /// Hooks configuration — shell commands triggered by pipeline events.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -411,6 +453,7 @@ impl Default for Config {
             live_transcript: LiveTranscriptConfig::default(),
             recording: RecordingConfig::default(),
             hooks: HooksConfig::default(),
+            knowledge: KnowledgeConfig::default(),
         }
     }
 }

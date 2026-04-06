@@ -147,6 +147,13 @@ pub enum MinutesEvent {
         insight: MeetingInsight,
         meeting_title: String,
     },
+    /// Knowledge base updated after meeting ingestion.
+    KnowledgeUpdated {
+        meeting_path: String,
+        facts_written: usize,
+        facts_skipped: usize,
+        people_updated: Vec<String>,
+    },
 }
 
 fn events_path() -> PathBuf {
