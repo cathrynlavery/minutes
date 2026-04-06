@@ -152,6 +152,39 @@ async function triggerQmdIndex(): Promise<void> {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ── Extension runtime detection ───────────────────────────────
+// When running as a Claude Desktop extension (.mcpb), Claude uses its built-in
+// Node.js runtime.  Child processes spawned from that runtime land in a
+// different macOS audit session and do NOT inherit the host app's TCC
+// microphone grant — CoreAudio delivers all-zero samples (silence).
+//
+// Manual MCP configs (`claude_desktop_config.json`) spawn the user's own
+// `node` binary, which typically has an independent TCC mic entry, so child
+// processes work fine.
+//
+// Detection: the .mcpb unpacks into "Claude Extensions" inside Application
+// Support, and Claude Desktop sets MCP_EXTENSION_ID for extension servers.
+// This is macOS-specific — Windows/Linux don't have TCC, so their extension
+// runtimes can spawn child processes with mic access normally.
+const isExtensionRuntime: boolean =
+  process.platform === "darwin" &&
+  (!!process.env.MCP_EXTENSION_ID ||
+   __dirname.includes("Claude Extensions") ||
+   __dirname.includes("claude-extensions"));
+
+if (isExtensionRuntime) {
+  console.error(
+    "[Minutes] Running as Claude Desktop extension — audio capture will " +
+    "delegate to the Minutes desktop app (TCC mic grants don't propagate " +
+    "through the extension runtime). Launch Minutes.app for recording."
+  );
+} else {
+  console.error(
+    `[Minutes] Extension runtime detection: false ` +
+    `(MCP_EXTENSION_ID=${!!process.env.MCP_EXTENSION_ID}, dirname=${__dirname})`
+  );
+}
+
 // ── Find the minutes binary ─────────────────────────────────
 
 function findMinutesBinary(): string {
@@ -426,29 +459,47 @@ function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (e: any) {
+    // EPERM means the process exists but is owned by a different user — still alive.
+    if (e.code === "EPERM") return true;
     return false;
   }
 }
 
 async function readRunningDesktopAppStatus(): Promise<DesktopAppStatus | null> {
+  let raw: string;
   try {
-    const raw = await readFile(desktopAppStatusPath(), "utf8");
+    raw = await readFile(desktopAppStatusPath(), "utf8");
+  } catch (e: any) {
+    if (e.code === "ENOENT") return null; // File doesn't exist — app not running
+    console.error(`[Minutes] Failed to read desktop status file: ${e.message}`);
+    return null;
+  }
+
+  try {
     const status = JSON.parse(raw) as DesktopAppStatus;
     const updatedAt = Date.parse(status.updated_at);
-    if (!Number.isFinite(updatedAt)) return null;
-    if (Date.now() - updatedAt > 10000) return null;
+    if (!Number.isFinite(updatedAt)) {
+      console.error(`[Minutes] Desktop status file has invalid updated_at: ${status.updated_at}`);
+      return null;
+    }
+    const ageMs = Date.now() - updatedAt;
+    if (ageMs > 10000) {
+      console.error(`[Minutes] Desktop app status stale (${Math.round(ageMs / 1000)}s old, pid=${status.pid})`);
+      return null;
+    }
     if (!status.pid || !isProcessAlive(status.pid)) return null;
     return status;
-  } catch {
+  } catch (e: any) {
+    console.error(`[Minutes] Failed to parse desktop status file: ${e.message}`);
     return null;
   }
 }
 
-async function delegateCallRecordingToDesktop(args: {
+async function delegateRecordingToDesktop(args: {
   title?: string;
   mode: "meeting" | "quick-thought";
-  intent: "call";
+  intent?: string;
   allow_degraded: boolean;
   language?: string;
 }): Promise<DesktopControlResponse | null> {
@@ -456,8 +507,13 @@ async function delegateCallRecordingToDesktop(args: {
   if (!status) return null;
 
   const id = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  await mkdir(join(desktopControlDir(), "requests"), { recursive: true });
-  await mkdir(join(desktopControlDir(), "responses"), { recursive: true });
+  try {
+    await mkdir(join(desktopControlDir(), "requests"), { recursive: true });
+    await mkdir(join(desktopControlDir(), "responses"), { recursive: true });
+  } catch (e: any) {
+    console.error(`[Minutes] Failed to create desktop control dirs: ${e.message}`);
+    return null;
+  }
 
   const request = {
     id,
@@ -480,15 +536,21 @@ async function delegateCallRecordingToDesktop(args: {
   try {
     while (Date.now() < timeoutAt) {
       if (existsSync(responsePath)) {
-        const response = JSON.parse(
-          await readFile(responsePath, "utf8")
-        ) as DesktopControlResponse;
-        await rm(responsePath, { force: true });
-        return response;
+        // The Tauri side writes via tmp → rename, so the file may briefly exist
+        // as an empty or partial write. Catch parse errors and keep polling.
+        try {
+          const response = JSON.parse(
+            await readFile(responsePath, "utf8")
+          ) as DesktopControlResponse;
+          await rm(responsePath, { force: true });
+          return response;
+        } catch {
+          // Partial write or rename in progress — retry on next poll cycle.
+        }
       }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    throw new Error("Minutes desktop app did not acknowledge the call recording request in time.");
+    throw new Error("Minutes desktop app did not respond to the recording request in time.");
   } finally {
     await rm(requestPath, { force: true }).catch(() => {});
   }
@@ -663,14 +725,30 @@ server.tool(
     const { stdout: preflightOut } = await runMinutes(preflightArgs);
     const preflight = parseJsonOutput(preflightOut);
 
-    if (preflight.intent === "call") {
-      const response = await delegateCallRecordingToDesktop({
-        title,
-        mode,
-        intent: "call",
-        allow_degraded,
-        language,
-      });
+    // In extension mode, always delegate to the desktop app — the extension
+    // runtime's audit session severs TCC mic grants for child processes.
+    // For non-extension mode, still delegate call recordings to the desktop app
+    // (it has system audio capture that the CLI can't do).
+    if (isExtensionRuntime || preflight.intent === "call") {
+      let response: DesktopControlResponse | null;
+      try {
+        response = await delegateRecordingToDesktop({
+          title,
+          mode,
+          intent: intent || preflight.intent,
+          allow_degraded,
+          language,
+        });
+      } catch (e: any) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Failed to delegate recording to the Minutes desktop app: ${e.message}\n\n` +
+              "Check if Minutes.app is responding, or restart it and try again.",
+          }],
+          isError: true,
+        };
+      }
       if (response) {
         if (!response.accepted) {
           return {
@@ -700,6 +778,25 @@ server.tool(
             },
           ],
           structuredContent: { preflight, desktop_response: response },
+        };
+      }
+
+      // Desktop app not running — in extension mode this means audio capture won't work.
+      if (isExtensionRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "The Minutes desktop app is not running. The Claude Desktop extension " +
+                "cannot capture audio directly (macOS blocks microphone access for " +
+                "processes spawned from the extension runtime).\n\n" +
+                "To fix: launch Minutes.app and try again. The extension will " +
+                "delegate recording to the desktop app, which has its own " +
+                "microphone permission.\n\n" +
+                "Download: https://github.com/silverstein/minutes/releases/latest",
+            },
+          ],
+          isError: true,
         };
       }
     }
@@ -1933,6 +2030,23 @@ server.tool(
       };
     }
 
+    // Extension runtime: mic won't work for spawned child processes.
+    // Desktop delegation for dictation requires a future Tauri extension.
+    if (isExtensionRuntime) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Dictation is not yet supported via the Claude Desktop extension. " +
+              "The extension runtime cannot pass microphone access to child processes.\n\n" +
+              "Workaround: run `minutes dictate` from your terminal, or use start_recording instead " +
+              "(recording delegates to the Minutes desktop app when it's running).",
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // Spawn dictation as child (not detached — preserves macOS TCC mic grant)
     const dictArgs = ["dictate"];
     if (language) dictArgs.push("--language", language);
@@ -2146,6 +2260,22 @@ server.tool(
         };
       }
     } catch { /* no active session, proceed */ }
+
+    // Extension runtime: mic won't work for spawned child processes.
+    if (isExtensionRuntime) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Live transcript is not yet supported via the Claude Desktop extension. " +
+              "The extension runtime cannot pass microphone access to child processes.\n\n" +
+              "Workaround: run `minutes live` from your terminal, or use start_recording instead " +
+              "(recording delegates to the Minutes desktop app when it's running).",
+          },
+        ],
+        isError: true,
+      };
+    }
 
     // Spawn live transcript as child (not detached — preserves macOS TCC mic grant)
     const liveArgs = ["live"];
