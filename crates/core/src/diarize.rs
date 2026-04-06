@@ -476,8 +476,6 @@ pub fn diarize(audio_path: &Path, config: &Config) -> Option<DiarizationResult> 
 /// Replaces timestamp-only lines with speaker-labeled lines.
 /// Segments are sorted by start time before matching.
 pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
-    let mut output = String::new();
-
     // Sort segments by start time for deterministic matching
     let mut sorted_segments = result.segments.clone();
     sorted_segments.sort_by(|a, b| {
@@ -486,6 +484,16 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    enum OutputLine {
+        Attributed {
+            speaker: String,
+            ts_str: String,
+            text: String,
+        },
+        Raw(String),
+    }
+
+    let mut lines: Vec<OutputLine> = Vec::new();
     let mut unknown_count = 0usize;
     let mut matched_count = 0usize;
 
@@ -497,19 +505,66 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
                 let text = rest[bracket_end + 1..].trim();
 
                 if let Some(secs) = parse_timestamp(ts_str) {
-                    let speaker = find_speaker(secs, &sorted_segments);
+                    let speaker = find_speaker(secs, &sorted_segments).to_string();
                     if speaker == "UNKNOWN" {
                         unknown_count += 1;
                     } else {
                         matched_count += 1;
                     }
-                    output.push_str(&format!("[{} {}] {}\n", speaker, ts_str, text));
+                    lines.push(OutputLine::Attributed {
+                        speaker,
+                        ts_str: ts_str.to_string(),
+                        text: text.to_string(),
+                    });
                     continue;
                 }
             }
         }
-        output.push_str(line);
-        output.push('\n');
+        lines.push(OutputLine::Raw(line.to_string()));
+    }
+
+    // Hypothesis: Whisper often starts transcribing at t=0 while diarization
+    // detects voice activity slightly later (VAD onset latency, mic warmup, or
+    // leading silence). The first transcript segment therefore lands before the
+    // first diarization segment, outside the 0.5s gap tolerance, and gets
+    // labeled UNKNOWN. Since the opening words almost certainly belong to
+    // whoever is about to speak, we inherit the speaker from the next
+    // attributed segment rather than leaving it unresolved.
+    let first_attr = lines.iter().position(|l| matches!(l, OutputLine::Attributed { .. }));
+    if let Some(first_idx) = first_attr {
+        let is_unknown = matches!(&lines[first_idx], OutputLine::Attributed { speaker, .. } if speaker == "UNKNOWN");
+        if is_unknown {
+            let next_speaker = lines[first_idx + 1..].iter().find_map(|l| match l {
+                OutputLine::Attributed { speaker, .. } if speaker != "UNKNOWN" => {
+                    Some(speaker.clone())
+                }
+                _ => None,
+            });
+            if let Some(resolved) = next_speaker {
+                if let OutputLine::Attributed { speaker, .. } = &mut lines[first_idx] {
+                    *speaker = resolved;
+                    unknown_count = unknown_count.saturating_sub(1);
+                    matched_count += 1;
+                }
+            }
+        }
+    }
+
+    let mut output = String::new();
+    for line in &lines {
+        match line {
+            OutputLine::Attributed {
+                speaker,
+                ts_str,
+                text,
+            } => {
+                output.push_str(&format!("[{} {}] {}\n", speaker, ts_str, text));
+            }
+            OutputLine::Raw(raw) => {
+                output.push_str(raw);
+                output.push('\n');
+            }
+        }
     }
 
     if unknown_count > 0 {
@@ -1335,6 +1390,38 @@ mod tests {
         let labeled = apply_speakers(transcript, &result);
         assert!(labeled.contains("[SPEAKER_0 0:00]"));
         assert!(labeled.contains("[SPEAKER_1 0:05]"));
+    }
+
+    #[test]
+    fn apply_speakers_first_unknown_inherits_next_speaker() {
+        // Simulate Whisper starting at t=0 but diarization detecting speech
+        // only from t=1.5 — the first line would be UNKNOWN without the fix
+        let transcript = "[0:00] Hello\n[0:03] How are you\n[0:07] Good thanks\n";
+        let result = DiarizationResult {
+            segments: vec![
+                SpeakerSegment {
+                    speaker: "SPEAKER_0".into(),
+                    start: 1.5,
+                    end: 5.0,
+                },
+                SpeakerSegment {
+                    speaker: "SPEAKER_1".into(),
+                    start: 5.0,
+                    end: 10.0,
+                },
+            ],
+            num_speakers: 2,
+            speaker_embeddings: std::collections::HashMap::new(),
+        };
+
+        let labeled = apply_speakers(transcript, &result);
+        // First segment inherits from the next attributed segment (SPEAKER_0)
+        assert!(
+            labeled.contains("[SPEAKER_0 0:00]"),
+            "first UNKNOWN should inherit next speaker, got: {labeled}"
+        );
+        assert!(labeled.contains("[SPEAKER_0 0:03]"));
+        assert!(labeled.contains("[SPEAKER_1 0:07]"));
     }
 
     #[test]
