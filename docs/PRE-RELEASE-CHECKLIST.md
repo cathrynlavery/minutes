@@ -191,6 +191,12 @@ shasum -a 256 /tmp/minutes.dmg
 
 Anyone running `brew install --cask silverstein/tap/minutes` is silently stuck on the previous version until both files are updated. This is the highest-impact post-release miss.
 
+**Install block workarounds — do not strip on routine version bumps.** The `Formula/minutes.rb` install block sets several env vars that look removable but each fixes a real, reported build failure. If you touch the install block during a version bump, rebase these workarounds rather than dropping them:
+
+- `CXXFLAGS += -I<sdk>/usr/include/c++/v1` and `CPLUS_INCLUDE_PATH` — required for whisper.cpp's `std::filesystem` usage on macOS 15+/Xcode 26+ (silverstein/minutes#14)
+- `MACOSX_DEPLOYMENT_TARGET=11.0` and `CMAKE_OSX_DEPLOYMENT_TARGET=11.0` — same root cause; `whisper-rs-sys` hardcodes 10.13 in CMake C/C++ flags, which is incompatible with `std::filesystem`
+- `GGML_CCACHE=OFF` — whisper.cpp's CMakeLists has `GGML_CCACHE=ON` by default; if a user has ccache installed (e.g. via Homebrew), `find_program()` locates it at cmake-configure time but the resulting `RULE_LAUNCH_COMPILE` fails at make-time inside Homebrew's sanitized superenv PATH (silverstein/minutes#89). `whisper-rs-sys` forwards any `GGML_*`, `WHISPER_*`, or `CMAKE_*` env var to cmake as `-D<KEY>=<VALUE>`, which is how this disable propagates.
+
 ### 9.3 crates.io: not currently published
 
 `minutes-cli` and `minutes-core` are at v0.9.4 on crates.io and have NOT been published since. Reasons we are not reviving the publish:
