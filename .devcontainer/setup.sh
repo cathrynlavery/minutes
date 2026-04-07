@@ -6,14 +6,26 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-echo "==> Installing Linux audio dev headers + ffmpeg..."
+echo "==> Installing Linux build + audio dev deps..."
+# clang + libclang-dev: required by bindgen when pipewire-sys generates Rust
+#   bindings from PipeWire's C headers (cpal pulls this in via the pipewire
+#   feature on Linux). Without it, the Codespace setup fails ~120 crates in.
+# cmake + build-essential: whisper.cpp's build script invokes cmake.
+# libasound2-dev, libpipewire-0.3-dev, libspa-0.2-dev: same set CI installs
+#   for cpal's ALSA + PipeWire backends.
+# ffmpeg: preferred audio decoder for non-WAV inputs.
+# pulseaudio-utils: lets us inspect a PipeWire/Pulse daemon if we ever start one.
 sudo apt-get update
 sudo apt-get install -y \
+  clang \
+  libclang-dev \
+  cmake \
+  build-essential \
+  pkg-config \
   libasound2-dev \
   libpipewire-0.3-dev \
   libspa-0.2-dev \
   ffmpeg \
-  pkg-config \
   pulseaudio-utils
 
 echo "==> Building CLI in release mode (whisper + diarize, ~15–25 min on first run)..."
