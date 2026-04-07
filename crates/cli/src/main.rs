@@ -367,10 +367,12 @@ enum Commands {
     /// List audio input devices grouped by category (Microphones / System Audio / Virtual)
     Sources,
 
-    /// Install or uninstall the folder watcher as a login service
+    /// Install, restart, uninstall, or check the folder watcher as a login service.
+    /// `install` is idempotent — run it again after upgrading the binary to point
+    /// launchd at the new path. `restart` reloads without rewriting the plist.
     Service {
-        /// Action: install or uninstall
-        #[arg(value_parser = ["install", "uninstall", "status"])]
+        /// Action: install, uninstall, restart, or status
+        #[arg(value_parser = ["install", "uninstall", "restart", "status"])]
         action: String,
     },
 
@@ -3018,6 +3020,22 @@ fn cmd_service(action: &str) -> Result<()> {
                 log = log_dir.join("watcher.log").display(),
             );
 
+            // Idempotent: if a previous version of the plist is already loaded,
+            // unload it first so the new binary path takes effect. Without this,
+            // upgrading the binary leaves the old process running until logout/reboot.
+            let was_loaded = plist_dest.exists()
+                && std::process::Command::new("launchctl")
+                    .args(["list", plist_name])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+            if was_loaded {
+                let _ = std::process::Command::new("launchctl")
+                    .args(["unload", &plist_dest.to_string_lossy()])
+                    .status();
+            }
+
             std::fs::write(&plist_dest, &plist)?;
 
             let status = std::process::Command::new("launchctl")
@@ -3025,10 +3043,19 @@ fn cmd_service(action: &str) -> Result<()> {
                 .status()?;
 
             if status.success() {
-                eprintln!("Watcher service installed and started.");
-                eprintln!("  Plist: {}", plist_dest.display());
-                eprintln!("  Logs:  {}", log_dir.join("watcher.log").display());
-                eprintln!("  It will auto-start on login and process audio in ~/.minutes/inbox/");
+                if was_loaded {
+                    eprintln!("Watcher service reloaded with the current binary.");
+                } else {
+                    eprintln!("Watcher service installed and started.");
+                }
+                eprintln!("  Plist:  {}", plist_dest.display());
+                eprintln!("  Binary: {}", minutes_bin.display());
+                eprintln!("  Logs:   {}", log_dir.join("watcher.log").display());
+                if !was_loaded {
+                    eprintln!(
+                        "  It will auto-start on login and process audio in ~/.minutes/inbox/"
+                    );
+                }
             } else {
                 anyhow::bail!("launchctl load failed");
             }
@@ -3042,6 +3069,36 @@ fn cmd_service(action: &str) -> Result<()> {
                 eprintln!("Watcher service uninstalled.");
             } else {
                 eprintln!("Service not installed.");
+            }
+        }
+        "restart" => {
+            if !plist_dest.exists() {
+                anyhow::bail!("Service is not installed. Run `minutes service install` first.");
+            }
+            // Use launchctl kickstart to restart in place. Falls back to unload/load
+            // if kickstart isn't available (older macOS) or fails for any reason.
+            let uid = unsafe { libc::getuid() };
+            let target = format!("gui/{}/{}", uid, plist_name);
+            let kickstart = std::process::Command::new("launchctl")
+                .args(["kickstart", "-k", &target])
+                .status();
+            let success = match kickstart {
+                Ok(s) if s.success() => true,
+                _ => {
+                    let _ = std::process::Command::new("launchctl")
+                        .args(["unload", &plist_dest.to_string_lossy()])
+                        .status();
+                    std::process::Command::new("launchctl")
+                        .args(["load", "-w", &plist_dest.to_string_lossy()])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false)
+                }
+            };
+            if success {
+                eprintln!("Watcher service restarted.");
+            } else {
+                anyhow::bail!("launchctl restart failed");
             }
         }
         "status" => {
@@ -3067,7 +3124,7 @@ fn cmd_service(action: &str) -> Result<()> {
             }
         }
         _ => anyhow::bail!(
-            "Unknown action: {}. Use install, uninstall, or status.",
+            "Unknown action: {}. Use install, uninstall, restart, or status.",
             action
         ),
     }

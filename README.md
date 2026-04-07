@@ -293,7 +293,15 @@ No sync setup needed — just get the audio file to your desktop's watched folde
 ```bash
 minutes watch                  # Run in foreground
 minutes service install        # Or install as background service (auto-starts on login, macOS)
+minutes service restart        # Restart in place (e.g. after upgrading the binary)
+minutes service status         # Check if it's running and which PID
 ```
+
+> **Upgrading?** macOS launchd holds the running watcher's binary in memory, so a fresh
+> `brew upgrade` (or any other binary swap) leaves the old version running until you
+> restart it. Run `minutes service install` again — it's idempotent and will reload
+> launchd with the new binary path. Or use `minutes service restart` if the plist
+> hasn't changed.
 
 ### How it works
 
