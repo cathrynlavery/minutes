@@ -6,6 +6,7 @@ use minutes_core::{CaptureMode, Config, ContentType};
 use serde::Serialize;
 
 mod dashboard;
+mod demo_data;
 use std::path::{Path, PathBuf};
 
 /// minutes — conversation memory for AI assistants.
@@ -392,7 +393,17 @@ enum Commands {
     },
 
     /// Run a demo recording to verify the pipeline works (uses bundled audio, no mic needed)
-    Demo,
+    Demo {
+        /// Seed 5 realistic sample meetings (Snow Crash theme) to try search, people, and actions
+        #[arg(long)]
+        full: bool,
+        /// Remove demo meetings created by --full
+        #[arg(long)]
+        clean: bool,
+        /// Run a cross-meeting query to preview the agent experience without Claude
+        #[arg(long)]
+        query: bool,
+    },
 
     /// Output the JSON Schema for the meeting frontmatter format
     Schema,
@@ -798,7 +809,30 @@ fn main() -> Result<()> {
         }
         Commands::Logs { errors, lines } => cmd_logs(errors, lines),
         Commands::Health { json } => cmd_health(json),
-        Commands::Demo => cmd_demo(&config),
+        Commands::Demo { full, clean, query } => {
+            if clean {
+                let removed = demo_data::clean_demo_meetings(&config.output_dir)?;
+                if removed > 0 {
+                    eprintln!("\nRemoved {} demo meeting(s).", removed);
+                    if full {
+                        eprintln!();
+                        cmd_demo_full(&config)?;
+                    }
+                } else {
+                    eprintln!("No demo meetings found to remove.");
+                    if full {
+                        cmd_demo_full(&config)?;
+                    }
+                }
+                Ok(())
+            } else if query {
+                demo_data::query_demo(&config.output_dir)
+            } else if full {
+                cmd_demo_full(&config)
+            } else {
+                cmd_demo(&config)
+            }
+        }
         Commands::Schema => cmd_schema(),
         Commands::Get { slug } => cmd_get(&slug, &config),
         Commands::Events { limit, since } => cmd_events(limit, since, &config),
@@ -3872,6 +3906,34 @@ fn cmd_health(json: bool) -> Result<()> {
 }
 
 // ──────────────────────────────────────────────────────────────
+// minutes demo --full — Snow Crash themed sample meetings
+// ──────────────────────────────────────────────────────────────
+
+fn cmd_demo_full(config: &Config) -> Result<()> {
+    let paths = demo_data::seed_demo_meetings(&config.output_dir)?;
+
+    if paths.is_empty() {
+        eprintln!("All demo meetings already exist. Run `minutes demo --clean --full` to re-seed.");
+        return Ok(());
+    }
+
+    // Rebuild the relationship graph silently (suppress tracing for clean animation)
+    {
+        let quiet = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(quiet, || {
+            minutes_core::graph::rebuild_index(config).ok();
+        });
+    }
+
+    // Demo has a fixed cast of 6 characters
+    demo_data::present_demo(paths.len(), 6, &config.output_dir);
+
+    Ok(())
+}
+
 // minutes demo — deterministic pipeline demo with bundled audio
 // ──────────────────────────────────────────────────────────────
 
