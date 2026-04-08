@@ -21,6 +21,7 @@ pub struct AppState {
     pub latest_output: Arc<Mutex<Option<OutputNotice>>>,
     pub call_capture_health: Arc<Mutex<Option<crate::call_capture::CallSourceHealth>>>,
     pub completion_notifications_enabled: Arc<AtomicBool>,
+    pub screen_share_hidden: Arc<AtomicBool>,
     pub global_hotkey_enabled: Arc<AtomicBool>,
     pub global_hotkey_shortcut: Arc<Mutex<String>>,
     pub hotkey_runtime: Arc<Mutex<HotkeyRuntime>>,
@@ -3412,6 +3413,9 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "interval_secs": config.screen_context.interval_secs,
             "keep_after_summary": config.screen_context.keep_after_summary,
         },
+        "privacy": {
+            "hide_from_screen_share": config.privacy.hide_from_screen_share,
+        },
         "assistant": {
             "agent": config.assistant.agent,
             "agent_args": config.assistant.agent_args,
@@ -3570,6 +3574,26 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         .map_err(|e| format!("Failed to save config: {}", e))?;
 
     Ok(format!("Set {}.{} = {}", section, key, value))
+}
+
+#[tauri::command]
+pub fn cmd_set_screen_share_hidden(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    hidden: bool,
+) -> Result<(), String> {
+    let mut config = Config::load();
+    config.privacy.hide_from_screen_share = hidden;
+    config
+        .save()
+        .map_err(|e| format!("Failed to save config: {}", e))?;
+
+    state.screen_share_hidden.store(hidden, Ordering::Relaxed);
+    for (_, window) in app.webview_windows() {
+        window.set_content_protected(hidden).ok();
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -4037,6 +4061,7 @@ fn show_dictation_overlay(app: &tauri::AppHandle) {
     .decorations(false)
     .transparent(true)
     .shadow(false)
+    .content_protected(Config::load().privacy.hide_from_screen_share)
     .always_on_top(true)
     .focused(false)
     .skip_taskbar(true)

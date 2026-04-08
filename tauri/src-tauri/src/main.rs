@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use minutes_core::Config;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -101,7 +102,7 @@ fn show_main_window(app: &tauri::AppHandle) {
         .inner_size(520.0, 700.0)
         .min_inner_size(420.0, 520.0)
         .transparent(true)
-        .content_protected(true)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .center()
         .focused(true)
         .build()
@@ -124,7 +125,7 @@ fn show_note_window(app: &tauri::AppHandle) {
         .title("Add Note")
         .inner_size(420.0, 260.0)
         .resizable(false)
-        .content_protected(true)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .always_on_top(true)
         .center()
         .focused(true)
@@ -153,7 +154,7 @@ pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &st
         .title(title)
         .inner_size(900.0, 600.0)
         .min_inner_size(600.0, 400.0)
-        .content_protected(true)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .center()
         .focused(true)
         .build()
@@ -336,6 +337,7 @@ fn show_meeting_prompt(app: &tauri::AppHandle, event: &minutes_core::calendar::C
         .position(pos_x, pos_y)
         .resizable(false)
         .decorations(false)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .always_on_top(true)
         .focused(true)
         .skip_taskbar(true)
@@ -465,7 +467,9 @@ fn main() {
     ));
     let hotkey_runtime = Arc::new(Mutex::new(commands::HotkeyRuntime::default()));
     let discard_short_hotkey_capture = Arc::new(AtomicBool::new(false));
-    let screen_share_hidden = Arc::new(AtomicBool::new(true));
+    let screen_share_hidden = Arc::new(AtomicBool::new(
+        startup_config_snapshot.privacy.hide_from_screen_share,
+    ));
     let recording_clone = recording.clone();
     let recording_for_detector = recording.clone();
     let processing_clone = processing.clone();
@@ -582,6 +586,7 @@ fn main() {
             latest_output: latest_output.clone(),
             call_capture_health: Arc::new(Mutex::new(None)),
             completion_notifications_enabled: completion_notifications_enabled.clone(),
+            screen_share_hidden: screen_share_hidden.clone(),
             global_hotkey_enabled: global_hotkey_enabled.clone(),
             global_hotkey_shortcut: global_hotkey_shortcut.clone(),
             dictation_shortcut_enabled: dictation_shortcut_enabled.clone(),
@@ -789,7 +794,11 @@ fn main() {
             let screen_share_item = MenuItem::with_id(
                 app,
                 "screen-share-toggle",
-                "Hide from Screen Share ✓",
+                if startup_config.privacy.hide_from_screen_share {
+                    "Hide from Screen Share ✓"
+                } else {
+                    "Hide from Screen Share"
+                },
                 true,
                 None::<&str>,
             )?;
@@ -996,6 +1005,12 @@ fn main() {
                             let currently_hidden = screen_share_hidden.load(Ordering::Relaxed);
                             let new_state = !currently_hidden;
                             screen_share_hidden.store(new_state, Ordering::Relaxed);
+
+                            let mut config = Config::load();
+                            config.privacy.hide_from_screen_share = new_state;
+                            if let Err(err) = config.save() {
+                                eprintln!("[privacy] failed to save screen-share setting: {}", err);
+                            }
 
                             // Update menu label
                             if new_state {
@@ -1212,6 +1227,7 @@ fn main() {
             commands::cmd_terminal_info,
             commands::cmd_get_settings,
             commands::cmd_set_setting,
+            commands::cmd_set_screen_share_hidden,
             commands::cmd_get_autostart,
             commands::cmd_set_autostart,
             commands::cmd_get_storage_stats,
