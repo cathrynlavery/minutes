@@ -140,8 +140,11 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.04);
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-mid);
+      background: var(--bg-elevated);
+      border-top-left-radius: 18px;
+      border-top-right-radius: 18px;
       flex-shrink: 0;
       -webkit-app-region: drag;
     }
@@ -206,12 +209,31 @@
     }
 
     .recall-close:hover { color: var(--text-secondary); background: var(--bg-hover); }
+    .recall-close:focus-visible {
+      outline: none;
+      color: var(--text-secondary);
+      background: var(--bg-hover);
+    }
+
+    .recall-end-btn {
+      display: none;
+    }
+
+    .recall-end-btn.active {
+      display: inline-flex;
+    }
 
     .recall-terminal {
       flex: 1;
+      min-height: 0;
       overflow: hidden;
-      padding: 4px;
+      margin: 6px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
       background: var(--bg-elevated);
+    }
+    .recall-terminal.hidden {
+      display: none;
     }
 
 
@@ -258,7 +280,7 @@
 
     /* Loading / error states */
     .recall-status {
-      display: flex;
+      display: none;
       align-items: center;
       justify-content: center;
       flex: 1;
@@ -266,6 +288,12 @@
       gap: 12px;
       color: var(--text-secondary);
       font-size: 13px;
+      padding: 12px 10px;
+      background: var(--bg-elevated);
+    }
+
+    .recall-status.active {
+      display: flex;
     }
 
     .recall-status .processing-spinner {
@@ -278,6 +306,8 @@
       padding: 10px 16px;
       border-top: 1px solid var(--border);
       background: var(--bg-elevated);
+      border-bottom-left-radius: 18px;
+      border-bottom-right-radius: 18px;
       text-align: center;
       font-size: 12px;
       color: var(--text-secondary);
@@ -363,36 +393,6 @@
       min-width: 0;
     }
 
-    .brand-mark {
-      width: 30px;
-      height: 30px;
-      border-radius: 10px;
-      background:
-        radial-gradient(circle at 28% 25%, rgba(56, 189, 248, 0.55), transparent 45%),
-        radial-gradient(circle at 74% 76%, rgba(251, 191, 36, 0.4), transparent 40%),
-        linear-gradient(155deg, #173b5c 0%, #1d2c4a 100%);
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,0.16),
-        0 8px 20px rgba(0,0,0,0.18);
-      position: relative;
-      flex-shrink: 0;
-    }
-
-    .brand-mark::before,
-    .brand-mark::after {
-      content: "";
-      position: absolute;
-      top: 7px;
-      width: 7px;
-      height: 16px;
-      border-radius: 3px;
-      background: rgba(248, 250, 252, 0.92);
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.08);
-    }
-
-    .brand-mark::before { left: 7px; }
-    .brand-mark::after { right: 7px; }
-
     .brand-copy {
       min-width: 0;
     }
@@ -400,7 +400,7 @@
     .brand-label {
       font-size: 18px;
       font-family: var(--font-display);
-      font-weight: 700;
+      font-weight: 400;
       letter-spacing: -0.3px;
       color: var(--text);
       line-height: 1;
@@ -646,9 +646,9 @@
       width: 2px;
       border-radius: 999px;
       background: var(--red);
-      opacity: 0.6;
+      opacity: 0.72;
       min-height: 2px;
-      transition: height 0.1s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: height 0.1s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
     }
 
     .recording-actions {
@@ -776,7 +776,7 @@
 
     .processing-title {
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 400;
       color: var(--accent);
       font-family: var(--font-display);
     }
@@ -969,14 +969,14 @@
     }
 
     .date-group {
-      font-size: 12px;
-      font-family: var(--font-display);
+      font-size: 10px;
+      font-family: var(--font-mono);
       font-weight: 500;
-      text-transform: none;
-      letter-spacing: -0.1px;
-      color: var(--orange);
+      text-transform: uppercase;
+      letter-spacing: 0.42px;
+      color: var(--text-tertiary);
       padding: 24px 4px 8px;
-      border-bottom: 1px solid rgba(212, 160, 60, 0.06);
+      border-bottom: 1px solid var(--border);
       margin-bottom: 2px;
     }
 
@@ -1110,6 +1110,7 @@
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 18px;
+      position: relative;
       overflow: hidden;
       display: flex;
       flex-direction: column;
@@ -1150,11 +1151,17 @@
       z-index: 1;
     }
     .detail-close-x:hover { background: var(--bg-hover); color: var(--text-secondary); }
+    .detail-close-x:focus-visible {
+      outline: none;
+      background: var(--bg-hover);
+      color: var(--text-secondary);
+      box-shadow: 0 0 0 2px rgba(48, 209, 88, 0.2);
+    }
 
     .detail-title {
       font-size: 18px;
       font-family: var(--font-display);
-      font-weight: 700;
+      font-weight: 400;
       letter-spacing: -0.2px;
       color: var(--text);
       margin-bottom: 6px;
@@ -1371,11 +1378,12 @@
     }
 
     .detail-section-title {
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.5px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      font-weight: 600;
+      letter-spacing: 0.4px;
       text-transform: uppercase;
-      color: var(--text-tertiary);
+      color: var(--accent);
       margin-bottom: 10px;
     }
 
@@ -1409,9 +1417,8 @@
       color: var(--text-tertiary);
     }
 
-    .empty-state .icon { font-size: 40px; margin-bottom: 12px; opacity: 0.35; filter: grayscale(0.3); }
-    .empty-state .title { font-size: 15px; font-family: var(--font-display); font-weight: 600; color: var(--text-secondary); }
-    .empty-state .sub { font-size: 12px; margin-top: 6px; line-height: 1.5; }
+    .empty-state .title { font-size: 20px; font-family: var(--font-display); font-weight: 400; color: var(--text); margin-bottom: 6px; }
+    .empty-state .sub { font-size: 12px; margin-top: 6px; line-height: 1.5; color: var(--text-secondary); }
 
     /* ── About view ── */
     .about-overlay {
@@ -1433,8 +1440,8 @@
       width: min(520px, 100%);
       max-height: calc(100vh - 40px);
       overflow-y: auto;
-      background: linear-gradient(180deg, rgba(22, 32, 50, 0.96), rgba(16, 24, 38, 0.96));
-      border: 1px solid rgba(255,255,255,0.08);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-mid);
       border-radius: 20px;
       box-shadow: 0 24px 60px rgba(0,0,0,0.42);
       padding: 22px 22px 20px;
@@ -1459,6 +1466,7 @@
     .about-copy h2 {
       font-size: 24px;
       font-family: var(--font-display);
+      font-weight: 400;
       line-height: 1;
       letter-spacing: -0.4px;
       margin-bottom: 6px;
@@ -1524,7 +1532,7 @@
     }
 
     .about-controls .toggle-btn {
-      width: auto !important;
+      width: auto;
       min-width: 56px;
       max-width: 72px;
       flex-shrink: 0;
@@ -1605,7 +1613,7 @@
     .readiness-title {
       font-size: 18px;
       font-family: var(--font-display);
-      font-weight: 700;
+      font-weight: 400;
       letter-spacing: -0.2px;
       color: var(--text);
       margin-bottom: 6px;
@@ -1728,7 +1736,7 @@
     .recovery-title {
       font-size: 18px;
       font-family: var(--font-display);
-      font-weight: 700;
+      font-weight: 400;
       letter-spacing: -0.2px;
       color: var(--text);
       margin-bottom: 6px;
@@ -1831,8 +1839,7 @@
 
     .footer-actions {
       display: grid;
-      grid-template-columns: 1.3fr 0.55fr 1fr 0.7fr;
-      gap: 5px;
+      gap: 8px;
       background: var(--bg-elevated);
       border: 1px solid rgba(255,255,255,0.06);
       border-radius: 14px;
@@ -1840,11 +1847,64 @@
       box-shadow: 0 2px 12px rgba(0,0,0,0.12), 0 0 0 1px rgba(255,255,255,0.02);
     }
 
+    .footer-action-primary {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .footer-action-primary,
+    .footer-device-picker {
+      display: grid;
+      gap: 4px;
+    }
+
+    .footer-action-primary .btn-primary {
+      min-height: 42px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .footer-action-secondary {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 4px;
+    }
+
     .footer-actions .btn {
       width: 100%;
       border-radius: var(--radius);
       font-size: 12px;
       white-space: nowrap;
+    }
+
+    .footer-device-picker {
+      gap: 5px;
+    }
+
+    .footer-device-label {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.32px;
+      color: var(--text-tertiary);
+    }
+
+    .footer-device-picker .device-picker {
+      max-width: 100%;
+    }
+
+    @media (min-width: 540px) {
+      .footer-actions {
+        grid-template-columns: 1fr;
+      }
+
+      .footer-action-primary {
+        grid-template-columns: 1fr;
+      }
+
+      .footer-action-secondary {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
     }
 
     /* ── Buttons ── */
@@ -1856,14 +1916,24 @@
       font-size: 13px;
       font-weight: 500;
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition:
+        color 0.18s ease,
+        background-color 0.18s ease,
+        border-color 0.18s ease,
+        box-shadow 0.18s ease,
+        transform 0.15s ease;
       -webkit-app-region: no-drag;
     }
 
+    .btn:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.2);
+    }
+
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent) 0%, #3d94c2 100%);
-      color: #fff;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 0 12px rgba(48, 209, 88, 0.15);
+      background: var(--accent);
+      color: var(--bg);
+      box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.14);
     }
 
     .footer-actions .btn-primary {
@@ -1872,9 +1942,9 @@
 
     .btn-primary:hover {
       background: var(--accent-hover);
-      box-shadow: 0 2px 6px rgba(0,0,0,0.25), 0 0 18px rgba(48, 209, 88, 0.2);
+      box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.14);
     }
-    .btn-primary:active { transform: scale(0.98); box-shadow: 0 0 8px rgba(48, 209, 88, 0.1); }
+    .btn-primary:active { transform: scale(0.98); }
 
     .btn-danger {
       background: rgba(255, 69, 58, 0.12);
@@ -1909,30 +1979,44 @@
       cursor: pointer;
       -webkit-appearance: none;
       outline: none;
+      transition:
+        border-color 0.18s ease,
+        box-shadow 0.18s ease,
+        background-color 0.18s ease,
+        color 0.18s ease;
     }
     .device-picker:hover { border-color: var(--text-tertiary); }
-    .device-picker:focus { border-color: var(--blue); }
+    .device-picker:focus,
+    .device-picker:focus-visible {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.2);
+    }
 
     .btn-icon {
       padding: 4px 7px;
       font-size: 15px;
       line-height: 1;
-      border: none !important;
-      background: transparent !important;
+      border: none;
+      background: transparent;
       color: var(--text-tertiary);
       border-radius: 6px;
     }
-    .btn-icon:hover { background: var(--bg-hover) !important; color: var(--text-secondary); }
+    .btn-icon:hover { background: var(--bg-hover); color: var(--text-secondary); }
+    .btn-icon:focus-visible {
+      outline: none;
+      background: var(--bg-hover);
+    }
 
     /* ── Upcoming meeting ── */
     .upcoming {
-      display: flex;
+      display: none;
       align-items: center;
       gap: 10px;
       padding: 10px 16px;
       background: rgba(48, 209, 88, 0.06);
       border-bottom: 1px solid rgba(48, 209, 88, 0.1);
     }
+    .upcoming.active { display: flex; }
 
     .upcoming-icon { font-size: 16px; flex-shrink: 0; }
 
@@ -2014,7 +2098,6 @@
   <!-- Header -->
   <div class="header">
     <div class="brand">
-      <div class="brand-mark" aria-hidden="true"></div>
       <div class="brand-copy">
         <div class="brand-label">Minutes</div>
         <div class="brand-sub">Conversation memory for humans and agents</div>
@@ -2111,7 +2194,7 @@
   </div>
 
   <!-- Upcoming meeting suggestion -->
-  <div class="upcoming" id="upcoming" style="display: none;">
+  <div class="upcoming" id="upcoming">
     <div class="upcoming-icon">📅</div>
     <div class="upcoming-info">
       <div class="upcoming-title" id="upcoming-title"></div>
@@ -2153,23 +2236,28 @@
   <!-- Meeting list -->
   <div class="meetings-scroll" id="meetings-scroll">
     <div class="empty-state">
-      <div class="icon">⏳</div>
-      <div class="title">Loading...</div>
+      <div class="title">No meetings yet</div>
+      <div class="sub">Record your first conversation to get started.</div>
     </div>
   </div>
 
   <!-- Footer -->
   <div class="footer" id="footer">
     <div class="footer-actions">
-      <div style="display: flex; gap: 4px; align-items: center;">
+      <div class="footer-action-primary">
         <button class="btn btn-primary" id="btn-record">Start Recording</button>
+      </div>
+      <div class="footer-device-picker">
+        <div class="footer-device-label">Microphone</div>
         <select id="device-picker" class="device-picker" title="Select microphone">
           <option value="">System Default</option>
         </select>
       </div>
-      <button class="btn btn-secondary" id="btn-live" title="Start live transcription — ask your agent in Recall for coaching" aria-label="Start live transcription">Live</button>
-      <button class="btn btn-secondary" id="btn-quick-thought">Quick Thought</button>
-      <button class="btn btn-secondary" id="btn-assistant" aria-expanded="false">Recall <span class="recall-nudge" id="recall-nudge" aria-label="Recall has new content"></span></button>
+      <div class="footer-action-secondary">
+        <button class="btn btn-secondary" id="btn-live" title="Start live transcription — ask your agent in Recall for coaching" aria-label="Start live transcription">Live</button>
+        <button class="btn btn-secondary" id="btn-quick-thought">Quick Thought</button>
+        <button class="btn btn-secondary" id="btn-assistant" aria-expanded="false">Recall <span class="recall-nudge" id="recall-nudge" aria-label="Recall has new content"></span></button>
+      </div>
     </div>
   </div>
   </div><!-- end .app-left -->
@@ -2183,7 +2271,7 @@
         <span class="recall-context-label" id="recall-context-label"></span>
       </div>
       <div class="recall-header-actions">
-        <button class="btn btn-secondary btn-sm" id="btn-recall-end" style="display:none;">End Session</button>
+        <button class="btn btn-secondary btn-sm recall-end-btn" id="btn-recall-end">End Session</button>
         <button class="recall-close" id="btn-recall-close" title="Close panel">&times;</button>
       </div>
     </div>
@@ -2193,11 +2281,11 @@
         <button class="btn btn-secondary btn-sm" id="btn-recall-note-save">Save</button>
       </div>
     </div>
-    <div class="recall-status" id="recall-loading" style="display:none;">
+  <div class="recall-status" id="recall-loading">
       <div class="processing-spinner" aria-hidden="true"></div>
       <span>Starting Recall...</span>
     </div>
-    <div class="recall-terminal" id="recall-terminal-container"></div>
+    <div class="recall-terminal hidden" id="recall-terminal-container"></div>
     <div class="recall-exit-banner" id="recall-exit-banner">
       Session ended.
       <button class="btn btn-secondary btn-sm" id="btn-recall-restart">Restart</button>
@@ -2206,7 +2294,7 @@
 
   <!-- In-app meeting detail view -->
   <div class="detail-overlay" id="detail-overlay">
-    <div class="detail-card" role="dialog" aria-modal="true" aria-labelledby="detail-title" style="position:relative;">
+    <div class="detail-card" role="dialog" aria-modal="true" aria-labelledby="detail-title">
       <button class="detail-close-x" id="btn-detail-close" aria-label="Close">&times;</button>
       <div class="detail-header">
         <div class="detail-header-copy">
@@ -2276,7 +2364,6 @@
     <div class="about-card" role="dialog" aria-modal="true" aria-labelledby="about-title">
       <div class="about-top">
         <div class="about-brand">
-          <div class="brand-mark" aria-hidden="true"></div>
           <div class="about-copy">
             <h2 id="about-title">Minutes</h2>
             <p>Local-first conversation memory that stays useful in the tray, the terminal, and inside agent workflows.</p>
@@ -4441,7 +4528,6 @@
       empty.className = 'empty-state';
       empty.innerHTML = `
         <div class="onboarding-content">
-          <div class="onboarding-icon">🎙</div>
           <h2>Welcome to Minutes</h2>
           <p class="onboarding-sub">Download the model once, then create one short recording. The moment it saves, this becomes your real meeting list.</p>
           <div class="onboarding-steps">
@@ -4491,14 +4577,14 @@
 
     // ── Upcoming meetings ──
     async function checkUpcoming() {
+      const upcoming = document.getElementById('upcoming');
       if (!desktopCapabilities.supportsCalendarIntegration) {
-        document.getElementById('upcoming').style.display = 'none';
+        upcoming.classList.remove('active');
         return;
       }
       if (isRecording) return;
       try {
         const events = await invoke('cmd_upcoming_meetings');
-        const upcoming = document.getElementById('upcoming');
         if (events && events.length > 0) {
           const next = events[0];
           document.getElementById('upcoming-title').textContent = next.title;
@@ -4508,7 +4594,7 @@
             mins === 1 ? 'In 1 minute' :
             mins < 60 ? `In ${mins} minutes` :
             `In ${Math.floor(mins / 60)}h ${mins % 60}m`;
-          upcoming.style.display = 'flex';
+          upcoming.classList.add('active');
 
           document.getElementById('btn-record-upcoming').onclick = async () => {
             try {
@@ -4516,11 +4602,11 @@
             } catch (e) { console.error('Record:', e); }
           };
         } else {
-          upcoming.style.display = 'none';
+          upcoming.classList.remove('active');
         }
       } catch (e) {
         // Calendar access may not be granted — silently hide
-        document.getElementById('upcoming').style.display = 'none';
+        upcoming.classList.remove('active');
       }
     }
 
@@ -5749,7 +5835,7 @@
 
       recallTerminal = new Terminal({
         theme: window.MINUTES_XTERM_THEME,
-        fontFamily: "'SF Mono', Menlo, monospace",
+        fontFamily: "'Geist Mono', 'SF Mono', Menlo, monospace",
         fontSize: 13,
         lineHeight: 1.2,
         cursorBlink: true,
@@ -5799,9 +5885,9 @@
           bytes[i] = raw.charCodeAt(i);
         }
         recallTerminal.write(bytes);
-        const wasHidden = recallTerminalContainer.style.display === 'none';
-        recallLoading.style.display = 'none';
-        recallTerminalContainer.style.display = '';
+        const wasHidden = recallTerminalContainer.classList.contains('hidden');
+        recallLoading.classList.remove('active');
+        recallTerminalContainer.classList.remove('hidden');
         // Re-fit after first reveal so xterm measures the real container width
         if (wasHidden && recallFitAddon) {
           requestAnimationFrame(() => recallFitAddon.fit());
@@ -5811,7 +5897,7 @@
       await currentWindow.listen('pty:exit:' + SESSION_ID, () => {
         recallPtyAlive = false;
         recallExitBanner.classList.add('active');
-        recallEndBtn.style.display = 'none';
+        recallEndBtn.classList.remove('active');
       });
     }
 
@@ -5895,8 +5981,8 @@
 
     // ── Open Recall (spawn PTY if needed, then expand) ──
     async function openRecall(mode, meetingPath) {
-      recallLoading.style.display = 'flex';
-      recallTerminalContainer.style.display = 'none';
+      recallLoading.classList.add('active');
+      recallTerminalContainer.classList.add('hidden');
       recallExitBanner.classList.remove('active');
 
       await expandRecallPanel();
@@ -5906,14 +5992,14 @@
         if (meetingPath) opts.meetingPath = meetingPath;
         await invoke('cmd_spawn_terminal', opts);
         recallPtyAlive = true;
-        recallEndBtn.style.display = '';
+        recallEndBtn.classList.add('active');
       } catch (e) {
         const msg = typeof e === 'string' ? e : String(e);
         if (msg.includes('already running') || msg.includes('Already')) {
           recallPtyAlive = true;
-          recallLoading.style.display = 'none';
-          recallTerminalContainer.style.display = '';
-          recallEndBtn.style.display = '';
+          recallLoading.classList.remove('active');
+          recallTerminalContainer.classList.remove('hidden');
+          recallEndBtn.classList.add('active');
           // Re-fit after reveal so xterm uses the full panel width
           if (recallFitAddon) {
             requestAnimationFrame(() => {
@@ -6100,9 +6186,9 @@
         setRecallPhase('recall', context || null);
       }
       recallPtyAlive = true;
-      recallLoading.style.display = 'none';
-      recallTerminalContainer.style.display = '';
-      recallEndBtn.style.display = '';
+      recallLoading.classList.remove('active');
+      recallTerminalContainer.classList.remove('hidden');
+      recallEndBtn.classList.add('active');
     });
 
     // ── Restore window size when exiting fullscreen with recall panel open ──
@@ -6207,7 +6293,7 @@
     checkUpcoming = async function() {
       await originalCheckUpcoming();
       const upcomingEl = document.getElementById('upcoming');
-      if (upcomingEl && upcomingEl.style.display === 'flex' && !recallExpanded && !isRecording) {
+      if (upcomingEl && upcomingEl.classList.contains('active') && !recallExpanded && !isRecording) {
         const title = document.getElementById('upcoming-title').textContent;
         autoExpandRecall('prep', title);
       }
