@@ -310,9 +310,9 @@ fn single_stem_speaker_self_attribution(
     diarization_from_stems: bool,
     transcript: &str,
     transcript_labels: &[String],
-    l2_labels: &std::collections::HashSet<String>,
+    already_mapped_labels: &std::collections::HashSet<String>,
 ) -> SelfAttributionOutcome {
-    if !diarization_from_stems || !l2_labels.is_empty() {
+    if !diarization_from_stems || !already_mapped_labels.is_empty() {
         return if !diarization_from_stems {
             SelfAttributionOutcome::skipped(SelfAttributionSkippedReason::DiarizationNotFromStems)
         } else {
@@ -495,6 +495,15 @@ fn attribute_meeting_speakers(
             }
         }
 
+        // Recompute the mapped-labels set so it reflects BOTH L2 voice matches
+        // (extended into speaker_map at line 456) AND any L0 deterministic
+        // mapping that just fired above. l2_labels was captured before L0,
+        // so passing it here would let self_attribution duplicate a label
+        // L0 already mapped (regression introduced by f15a7e8).
+        let already_mapped_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|a| a.speaker_label.clone())
+            .collect();
         let self_attribution = single_stem_speaker_self_attribution(
             audio_path,
             config,
@@ -502,7 +511,7 @@ fn attribute_meeting_speakers(
             diarization_from_stems,
             &transcript,
             &transcript_labels,
-            &l2_labels,
+            &already_mapped_labels,
         );
         if let Some(attr) = self_attribution.attribution.clone() {
             speaker_map.push(attr);
