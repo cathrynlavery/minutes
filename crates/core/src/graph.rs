@@ -1390,9 +1390,9 @@ Short meeting.
     fn test_fix_frontmatter_date() {
         let fm = "title: Test\ntype: meeting\ndate: 2026-03-17T14:00:00\nduration: 5m";
         let fixed = fix_frontmatter(fm);
-        // Should have a timezone offset now
+        // Accept any valid RFC 3339 timezone offset, not just local examples from one machine.
         assert!(
-            fixed.contains('+') || fixed.contains("-07:00") || fixed.contains("-08:00"),
+            fixed.contains("T14:00:00+") || fixed.contains("T14:00:00-"),
             "Date should have timezone offset: {}",
             fixed
         );
