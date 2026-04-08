@@ -10,26 +10,36 @@
     :root {
       --bg: #1c1c1e;
       --bg-elevated: #2c2c2e;
-      --bg-hover: #38383a;
+      --bg-hover: #3e3e42;
       --border: #38383a;
       --text: #f5f5f7;
-      --text-secondary: #86868b;
+      --text-secondary: #98989d;
       --text-tertiary: #636366;
-      --accent: #0a84ff;
-      --accent-hover: #409cff;
-      --red: #ff453a;
-      --red-bg: rgba(255, 69, 58, 0.12);
-      --green: #30d158;
-      --purple: #bf5af2;
-      --radius: 10px;
+      --accent: #4da8d9;
+      --accent-hover: #6bbce3;
+      --red: #e5534b;
+      --red-bg: rgba(229, 83, 75, 0.12);
+      --green: #46c072;
+      --live: #34c759;
+      --purple: #9b85c4;
+      --orange: #d4a03c;
+      --radius: 8px;
+      --radius-lg: 10px;
       --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
       --font-display: ui-serif, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif;
       --font-mono: 'SF Mono', 'Menlo', monospace;
     }
 
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    html { background: transparent; }
+
     body {
       font-family: var(--font-sans);
-      background: var(--bg);
+      background: transparent;
       color: var(--text);
       height: 100vh;
       display: flex;
@@ -39,6 +49,19 @@
       user-select: none;
     }
 
+    /* Subtle grain overlay for depth — barely perceptible, adds warmth to flat surfaces */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.020;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-repeat: repeat;
+      background-size: 256px;
+    }
+
     /* ── Split layout ── */
     .app-left {
       flex: 1;
@@ -46,6 +69,7 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      border-right: 1px solid rgba(255,255,255,0.04);
     }
 
     /* ── Recall panel (right side) ── */
@@ -55,7 +79,7 @@
       overflow: hidden;
       display: flex;
       flex-direction: column;
-      border-left: 1px solid var(--border);
+      border-left: 1px solid rgba(255,255,255,0.04);
       background: var(--bg);
       opacity: 0;
       transition: opacity 100ms ease-out;
@@ -72,7 +96,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 10px 16px;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
       flex-shrink: 0;
       -webkit-app-region: drag;
     }
@@ -95,7 +119,7 @@
     .recall-phase-dot.prep { background: var(--accent); }
     .recall-phase-dot.listening {
       background: var(--red);
-      animation: blink 1s step-end infinite;
+      animation: recording-glow 1.8s ease-in-out infinite;
     }
     .recall-phase-dot.debrief { background: var(--green); }
 
@@ -182,7 +206,7 @@
 
     .recall-note-row input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.12);
+      box-shadow: 0 0 0 3px rgba(77, 168, 217, 0.12);
     }
 
     .recall-note-row input::placeholder { color: var(--text-tertiary); }
@@ -226,14 +250,15 @@
 
     .lifecycle-badge {
       font-size: 9px;
-      font-weight: 600;
+      font-weight: 500;
       padding: 1px 6px;
       border-radius: 999px;
-      letter-spacing: 0.2px;
+      letter-spacing: 0;
+      text-transform: lowercase;
     }
 
     .lifecycle-badge.prepped {
-      background: rgba(10, 132, 255, 0.12);
+      background: rgba(77, 168, 217, 0.12);
       color: var(--accent);
     }
 
@@ -243,7 +268,7 @@
     }
 
     .lifecycle-badge.debriefed {
-      background: rgba(48, 209, 88, 0.12);
+      background: rgba(70, 192, 114, 0.12);
       color: var(--green);
     }
 
@@ -269,14 +294,27 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 16px 20px 12px;
+      padding: 14px 16px 12px;
       -webkit-app-region: drag;
+      position: relative;
+      z-index: 10;
+    }
+
+    .header::after {
+      content: '';
+      position: absolute;
+      bottom: -6px;
+      left: 0;
+      right: 0;
+      height: 6px;
+      background: linear-gradient(rgba(28, 28, 30, 0.6), transparent);
+      pointer-events: none;
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       min-width: 0;
     }
 
@@ -315,22 +353,16 @@
     }
 
     .brand-label {
-      font-size: 20px;
+      font-size: 18px;
       font-family: var(--font-display);
       font-weight: 700;
-      letter-spacing: -0.4px;
+      letter-spacing: -0.3px;
       color: var(--text);
       line-height: 1;
     }
 
     .brand-sub {
-      margin-top: 4px;
-      font-size: 11px;
-      letter-spacing: 0.2px;
-      color: var(--text-tertiary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      display: none;
     }
 
     .header-actions {
@@ -343,58 +375,172 @@
     .header-chip {
       display: none;
       align-items: center;
-      gap: 6px;
-      padding: 5px 10px;
+      gap: 4px;
+      padding: 3px 8px;
       border-radius: 999px;
-      background: rgba(255, 159, 10, 0.12);
-      color: #ff9f0a;
-      font-size: 11px;
+      background: rgba(212, 160, 60, 0.08);
+      color: var(--orange);
+      font-size: 10px;
       font-weight: 600;
       letter-spacing: 0.2px;
+      cursor: pointer;
     }
 
     .header-chip.active { display: inline-flex; }
 
     .header-chip.readiness {
-      display: inline-flex;
-      background: rgba(10, 132, 255, 0.12);
+      display: none;
+    }
+
+    .header-chip.dictation-shortcut {
+      background: rgba(77, 168, 217, 0.10);
       color: var(--accent);
     }
 
     .status-pill {
-      font-size: 11px;
+      font-size: 0;
       font-weight: 600;
-      padding: 3px 10px;
-      border-radius: 12px;
-      background: var(--bg-elevated);
-      color: var(--text-tertiary);
+      padding: 0;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-tertiary);
+      opacity: 0.3;
       -webkit-app-region: no-drag;
+      transition: all 0.2s ease;
     }
 
     .status-pill.recording {
-      background: var(--red-bg);
+      font-size: 11px;
+      padding: 3px 10px;
+      width: auto;
+      height: auto;
+      border-radius: 12px;
+      opacity: 1;
+      background: rgba(229, 83, 75, 0.12);
       color: var(--red);
+      font-weight: 600;
+      letter-spacing: 0.3px;
     }
 
     .status-pill.processing {
-      background: rgba(10, 132, 255, 0.12);
+      font-size: 11px;
+      padding: 3px 10px;
+      width: auto;
+      height: auto;
+      border-radius: 12px;
+      opacity: 1;
+      background: rgba(77, 168, 217, 0.12);
       color: var(--accent);
+    }
+
+    .status-pill.live {
+      font-size: 11px;
+      padding: 3px 10px;
+      width: auto;
+      height: auto;
+      border-radius: 12px;
+      opacity: 1;
+      background: rgba(52, 199, 89, 0.15);
+      color: var(--live);
+    }
+
+    /* ── Live transcript bar ── */
+    .live-bar {
+      display: none;
+      padding: 12px 16px;
+      background: rgba(52, 199, 89, 0.06);
+      border-bottom: 1px solid rgba(52, 199, 89, 0.12);
+    }
+    .live-bar.active { display: block; }
+    @media (prefers-reduced-motion: reduce) {
+      .live-dot { animation: none; }
+    }
+    .live-bar .top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .live-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--live);
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+    .live-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      background: var(--live);
+      animation: live-pulse 2s ease-in-out infinite;
+      /* Rounded square shape distinguishes from recording's circle for colorblind users */
+    }
+    @keyframes live-pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.4); }
+      50% { opacity: 0.7; box-shadow: 0 0 6px 2px rgba(52, 199, 89, 0.3); }
+    }
+    .live-time {
+      font-size: 20px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-weight: 500;
+      letter-spacing: 0.5px;
+    }
+    .live-utterances {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+    .live-level {
+      height: 3px;
+      margin: 6px 0 8px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .live-level-fill {
+      height: 100%;
+      background: var(--live);
+      opacity: 0.6;
+      border-radius: 2px;
+      transition: width 0.15s ease-out;
+      width: 0%;
+    }
+    .live-actions {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
     }
 
     /* ── Recording bar ── */
     .recording-bar {
       display: none;
-      padding: 12px 20px;
-      background: var(--red-bg);
-      border-bottom: 1px solid rgba(255, 69, 58, 0.2);
-      animation: recording-pulse 2s ease-in-out infinite;
+      padding: 16px;
+      background: rgba(229, 83, 75, 0.06);
+      border-bottom: 1px solid rgba(229, 83, 75, 0.10);
+      animation: recording-breathe 3s ease-in-out infinite;
+      box-shadow: inset 0 0 24px rgba(229, 83, 75, 0.04);
     }
 
-    .recording-bar.active { display: block; }
+    .recording-bar.active {
+      display: block;
+      animation: recording-enter 0.3s ease-out, recording-breathe 3s ease-in-out 0.3s infinite;
+    }
 
-    @keyframes recording-pulse {
-      0%, 100% { background: var(--red-bg); }
-      50% { background: rgba(255, 69, 58, 0.18); }
+    @keyframes recording-enter {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes recording-breathe {
+      0%, 100% { background: rgba(229, 83, 75, 0.06); }
+      50% { background: rgba(229, 83, 75, 0.10); }
     }
 
     .recording-bar .top-row {
@@ -408,9 +554,11 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      font-size: 13px;
+      font-size: 11px;
       font-weight: 600;
       color: var(--red);
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
     }
 
     .recording-dot {
@@ -418,16 +566,23 @@
       height: 8px;
       border-radius: 50%;
       background: var(--red);
-      animation: blink 1s step-end infinite;
+      animation: recording-glow 2s ease-in-out infinite;
     }
 
     @keyframes blink { 50% { opacity: 0; } }
 
+    @keyframes recording-glow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
     .recording-time {
-      font-size: 13px;
+      font-size: 20px;
       font-variant-numeric: tabular-nums;
-      color: var(--text-secondary);
+      color: var(--text);
       font-family: var(--font-mono);
+      font-weight: 500;
+      letter-spacing: 0.5px;
     }
 
     /* ── Audio visualizer ── */
@@ -435,18 +590,20 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 2px;
-      height: 28px;
-      margin: 6px 0 8px;
+      gap: 1.5px;
+      height: 36px;
+      margin: 10px 0 12px;
+      -webkit-mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+      mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
     }
 
     .audio-viz .bar {
-      width: 3px;
-      border-radius: 2px;
+      width: 2px;
+      border-radius: 999px;
       background: var(--red);
       opacity: 0.6;
-      min-height: 3px;
-      transition: height 0.08s ease-out;
+      min-height: 2px;
+      transition: height 0.1s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     .recording-actions {
@@ -457,16 +614,31 @@
     .recording-actions .btn {
       flex: 1;
     }
+    .recording-source-health {
+      display: none;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 8px 0 12px;
+    }
+    .recording-source-health.active { display: flex; }
 
     /* ── Processing bar ── */
     .processing-bar {
       display: none;
-      padding: 12px 20px;
-      background: rgba(10, 132, 255, 0.08);
-      border-bottom: 1px solid rgba(10, 132, 255, 0.18);
+      padding: 16px;
+      background: rgba(77, 168, 217, 0.05);
+      border-bottom: 1px solid rgba(77, 168, 217, 0.08);
     }
 
-    .processing-bar.active { display: block; }
+    .processing-bar.active {
+      display: block;
+      animation: processing-enter 0.3s ease-out;
+    }
+
+    @keyframes processing-enter {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
 
     .processing-row {
       display: flex;
@@ -475,12 +647,12 @@
     }
 
     .processing-spinner {
-      width: 14px;
-      height: 14px;
-      border: 2px solid rgba(10, 132, 255, 0.18);
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(77, 168, 217, 0.15);
       border-top-color: var(--accent);
       border-radius: 50%;
-      animation: processing-spin 0.8s linear infinite;
+      animation: processing-spin 0.9s linear infinite;
       flex-shrink: 0;
     }
 
@@ -491,6 +663,70 @@
     .processing-copy {
       min-width: 0;
       flex: 1;
+    }
+
+    .processing-summary {
+      font-size: 11px;
+      color: var(--text-tertiary, #888);
+      margin-top: 6px;
+    }
+
+    .processing-jobs {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .processing-job {
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      background: var(--bg-elevated);
+      border: 1px solid rgba(77, 168, 217, 0.08);
+    }
+
+    .processing-job-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .processing-job-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .processing-job-state {
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .processing-job-detail {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .processing-job-meta {
+      font-size: 11px;
+      color: var(--text-tertiary, #888);
+      margin-top: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .processing-job-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      flex-wrap: wrap;
     }
 
     .processing-title {
@@ -505,20 +741,34 @@
       color: var(--text-secondary);
       margin-top: 2px;
     }
+    .processing-elapsed {
+      font-size: 11px;
+      color: var(--text-tertiary, #888);
+      margin-top: 1px;
+      font-variant-numeric: tabular-nums;
+    }
 
     /* ── Output notice ── */
     .output-notice {
       display: none;
-      padding: 12px 20px;
-      background: rgba(48, 209, 88, 0.08);
-      border-bottom: 1px solid rgba(48, 209, 88, 0.16);
+      padding: 16px;
+      background: rgba(70, 192, 114, 0.06);
+      border-bottom: 1px solid rgba(70, 192, 114, 0.10);
     }
 
-    .output-notice.active { display: block; }
+    .output-notice.active {
+      display: block;
+      animation: notice-enter 0.3s ease-out;
+    }
+
+    @keyframes notice-enter {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
     .output-notice.capture {
-      background: rgba(255, 159, 10, 0.08);
-      border-bottom-color: rgba(255, 159, 10, 0.16);
+      background: rgba(212, 160, 60, 0.08);
+      border-bottom-color: rgba(212, 160, 60, 0.16);
     }
 
     .output-notice-row {
@@ -536,13 +786,13 @@
       justify-content: center;
       font-size: 14px;
       flex-shrink: 0;
-      background: rgba(48, 209, 88, 0.16);
+      background: rgba(70, 192, 114, 0.16);
       color: var(--green);
     }
 
     .output-notice.capture .output-notice-icon {
-      background: rgba(255, 159, 10, 0.16);
-      color: #ff9f0a;
+      background: rgba(212, 160, 60, 0.16);
+      color: var(--orange);
     }
 
     .output-notice-copy {
@@ -581,7 +831,7 @@
     /* ── Quick note inline ── */
     .quick-note {
       display: none;
-      padding: 0 20px 12px;
+      padding: 0 16px 12px;
     }
 
     .quick-note.active { display: block; }
@@ -607,22 +857,22 @@
 
     .quick-note-row input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.12);
+      box-shadow: 0 0 0 3px rgba(77, 168, 217, 0.12);
     }
 
     .quick-note-row input::placeholder { color: var(--text-tertiary); }
 
     /* ── Search ── */
     .search-wrap {
-      padding: 0 20px 12px;
+      padding: 0 16px 12px;
     }
 
     .search-box {
       width: 100%;
       padding: 9px 12px 9px 34px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--bg-elevated);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,0.03);
       color: var(--text);
       font-family: inherit;
       font-size: 13px;
@@ -632,8 +882,9 @@
     }
 
     .search-box:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.12);
+      border-color: rgba(77, 168, 217, 0.4);
+      box-shadow: 0 0 0 3px rgba(77, 168, 217, 0.08);
+      background: rgba(255,255,255,0.05);
     }
 
     .search-box::placeholder { color: var(--text-tertiary); }
@@ -645,7 +896,7 @@
     .search-icon::before {
       content: "⌕";
       position: absolute;
-      left: 32px;
+      left: 28px;
       top: 9px;
       font-size: 16px;
       color: var(--text-tertiary);
@@ -657,44 +908,79 @@
     .meetings-scroll {
       flex: 1;
       overflow-y: auto;
-      padding: 0 20px;
+      padding: 0 16px;
+      mask-image: linear-gradient(transparent, black 8px, black calc(100% - 8px), transparent);
+      -webkit-mask-image: linear-gradient(transparent, black 8px, black calc(100% - 8px), transparent);
     }
 
-    .meetings-scroll::-webkit-scrollbar { width: 6px; }
+    .meetings-scroll::-webkit-scrollbar { width: 5px; }
     .meetings-scroll::-webkit-scrollbar-track { background: transparent; }
     .meetings-scroll::-webkit-scrollbar-thumb {
-      background: var(--bg-hover);
-      border-radius: 3px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 999px;
+    }
+    .meetings-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(255,255,255,0.14);
     }
 
     .date-group {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-tertiary);
-      padding: 12px 0 6px;
+      font-size: 12px;
+      font-family: var(--font-display);
+      font-weight: 500;
+      text-transform: none;
+      letter-spacing: -0.1px;
+      color: var(--orange);
+      padding: 24px 4px 8px;
+      border-bottom: 1px solid rgba(212, 160, 60, 0.06);
+      margin-bottom: 2px;
     }
 
     .date-group:first-child { padding-top: 4px; }
+
+    /* ── Staggered entrance ── */
+    @keyframes list-enter {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .meeting-item, .date-group {
+      animation: list-enter 0.25s ease-out both;
+    }
+
+    .meetings-scroll > :nth-child(1) { animation-delay: 0ms; }
+    .meetings-scroll > :nth-child(2) { animation-delay: 30ms; }
+    .meetings-scroll > :nth-child(3) { animation-delay: 55ms; }
+    .meetings-scroll > :nth-child(4) { animation-delay: 75ms; }
+    .meetings-scroll > :nth-child(5) { animation-delay: 95ms; }
+    .meetings-scroll > :nth-child(6) { animation-delay: 110ms; }
+    .meetings-scroll > :nth-child(7) { animation-delay: 125ms; }
+    .meetings-scroll > :nth-child(8) { animation-delay: 140ms; }
+    .meetings-scroll > :nth-child(9) { animation-delay: 155ms; }
+    .meetings-scroll > :nth-child(10) { animation-delay: 170ms; }
+    .meetings-scroll > :nth-child(n+11) { animation-delay: 185ms; }
 
     .meeting-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 12px;
-      border-radius: 8px;
+      gap: 6px;
+      position: relative;
+      padding: 12px 16px 12px 28px;
+      border-radius: var(--radius);
       cursor: pointer;
-      transition: background 0.12s;
+      transition: background 0.15s ease, box-shadow 0.15s ease;
     }
 
-    .meeting-item:hover { background: var(--bg-hover); }
-    .meeting-item:active { background: #48484a; }
+    .meeting-item:hover {
+      background: var(--bg-hover);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+    .meeting-item:active { background: rgba(255,255,255,0.08); box-shadow: none; }
 
     .meeting-info { flex: 1; min-width: 0; }
 
     .meeting-title {
-      font-size: 13px;
+      font-size: 15px;
       font-weight: 600;
       color: var(--text);
       white-space: nowrap;
@@ -704,8 +990,10 @@
 
     .meeting-meta {
       font-size: 11px;
-      color: var(--text-secondary);
-      margin-top: 2px;
+      font-family: var(--font-mono);
+      color: var(--text-tertiary);
+      margin-top: 3px;
+      letter-spacing: 0.2px;
     }
 
     .meeting-snippet {
@@ -720,19 +1008,39 @@
     }
 
     .meeting-badge {
-      font-size: 10px;
-      font-weight: 600;
-      padding: 2px 8px;
-      border-radius: 10px;
-      background: var(--bg-elevated);
-      color: var(--text-secondary);
-      flex-shrink: 0;
-      margin-left: 8px;
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      padding: 0;
+      font-size: 0;
+      overflow: hidden;
+      margin: 0;
+      background: rgba(255,255,255,0.25);
+      transition: background 0.15s ease;
+    }
+
+    .meeting-item:hover .meeting-badge {
+      background: rgba(255,255,255,0.35);
     }
 
     .meeting-badge.memo {
-      background: rgba(191, 90, 242, 0.12);
-      color: var(--purple);
+      background: rgba(155, 133, 196, 0.7);
+    }
+
+    .meeting-item:hover .meeting-badge.memo {
+      background: rgba(155, 133, 196, 0.85);
+    }
+
+    .meeting-badge.dictation {
+      background: rgba(77, 168, 217, 0.7);
+    }
+
+    .meeting-item:hover .meeting-badge.dictation {
+      background: rgba(77, 168, 217, 0.85);
     }
 
     /* ── Meeting detail view ── */
@@ -777,6 +1085,27 @@
       flex: 1;
     }
 
+    .detail-close-x {
+      position: absolute;
+      top: 12px;
+      right: 14px;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      font-size: 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease, color 0.15s ease;
+      -webkit-app-region: no-drag;
+      z-index: 1;
+    }
+    .detail-close-x:hover { background: var(--bg-hover); color: var(--text-secondary); }
+
     .detail-title {
       font-size: 18px;
       font-family: var(--font-display);
@@ -808,12 +1137,56 @@
       display: flex;
       gap: 8px;
       flex-shrink: 0;
+      padding-right: 28px;
     }
 
     .detail-scroll {
       overflow-y: auto;
       padding: 0 20px 20px;
     }
+
+    .detail-bottom-cta {
+      margin-top: 20px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: rgba(77, 168, 217, 0.06);
+      border: 1px solid rgba(77, 168, 217, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .detail-bottom-cta-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    .detail-bottom-cta .btn-primary {
+      flex-shrink: 0;
+    }
+
+    .meeting-chat-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      color: var(--text-tertiary);
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease, color 0.15s ease;
+      -webkit-app-region: no-drag;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+    }
+    .meeting-item:hover .meeting-chat-btn { opacity: 1; }
+    .meeting-chat-btn:hover { background: rgba(77, 168, 217, 0.15); color: var(--accent); }
 
     .detail-context {
       margin-top: 16px;
@@ -837,6 +1210,107 @@
       line-height: 1.5;
       color: var(--text-secondary);
       white-space: pre-wrap;
+    }
+
+    .detail-action-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .detail-action-item {
+      display: flex;
+      gap: 8px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--text-secondary);
+    }
+
+    .detail-action-check {
+      flex-shrink: 0;
+      font-size: 14px;
+    }
+
+    .detail-action-text {
+      min-width: 0;
+    }
+
+    .detail-speakers {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+    }
+
+    .detail-speakers-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 8px;
+    }
+
+    .speaker-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      font-size: 13px;
+    }
+
+    .speaker-label {
+      color: var(--text-tertiary);
+      font-family: var(--font-mono, monospace);
+      font-size: 11px;
+      min-width: 80px;
+    }
+
+    .speaker-name {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .speaker-badge {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .speaker-badge.high {
+      background: rgba(52, 199, 89, 0.15);
+      color: var(--live);
+    }
+
+    .speaker-badge.medium {
+      background: rgba(212, 160, 60, 0.15);
+      color: var(--orange);
+    }
+
+    .speaker-badge.low {
+      background: rgba(142, 142, 147, 0.15);
+      color: var(--text-tertiary);
+    }
+
+    .speaker-confirm-btn {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .speaker-confirm-btn:hover {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
     }
 
     .detail-section {
@@ -869,7 +1343,7 @@
     }
 
     mark {
-      background: rgba(255, 214, 10, 0.3);
+      background: rgba(212, 160, 60, 0.35);
       color: var(--text);
       padding: 0 2px;
       border-radius: 3px;
@@ -890,9 +1364,9 @@
       color: var(--text-tertiary);
     }
 
-    .empty-state .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
-    .empty-state .title { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
-    .empty-state .sub { font-size: 12px; margin-top: 4px; }
+    .empty-state .icon { font-size: 40px; margin-bottom: 12px; opacity: 0.35; filter: grayscale(0.3); }
+    .empty-state .title { font-size: 15px; font-family: var(--font-display); font-weight: 600; color: var(--text-secondary); }
+    .empty-state .sub { font-size: 12px; margin-top: 6px; line-height: 1.5; }
 
     /* ── About view ── */
     .about-overlay {
@@ -1023,6 +1497,14 @@
       padding: 8px 10px;
     }
 
+    .shortcut-recorder-btn {
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .shortcut-recorder-btn:hover {
+      border-color: var(--accent);
+    }
+
     .about-controls-group {
       flex: 1;
     }
@@ -1035,7 +1517,7 @@
     }
 
     .about-controls-meta.error {
-      color: #ff9f0a;
+      color: var(--orange);
     }
 
     /* ── Readiness view ── */
@@ -1140,13 +1622,18 @@
     }
 
     .readiness-state.ready {
-      background: rgba(48, 209, 88, 0.12);
+      background: rgba(70, 192, 114, 0.12);
       color: var(--green);
     }
 
     .readiness-state.attention {
-      background: rgba(255, 159, 10, 0.12);
-      color: #ff9f0a;
+      background: rgba(212, 160, 60, 0.12);
+      color: var(--orange);
+    }
+
+    .readiness-state.unsupported {
+      background: rgba(255,255,255,0.06);
+      color: var(--text-secondary);
     }
 
     .readiness-optional {
@@ -1249,8 +1736,8 @@
     .recovery-kind {
       padding: 3px 8px;
       border-radius: 999px;
-      background: rgba(255, 159, 10, 0.12);
-      color: #ff9f0a;
+      background: rgba(212, 160, 60, 0.12);
+      color: var(--orange);
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.4px;
@@ -1281,70 +1768,125 @@
 
     /* ── Footer ── */
     .footer {
-      padding: 12px 20px 16px;
-      border-top: 1px solid var(--border);
+      padding: 8px 12px 12px;
+      border-top: none;
+      position: relative;
+    }
+
+    .footer::before {
+      content: '';
+      position: absolute;
+      top: -8px;
+      left: 0;
+      right: 0;
+      height: 8px;
+      background: linear-gradient(transparent, rgba(28, 28, 30, 0.8));
+      pointer-events: none;
     }
 
     .footer-actions {
       display: grid;
-      grid-template-columns: 1.35fr 1fr 1fr;
-      gap: 10px;
+      grid-template-columns: 1.3fr 0.55fr 1fr 0.7fr;
+      gap: 5px;
+      background: var(--bg-elevated);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 14px;
+      padding: 6px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.12), 0 0 0 1px rgba(255,255,255,0.02);
     }
 
     .footer-actions .btn {
       width: 100%;
+      border-radius: var(--radius);
+      font-size: 12px;
+      white-space: nowrap;
     }
 
     /* ── Buttons ── */
     .btn {
-      padding: 7px 16px;
+      padding: 7px 14px;
       border-radius: 8px;
       border: none;
       font-family: inherit;
       font-size: 13px;
       font-weight: 500;
       cursor: pointer;
-      transition: all 0.12s;
+      transition: all 0.15s ease;
       -webkit-app-region: no-drag;
     }
 
     .btn-primary {
-      background: var(--accent);
+      background: linear-gradient(135deg, var(--accent) 0%, #3d94c2 100%);
       color: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 0 12px rgba(77, 168, 217, 0.15);
     }
 
     .footer-actions .btn-primary {
       width: 100%;
     }
 
-    .btn-primary:hover { background: var(--accent-hover); }
-    .btn-primary:active { transform: scale(0.98); }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, var(--accent-hover) 0%, #4da8d9 100%);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.25), 0 0 18px rgba(77, 168, 217, 0.2);
+    }
+    .btn-primary:active { transform: scale(0.98); box-shadow: 0 0 8px rgba(77, 168, 217, 0.1); }
 
     .btn-danger {
-      background: var(--red);
-      color: #fff;
+      background: rgba(229, 83, 75, 0.12);
+      color: var(--red);
+      border: 1px solid rgba(229, 83, 75, 0.3);
+      box-shadow: none;
+      font-weight: 600;
     }
 
-    .btn-danger:hover { background: #ff6961; }
+    .btn-danger:hover { background: rgba(229, 83, 75, 0.2); border-color: rgba(229, 83, 75, 0.5); }
+    .btn-danger:active { transform: scale(0.98); background: rgba(229, 83, 75, 0.25); }
 
     .btn-secondary {
-      background: var(--bg-elevated);
-      color: var(--text);
-      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      color: var(--text-secondary);
+      border: 1px solid rgba(255,255,255,0.06);
     }
 
-    .btn-secondary:hover { background: var(--bg-hover); }
+    .btn-secondary:hover { background: rgba(255,255,255,0.09); color: var(--text); }
 
     .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+    .device-picker {
+      background: var(--bg-elevated);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 6px 8px;
+      font-size: 11px;
+      font-family: inherit;
+      max-width: 140px;
+      cursor: pointer;
+      -webkit-appearance: none;
+      outline: none;
+    }
+    .device-picker:hover { border-color: var(--text-tertiary); }
+    .device-picker:focus { border-color: var(--blue); }
+
+    .btn-icon {
+      padding: 4px 7px;
+      font-size: 15px;
+      line-height: 1;
+      border: none !important;
+      background: transparent !important;
+      color: var(--text-tertiary);
+      border-radius: 6px;
+    }
+    .btn-icon:hover { background: var(--bg-hover) !important; color: var(--text-secondary); }
 
     /* ── Upcoming meeting ── */
     .upcoming {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 10px 20px;
-      background: rgba(10, 132, 255, 0.08);
-      border-bottom: 1px solid rgba(10, 132, 255, 0.15);
+      padding: 10px 16px;
+      background: rgba(77, 168, 217, 0.06);
+      border-bottom: 1px solid rgba(77, 168, 217, 0.1);
     }
 
     .upcoming-icon { font-size: 16px; flex-shrink: 0; }
@@ -1371,17 +1913,55 @@
     /* ── Call detected banner ── */
     .call-detected {
       display: none;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
-      padding: 10px 20px;
-      background: rgba(48, 209, 88, 0.08);
-      border-bottom: 1px solid rgba(48, 209, 88, 0.15);
+      padding: 12px 16px;
+      background: rgba(70, 192, 114, 0.08);
+      border-bottom: 1px solid rgba(70, 192, 114, 0.12);
     }
     .call-detected.active { display: flex; }
     .call-detected-icon { font-size: 16px; flex-shrink: 0; }
     .call-detected-info { flex: 1; min-width: 0; }
-    .call-detected-title { font-size: 12px; font-weight: 500; color: var(--text); }
-    .call-detected-subtitle { font-size: 11px; color: var(--green); font-weight: 500; }
+    .call-detected-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .call-detected-subtitle { font-size: 11px; color: var(--green); font-weight: 600; margin-top: 2px; }
+    .call-detected-detail { font-size: 11px; color: var(--text-secondary); margin-top: 6px; line-height: 1.35; }
+    .call-detected-health { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+    /* ── Update available banner ── */
+    .update-banner {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: rgba(77, 168, 217, 0.08);
+      border-bottom: 1px solid rgba(77, 168, 217, 0.12);
+    }
+    .update-banner.active { display: flex; animation: processing-enter 0.3s ease-out; }
+    .update-banner-info { flex: 1; min-width: 0; }
+    .update-banner-title { font-size: 12px; font-weight: 600; color: var(--text); }
+    .update-banner-sub { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+    .update-banner-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .update-banner-actions .btn { font-size: 11px; }
+    .call-health-chip {
+      font-size: 11px;
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: rgba(255,255,255,0.05);
+      color: var(--text-secondary);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .call-health-chip.live {
+      color: var(--green);
+      border-color: rgba(70, 192, 114, 0.3);
+      background: rgba(70, 192, 114, 0.08);
+    }
+    .call-detected-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      margin-left: 8px;
+    }
   </style>
 </head>
 <body>
@@ -1396,8 +1976,10 @@
       </div>
     </div>
     <div class="header-actions">
-      <button class="btn btn-secondary btn-sm" id="btn-settings">Settings</button>
+      <button class="btn btn-icon" id="btn-settings" title="Settings (⌘,)">⚙</button>
+      <button class="header-chip dictation-shortcut" id="dictation-shortcut-chip">Dictate</button>
       <button class="header-chip readiness" id="btn-readiness">Readiness</button>
+      <button class="header-chip" id="btn-jobs">Jobs <span id="jobs-count">0</span></button>
       <button class="header-chip" id="btn-recovery">Recovery <span id="recovery-count">0</span></button>
       <span class="status-pill" id="status-pill">idle</span>
     </div>
@@ -1412,10 +1994,30 @@
       </div>
       <span class="recording-time" id="recording-time">0:00</span>
     </div>
+    <div class="recording-source-health" id="recording-source-health">
+      <span class="call-health-chip" id="recording-health-mic">Mic waiting</span>
+      <span class="call-health-chip" id="recording-health-audio">Call audio waiting</span>
+    </div>
     <div class="audio-viz" id="audio-viz"></div>
     <div class="recording-actions">
       <button class="btn btn-secondary btn-sm" id="btn-note-inline" title="Add a note">Add Note</button>
       <button class="btn btn-danger btn-sm" id="btn-stop">Stop Recording</button>
+    </div>
+  </div>
+
+  <!-- Live transcript bar (hidden when not in live mode) -->
+  <div class="live-bar" id="live-bar" role="status" aria-live="polite">
+    <div class="top-row">
+      <div class="live-indicator">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span>Live Transcript</span>
+      </div>
+      <span class="live-time" id="live-time">0:00</span>
+    </div>
+    <div class="live-level"><div class="live-level-fill" id="live-level-fill"></div></div>
+    <div class="live-utterances" id="live-utterances">0 utterances</div>
+    <div class="live-actions">
+      <button class="btn btn-secondary btn-sm" id="btn-stop-live">Stop Live</button>
     </div>
   </div>
 
@@ -1426,8 +2028,11 @@
       <div class="processing-copy">
         <div class="processing-title" id="processing-title">Processing recording</div>
         <div class="processing-stage" id="processing-stage">Preparing transcript...</div>
+        <div class="processing-elapsed" id="processing-elapsed"></div>
+        <div class="processing-summary" id="processing-summary"></div>
       </div>
     </div>
+    <div class="processing-jobs" id="processing-jobs"></div>
   </div>
 
   <!-- Output notice -->
@@ -1440,7 +2045,7 @@
         <div class="output-notice-path" id="output-notice-path"></div>
         <div class="output-notice-actions">
           <button class="btn btn-secondary btn-sm" id="btn-open-output">Open</button>
-          <button class="btn btn-secondary btn-sm" id="btn-open-output-folder">Show in Finder</button>
+          <button class="btn btn-secondary btn-sm" id="btn-open-output-folder">Show in Folder</button>
           <button class="btn btn-secondary btn-sm" id="btn-dismiss-output">Dismiss</button>
         </div>
       </div>
@@ -1457,7 +2062,7 @@
 
   <!-- Search -->
   <div class="search-wrap search-icon">
-    <input class="search-box" type="text" placeholder="Search meetings and memos..." id="search-input" />
+    <input class="search-box" type="text" placeholder="Search meetings, memos, and dictations..." id="search-input" />
   </div>
 
   <!-- Upcoming meeting suggestion -->
@@ -1475,10 +2080,29 @@
     <div class="call-detected-icon">📞</div>
     <div class="call-detected-info">
       <div class="call-detected-title" id="call-detected-title">Call detected</div>
-      <div class="call-detected-subtitle">Tap to start recording</div>
+      <div class="call-detected-subtitle" id="call-detected-subtitle">Ready to record this call</div>
+      <div class="call-detected-detail" id="call-detected-detail">Minutes will stay ready while this call is active.</div>
+      <div class="call-detected-health">
+        <span class="call-health-chip" id="call-health-mic">Mic waiting</span>
+        <span class="call-health-chip" id="call-health-audio">Call audio waiting</span>
+      </div>
     </div>
-    <button class="btn btn-primary btn-sm" id="btn-record-call">Record</button>
-    <button class="btn btn-secondary btn-sm" id="btn-dismiss-call">Dismiss</button>
+    <div class="call-detected-actions">
+      <button class="btn btn-primary btn-sm" id="btn-record-call">Record</button>
+      <button class="btn btn-secondary btn-sm" id="btn-dismiss-call">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- Update available banner -->
+  <div class="update-banner" id="update-banner">
+    <div class="update-banner-info">
+      <div class="update-banner-title" id="update-banner-title">Update available</div>
+      <div class="update-banner-sub" id="update-banner-sub">A new version is ready to install</div>
+    </div>
+    <div class="update-banner-actions">
+      <button class="btn btn-primary btn-sm" id="btn-restart-update">Restart Now</button>
+      <button class="btn btn-secondary btn-sm" id="btn-dismiss-update">Later</button>
+    </div>
   </div>
 
   <!-- Meeting list -->
@@ -1492,7 +2116,13 @@
   <!-- Footer -->
   <div class="footer" id="footer">
     <div class="footer-actions">
-      <button class="btn btn-primary" id="btn-record">Start Recording</button>
+      <div style="display: flex; gap: 4px; align-items: center;">
+        <button class="btn btn-primary" id="btn-record">Start Recording</button>
+        <select id="device-picker" class="device-picker" title="Select microphone">
+          <option value="">System Default</option>
+        </select>
+      </div>
+      <button class="btn btn-secondary" id="btn-live" title="Start live transcription — ask your agent in Recall for coaching" aria-label="Start live transcription">Live</button>
       <button class="btn btn-secondary" id="btn-quick-thought">Quick Thought</button>
       <button class="btn btn-secondary" id="btn-assistant" aria-expanded="false">Recall <span class="recall-nudge" id="recall-nudge" aria-label="Recall has new content"></span></button>
     </div>
@@ -1531,16 +2161,17 @@
 
   <!-- In-app meeting detail view -->
   <div class="detail-overlay" id="detail-overlay">
-    <div class="detail-card" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+    <div class="detail-card" role="dialog" aria-modal="true" aria-labelledby="detail-title" style="position:relative;">
+      <button class="detail-close-x" id="btn-detail-close" aria-label="Close">&times;</button>
       <div class="detail-header">
         <div class="detail-header-copy">
           <div class="detail-title" id="detail-title">Meeting</div>
           <div class="detail-meta" id="detail-meta"></div>
         </div>
         <div class="detail-actions">
-          <button class="btn btn-secondary btn-sm" id="btn-discuss-ai">Discuss with Agent</button>
+          <button class="btn btn-primary btn-sm" id="btn-discuss-ai">Discuss with Agent</button>
           <button class="btn btn-secondary btn-sm" id="btn-open-external">Open in Editor</button>
-          <button class="btn btn-secondary btn-sm" id="btn-detail-close">Close</button>
+          <button class="btn btn-danger btn-sm" id="btn-delete-meeting">Delete</button>
         </div>
       </div>
       <div class="detail-scroll" id="detail-scroll">
@@ -1569,12 +2200,28 @@
       <div class="recovery-header">
         <div>
           <div class="recovery-title" id="recovery-title">Recovery Center</div>
-          <div class="recovery-sub">Retry preserved captures and watched files that failed to process, or open them directly in Finder.</div>
+          <div class="recovery-sub" id="recovery-subtitle">Retry preserved captures and watched files that failed to process, or open them directly in a folder.</div>
         </div>
         <button class="btn btn-secondary btn-sm" id="btn-recovery-close">Close</button>
       </div>
       <div class="recovery-scroll" id="recovery-scroll">
         <div class="recovery-empty">No recovery items right now.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jobs -->
+  <div class="recovery-overlay" id="jobs-overlay">
+    <div class="recovery-card" role="dialog" aria-modal="true" aria-labelledby="jobs-title">
+      <div class="recovery-header">
+        <div>
+          <div class="recovery-title" id="jobs-title">Jobs Center</div>
+          <div class="recovery-sub" id="jobs-subtitle">Background processing jobs for recent recordings. Open transcripts early, retry failures, and keep moving.</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btn-jobs-close">Close</button>
+      </div>
+      <div class="recovery-scroll" id="jobs-scroll">
+        <div class="recovery-empty">No processing jobs right now.</div>
       </div>
     </div>
   </div>
@@ -1610,12 +2257,12 @@
           <div class="about-item-body">Built to work well with Claude Desktop, Claude Code, Cowork, Codex, and other tool-calling assistants.</div>
         </div>
       </div>
-      <div class="about-footer">
+      <div class="about-footer" id="about-tray-copy">
         Minutes is open source, markdown-backed, and designed so the artifact remains valuable even outside this app. Power-user tray actions copy the latest summary or transcript and try to paste it into your previous app when macOS automation allows it.
       </div>
       <div class="about-controls">
         <div class="about-controls-copy">
-          Show native completion notifications when processing finishes in the background.
+          Show completion alerts when processing finishes in the background.
         </div>
         <button class="btn btn-secondary btn-sm toggle-btn" id="btn-toggle-notifications">On</button>
       </div>
@@ -1650,7 +2297,7 @@
       <div style="margin-bottom: 16px;">
         <div class="about-item-title">GENERAL</div>
         <div class="about-controls">
-          <div class="about-controls-copy">Show native completion notifications</div>
+          <div class="about-controls-copy">Show completion alerts</div>
           <button class="btn btn-secondary btn-sm toggle-btn" id="settings-notifications">On</button>
         </div>
         <div class="about-controls">
@@ -1658,23 +2305,37 @@
           <button class="btn btn-secondary btn-sm toggle-btn" id="settings-cues">On</button>
         </div>
         <div class="about-controls">
+          <div class="about-controls-copy">Open Minutes at login</div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-autostart">Off</button>
+        </div>
+        <!-- Quick Thought shortcut (unified recorder) -->
+        <div class="about-controls">
           <div class="about-controls-group">
-            <div class="about-controls-copy">Global hotkey for quick-thought capture</div>
-            <select class="shortcut-select" id="settings-hotkey-shortcut" style="margin-top: 6px;"></select>
-            <div class="about-controls-meta" id="settings-hotkey-status"></div>
+            <div class="about-controls-copy">Quick Thought shortcut</div>
+            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+              <button id="shortcut-recorder-quick_thought" class="btn btn-secondary btn-sm shortcut-recorder-btn" style="min-width: 140px; font-family: var(--font-mono); font-size: 12px;" data-slot="quick_thought">&#8984; Shift M</button>
+              <span class="special-key-link" style="font-size: 11px; color: var(--text-tertiary); cursor: pointer;" data-slot="quick_thought">or <u>Caps Lock</u> / <u>fn</u></span>
+            </div>
+            <div class="about-controls-meta" id="shortcut-status-quick_thought">Hold to record a quick thought, or tap to lock and tap again to stop.</div>
           </div>
-          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-hotkey">Off</button>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="shortcut-toggle-quick_thought">Off</button>
         </div>
       </div>
 
       <!-- Dictation -->
       <div style="margin-bottom: 16px;">
         <div class="about-item-title">DICTATION</div>
-        <div class="about-controls" style="opacity: 0.5;">
+        <!-- Dictation shortcut (unified recorder) -->
+        <div class="about-controls">
           <div class="about-controls-group">
-            <div class="about-controls-copy">Dictation hotkey — coming soon</div>
-            <div class="about-controls-meta">Native hotkey (Caps Lock) requires a signed build. Use <code style="font-family: var(--font-mono); font-size: 11px; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px;">minutes dictate</code> in the terminal or MCP tools for now.</div>
+            <div class="about-controls-copy">Dictation shortcut</div>
+            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
+              <button id="shortcut-recorder-dictation" class="btn btn-secondary btn-sm shortcut-recorder-btn" style="min-width: 140px; font-family: var(--font-mono); font-size: 12px;" data-slot="dictation">&#8984; Shift Space</button>
+              <span class="special-key-link" style="font-size: 11px; color: var(--text-tertiary); cursor: pointer;" data-slot="dictation">or <u>Caps Lock</u> / <u>fn</u></span>
+            </div>
+            <div class="about-controls-meta" id="shortcut-status-dictation">Hold to dictate, or tap to lock and tap again to stop.</div>
           </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="shortcut-toggle-dictation">Off</button>
         </div>
         <div class="about-controls">
           <div class="about-controls-group">
@@ -1705,6 +2366,23 @@
         </div>
       </div>
 
+      <!-- Live Transcript -->
+      <div style="margin-bottom: 16px;">
+        <div class="about-item-title">LIVE TRANSCRIPT</div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Keyboard shortcut</div>
+            <select class="shortcut-select" id="settings-live-shortcut-select" style="margin-top: 6px;">
+              <option value="CmdOrCtrl+Shift+L">Cmd+Shift+L</option>
+              <option value="CmdOrCtrl+Alt+L">Cmd+Option+L</option>
+              <option value="CmdOrCtrl+Shift+T">Cmd+Shift+T</option>
+            </select>
+            <div class="about-controls-meta">Toggle live transcript on/off from any app.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-live-shortcut">Off</button>
+        </div>
+      </div>
+
       <!-- Transcription -->
       <div style="margin-bottom: 16px;">
         <div class="about-item-title">TRANSCRIPTION</div>
@@ -1722,6 +2400,115 @@
               <div class="about-controls-meta" id="settings-model-status" style="flex: 1; margin: 0;"></div>
               <button class="btn btn-secondary btn-sm" id="btn-download-model" style="white-space: nowrap; display: none;">Download</button>
             </div>
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Transcription language</div>
+            <div class="about-controls-meta">Leave this on Auto-detect for mixed or unknown audio. Pick a language only when Whisper is consistently guessing wrong.</div>
+            <select id="settings-whisper-language" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+              <option value="">Auto-detect</option>
+              <option value="af">Afrikaans</option>
+              <option value="am">Amharic</option>
+              <option value="ar">Arabic</option>
+              <option value="as">Assamese</option>
+              <option value="az">Azerbaijani</option>
+              <option value="ba">Bashkir</option>
+              <option value="be">Belarusian</option>
+              <option value="bg">Bulgarian</option>
+              <option value="bn">Bengali</option>
+              <option value="bo">Tibetan</option>
+              <option value="br">Breton</option>
+              <option value="bs">Bosnian</option>
+              <option value="ca">Catalan</option>
+              <option value="cs">Czech</option>
+              <option value="cy">Welsh</option>
+              <option value="da">Danish</option>
+              <option value="de">German</option>
+              <option value="el">Greek</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="et">Estonian</option>
+              <option value="eu">Basque</option>
+              <option value="fa">Persian</option>
+              <option value="fi">Finnish</option>
+              <option value="fo">Faroese</option>
+              <option value="fr">French</option>
+              <option value="gl">Galician</option>
+              <option value="gu">Gujarati</option>
+              <option value="ha">Hausa</option>
+              <option value="haw">Hawaiian</option>
+              <option value="he">Hebrew</option>
+              <option value="hi">Hindi</option>
+              <option value="hr">Croatian</option>
+              <option value="ht">Haitian Creole</option>
+              <option value="hu">Hungarian</option>
+              <option value="hy">Armenian</option>
+              <option value="id">Indonesian</option>
+              <option value="is">Icelandic</option>
+              <option value="it">Italian</option>
+              <option value="ja">Japanese</option>
+              <option value="jw">Javanese</option>
+              <option value="ka">Georgian</option>
+              <option value="kk">Kazakh</option>
+              <option value="km">Khmer</option>
+              <option value="kn">Kannada</option>
+              <option value="ko">Korean</option>
+              <option value="la">Latin</option>
+              <option value="lb">Luxembourgish</option>
+              <option value="ln">Lingala</option>
+              <option value="lo">Lao</option>
+              <option value="lt">Lithuanian</option>
+              <option value="lv">Latvian</option>
+              <option value="mg">Malagasy</option>
+              <option value="mi">Maori</option>
+              <option value="mk">Macedonian</option>
+              <option value="ml">Malayalam</option>
+              <option value="mn">Mongolian</option>
+              <option value="mr">Marathi</option>
+              <option value="ms">Malay</option>
+              <option value="mt">Maltese</option>
+              <option value="my">Myanmar</option>
+              <option value="ne">Nepali</option>
+              <option value="nl">Dutch</option>
+              <option value="nn">Norwegian Nynorsk</option>
+              <option value="no">Norwegian</option>
+              <option value="oc">Occitan</option>
+              <option value="pa">Punjabi</option>
+              <option value="pl">Polish</option>
+              <option value="ps">Pashto</option>
+              <option value="pt">Portuguese</option>
+              <option value="ro">Romanian</option>
+              <option value="ru">Russian</option>
+              <option value="sa">Sanskrit</option>
+              <option value="sd">Sindhi</option>
+              <option value="si">Sinhala</option>
+              <option value="sk">Slovak</option>
+              <option value="sl">Slovenian</option>
+              <option value="sn">Shona</option>
+              <option value="so">Somali</option>
+              <option value="sq">Albanian</option>
+              <option value="sr">Serbian</option>
+              <option value="su">Sundanese</option>
+              <option value="sv">Swedish</option>
+              <option value="sw">Swahili</option>
+              <option value="ta">Tamil</option>
+              <option value="te">Telugu</option>
+              <option value="tg">Tajik</option>
+              <option value="th">Thai</option>
+              <option value="tk">Turkmen</option>
+              <option value="tl">Tagalog</option>
+              <option value="tr">Turkish</option>
+              <option value="tt">Tatar</option>
+              <option value="uk">Ukrainian</option>
+              <option value="ur">Urdu</option>
+              <option value="uz">Uzbek</option>
+              <option value="vi">Vietnamese</option>
+              <option value="yi">Yiddish</option>
+              <option value="yo">Yoruba</option>
+              <option value="zh">Chinese</option>
+              <option value="yue">Cantonese</option>
+            </select>
           </div>
         </div>
         <div class="about-controls">
@@ -1754,6 +2541,36 @@
             </select>
             <div class="about-controls-meta" id="settings-agent-command-status"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- Call Detection -->
+      <div style="margin-bottom: 16px;">
+        <div class="about-item-title">CALL DETECTION</div>
+        <div class="about-controls">
+          <div class="about-controls-copy">Detect calls automatically</div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-call-detection">On</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Polling interval</div>
+            <div class="about-controls-meta">How often to check for active calls (seconds).</div>
+            <input type="number" id="settings-call-detection-polling-interval" min="1" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Cooldown</div>
+            <div class="about-controls-meta">Minutes to wait before re-triggering call detection.</div>
+            <input type="number" id="settings-call-detection-cooldown" min="0" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Google Meet detection (experimental)</div>
+            <div class="about-controls-meta">Opt-in browser integration for Meet in Chrome/Safari. Uses stronger meeting-URL matching, may require macOS browser automation permission, and backs off after failures instead of probing every second.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-call-detection-google-meet">Off</button>
         </div>
       </div>
 
@@ -1810,6 +2627,19 @@
             <div class="about-controls-meta" id="settings-agent-status"></div>
           </div>
         </div>
+        <div class="about-controls" id="settings-skip-permissions-row">
+          <div class="about-controls-copy">Auto-approve all tool calls</div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-skip-permissions">Off</button>
+        </div>
+        <div class="about-controls-meta" id="settings-skip-permissions-hint" style="padding: 0 4px; margin-top: -8px; margin-bottom: 8px;"></div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Extra launch flags</div>
+            <div class="about-controls-meta">Additional CLI arguments passed when starting the agent</div>
+            <input type="text" id="settings-agent-args" placeholder="e.g. --model sonnet" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px; box-sizing: border-box;">
+            <div class="about-controls-meta" id="settings-agent-args-status" style="margin-top: 4px;"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Storage -->
@@ -1817,6 +2647,19 @@
         <div class="about-item-title">STORAGE</div>
         <div id="settings-storage-info" style="font-size: 13px; color: var(--text-secondary); line-height: 1.8; padding: 0 4px;">
           Loading...
+        </div>
+      </div>
+
+      <!-- Diagnostics (Readiness + Recovery moved from header) -->
+      <div style="margin-bottom: 16px;">
+        <div class="about-item-title">DIAGNOSTICS</div>
+        <div class="about-controls">
+          <div class="about-controls-copy">System readiness and audio permission checks</div>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settings-overlay').classList.remove('active');document.getElementById('btn-readiness').click();">Readiness</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-copy">Retry failed captures and unprocessed audio files</div>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('settings-overlay').classList.remove('active');document.getElementById('btn-recovery').click();">Recovery</button>
         </div>
       </div>
 
@@ -1932,10 +2775,16 @@
     const statusPill = document.getElementById('status-pill');
     const recordingBar = document.getElementById('recording-bar');
     const recordingLabel = document.getElementById('recording-label');
+    const recordingSourceHealth = document.getElementById('recording-source-health');
+    const recordingHealthMic = document.getElementById('recording-health-mic');
+    const recordingHealthAudio = document.getElementById('recording-health-audio');
     const processingBar = document.getElementById('processing-bar');
     const processingTitle = document.getElementById('processing-title');
     const recordingTime = document.getElementById('recording-time');
     const processingStage = document.getElementById('processing-stage');
+    const processingElapsed = document.getElementById('processing-elapsed');
+    const processingSummary = document.getElementById('processing-summary');
+    const processingJobsEl = document.getElementById('processing-jobs');
     const outputNotice = document.getElementById('output-notice');
     const outputNoticeIcon = document.getElementById('output-notice-icon');
     const outputNoticeTitle = document.getElementById('output-notice-title');
@@ -1960,27 +2809,52 @@
     const readinessOverlay = document.getElementById('readiness-overlay');
     const readinessButton = document.getElementById('btn-readiness');
     const readinessScroll = document.getElementById('readiness-scroll');
+    const jobsButton = document.getElementById('btn-jobs');
+    const jobsCount = document.getElementById('jobs-count');
+    const jobsOverlay = document.getElementById('jobs-overlay');
+    const jobsScroll = document.getElementById('jobs-scroll');
+    const dictationShortcutChip = document.getElementById('dictation-shortcut-chip');
     const recoveryOverlay = document.getElementById('recovery-overlay');
     const recoveryButton = document.getElementById('btn-recovery');
     const recoveryCount = document.getElementById('recovery-count');
     const recoveryScroll = document.getElementById('recovery-scroll');
+    const recoverySubtitle = document.getElementById('recovery-subtitle');
     const quickThoughtButton = document.getElementById('btn-quick-thought');
+    const openOutputFolderButton = document.getElementById('btn-open-output-folder');
+    const aboutTrayCopy = document.getElementById('about-tray-copy');
 
     let isRecording = false;
     let isProcessing = false;
+    let isLiveTranscript = false;
     let currentMeetingPath = null;
+    const liveBar = document.getElementById('live-bar');
+    // Live bar elements are accessed by ID inline (live-time, live-utterances)
     let currentMeetingDetail = null;
     let activeSearchQuery = '';
     let currentSetup = null;
     let latestOutput = null;
+    let processingJobs = [];
     let readinessItems = [];
     let recoveryItems = [];
+    let jobsHistory = [];
     let notifyOnCompletion = true;
     let playCaptureCues = true;
     let hotkeyEnabled = false;
     let hotkeyShortcut = 'CmdOrCtrl+Shift+M';
+    let dictationShortcutActive = false;
+    let dictationShortcutLabel = 'Dictate';
     let lastOutputKey = null;
     let pollInterval = null;
+    let processingStartTime = null;
+    let processingTimerInterval = null;
+    let desktopCapabilities = {
+      platform: 'other',
+      folderRevealLabel: 'Show in Folder',
+      supportsCalendarIntegration: false,
+      supportsCallDetection: false,
+      supportsTrayArtifactCopy: false,
+      supportsDictationHotkey: false,
+    };
     const NUM_BARS = 32;
     const audioViz = document.getElementById('audio-viz');
     const cues = {
@@ -1989,6 +2863,16 @@
       complete: new Audio('audio/cue-complete.wav'),
       error: new Audio('audio/cue-error.wav'),
     };
+
+    function renderDictationShortcutChip() {
+      if (!dictationShortcutChip) return;
+      if (dictationShortcutActive) {
+        dictationShortcutChip.classList.add('active');
+        dictationShortcutChip.textContent = dictationShortcutLabel;
+      } else {
+        dictationShortcutChip.classList.remove('active');
+      }
+    }
 
     // Create visualizer bars
     for (let i = 0; i < NUM_BARS; i++) {
@@ -2000,6 +2884,43 @@
 
     // History for smooth animation
     const barHeights = new Array(NUM_BARS).fill(3);
+
+    function parentPath(path) {
+      if (!path) return path;
+      const normalized = path.replace(/[\\/]+$/, '');
+      const lastSlash = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+      return lastSlash === -1 ? normalized : normalized.slice(0, lastSlash);
+    }
+
+    function applyDesktopCapabilities(caps) {
+      if (!caps) return;
+      desktopCapabilities = {
+        ...desktopCapabilities,
+        ...caps,
+      };
+
+      openOutputFolderButton.textContent = desktopCapabilities.folderRevealLabel || 'Show in Folder';
+
+      if (recoverySubtitle) {
+        recoverySubtitle.textContent =
+          `Retry preserved captures and watched files that failed to process, or open them directly in ${desktopCapabilities.folderRevealLabel === 'Show in Finder' ? 'Finder' : desktopCapabilities.folderRevealLabel === 'Show in Explorer' ? 'Explorer' : 'a folder'}.`;
+      }
+
+      if (aboutTrayCopy) {
+        aboutTrayCopy.textContent = desktopCapabilities.supportsTrayArtifactCopy
+          ? 'Minutes is open source, markdown-backed, and designed so the artifact remains valuable even outside this app. Power-user tray actions copy the latest summary or transcript and try to paste it into your previous app when macOS automation allows it.'
+          : 'Minutes is open source, markdown-backed, and designed so the artifact remains valuable even outside this app. This desktop build focuses on recording, transcription, search, and Recall today; tray copy/paste automation remains macOS-only for now.';
+      }
+    }
+
+    async function loadDesktopCapabilities() {
+      try {
+        const caps = await invoke('cmd_desktop_capabilities');
+        applyDesktopCapabilities(caps);
+      } catch (e) {
+        console.error('Desktop capabilities:', e);
+      }
+    }
 
     function updateViz(level) {
       const bars = audioViz.children;
@@ -2035,6 +2956,268 @@
       return mode === 'quick-thought' ? 'Processing quick thought' : 'Processing recording';
     }
 
+    function formatIsoElapsed(isoString) {
+      if (!isoString) return '';
+      const start = new Date(isoString).getTime();
+      if (!Number.isFinite(start)) return '';
+      const secs = Math.max(0, Math.floor((Date.now() - start) / 1000));
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return m > 0 ? `${m}:${String(s).padStart(2, '0')} elapsed` : `${s}s elapsed`;
+    }
+
+    function processingStateLabel(job) {
+      switch (job.state) {
+        case 'queued': return 'Queued';
+        case 'transcribing': return 'Transcribing';
+        case 'transcript-only': return 'Transcript Ready';
+        case 'diarizing': return 'Separating Speakers';
+        case 'summarizing': return 'Summarizing';
+        case 'saving': return 'Saving';
+        case 'needs-review': return 'Needs Review';
+        case 'complete': return 'Complete';
+        case 'failed': return 'Failed';
+        default: return 'Processing';
+      }
+    }
+
+    function renderProcessingJobs(jobs) {
+      processingJobs = Array.isArray(jobs) ? jobs : [];
+      processingJobsEl.replaceChildren();
+
+      if (!processingJobs.length) {
+        processingSummary.textContent = '';
+        return;
+      }
+
+      processingSummary.textContent =
+        processingJobs.length > 1
+          ? `${processingJobs.length} recordings are cooking in the background.`
+          : 'You can keep recording while this finishes.';
+
+      for (const job of processingJobs) {
+        const card = document.createElement('div');
+        card.className = 'processing-job';
+
+        const top = document.createElement('div');
+        top.className = 'processing-job-top';
+
+        const title = document.createElement('div');
+        title.className = 'processing-job-title';
+        title.textContent = job.title || 'Queued recording';
+
+        const state = document.createElement('div');
+        state.className = 'processing-job-state';
+        state.textContent = processingStateLabel(job);
+
+        top.appendChild(title);
+        top.appendChild(state);
+
+        const detail = document.createElement('div');
+        detail.className = 'processing-job-detail';
+        detail.textContent =
+          job.stage
+            || (job.state === 'transcript-only'
+              ? 'Transcript is ready. The richer summary is still running.'
+              : 'Waiting for background processing.');
+
+        const meta = document.createElement('div');
+        meta.className = 'processing-job-meta';
+        const elapsed = formatIsoElapsed(job.startedAt || job.createdAt);
+        const mode = job.mode === 'quick-thought' ? 'Quick thought' : 'Meeting';
+        meta.textContent = elapsed ? `${mode} · ${elapsed}` : mode;
+
+        card.appendChild(top);
+        card.appendChild(detail);
+        card.appendChild(meta);
+
+        if (job.outputPath) {
+          const actions = document.createElement('div');
+          actions.className = 'processing-job-actions';
+
+          const openBtn = document.createElement('button');
+          openBtn.className = 'btn btn-secondary btn-sm';
+          openBtn.textContent = job.state === 'transcript-only' ? 'Open Transcript' : 'Open';
+          openBtn.addEventListener('click', async () => {
+            try {
+              await openMeetingDetail(job.outputPath);
+            } catch (e) {
+              console.error('Open processing job:', e);
+            }
+          });
+          actions.appendChild(openBtn);
+
+          card.appendChild(actions);
+        }
+
+        processingJobsEl.appendChild(card);
+      }
+    }
+
+    function updateJobsChip(activeCount) {
+      jobsCount.textContent = String(activeCount || 0);
+      jobsButton.classList.toggle('active', (activeCount || 0) > 0);
+    }
+
+    function closeJobs() {
+      jobsOverlay.classList.remove('active');
+    }
+
+    function formatJobTimestamp(isoString) {
+      if (!isoString) return '';
+      const date = new Date(isoString);
+      if (!Number.isFinite(date.getTime())) return '';
+      return date.toLocaleString([], {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+    }
+
+    async function loadProcessingJobsCenter() {
+      try {
+        jobsHistory = await invoke('cmd_processing_jobs', { limit: 24 });
+      } catch (e) {
+        console.error('Processing jobs:', e);
+        jobsHistory = [];
+      }
+
+      jobsScroll.replaceChildren();
+      if (!jobsHistory.length) {
+        const empty = document.createElement('div');
+        empty.className = 'recovery-empty';
+        empty.textContent = 'No processing jobs right now.';
+        jobsScroll.appendChild(empty);
+        return;
+      }
+
+      const list = document.createElement('div');
+      list.className = 'recovery-list';
+
+      const activeJobs = jobsHistory.filter((job) => !['complete', 'failed', 'needs-review'].includes(job.state));
+      const recentJobs = jobsHistory.filter((job) => ['complete', 'failed', 'needs-review'].includes(job.state));
+
+      function addSection(titleText, jobs) {
+        if (!jobs.length) return;
+        const heading = document.createElement('div');
+        heading.className = 'about-item-title';
+        heading.style.margin = '4px 4px 10px';
+        heading.textContent = titleText;
+        list.appendChild(heading);
+
+        for (const job of jobs) {
+          const card = document.createElement('div');
+          card.className = 'recovery-item';
+
+          const top = document.createElement('div');
+          top.className = 'recovery-item-top';
+
+          const title = document.createElement('div');
+          title.className = 'recovery-item-title';
+          title.textContent = job.title || 'Queued recording';
+
+          const kind = document.createElement('div');
+          kind.className = 'recovery-kind';
+          kind.textContent = processingStateLabel(job);
+
+          top.appendChild(title);
+          top.appendChild(kind);
+
+          const detail = document.createElement('div');
+          detail.className = 'recovery-item-detail';
+          detail.textContent = job.error
+            || job.stage
+            || (job.state === 'complete'
+              ? 'Finished processing.'
+              : job.state === 'needs-review'
+                ? 'Transcript needs review. Raw capture was preserved for retry.'
+              : job.state === 'transcript-only'
+                ? 'Transcript is ready while enrichment continues.'
+                : 'Queued for background processing.');
+
+          const path = document.createElement('div');
+          path.className = 'recovery-item-path';
+          path.textContent = job.outputPath || job.audioPath;
+
+          const meta = document.createElement('div');
+          meta.className = 'recovery-item-detail';
+          meta.style.marginTop = '6px';
+          const stamp = formatJobTimestamp(job.finishedAt || job.startedAt || job.createdAt);
+          meta.textContent = `${job.mode === 'quick-thought' ? 'Quick thought' : 'Meeting'}${stamp ? ` · ${stamp}` : ''}${job.wordCount != null ? ` · ${job.wordCount} words` : ''}`;
+
+          const actions = document.createElement('div');
+          actions.className = 'recovery-actions';
+
+          if (job.outputPath) {
+            const openOutput = document.createElement('button');
+            openOutput.className = 'btn btn-secondary btn-sm';
+            openOutput.textContent = ['transcript-only', 'needs-review'].includes(job.state) ? 'Open Transcript' : 'Open';
+            openOutput.addEventListener('click', async () => {
+              try {
+                await openMeetingDetail(job.outputPath);
+              } catch (e) {
+                console.error('Open processing job output:', e);
+              }
+            });
+            actions.appendChild(openOutput);
+          }
+
+          const openCapture = document.createElement('button');
+          openCapture.className = 'btn btn-secondary btn-sm';
+          openCapture.textContent = job.outputPath ? 'Open Capture' : 'Open';
+          openCapture.addEventListener('click', async () => {
+            try {
+              await invoke('cmd_open_file', { path: job.audioPath });
+            } catch (e) {
+              console.error('Open processing job capture:', e);
+            }
+          });
+          actions.appendChild(openCapture);
+
+          const folder = document.createElement('button');
+          folder.className = 'btn btn-secondary btn-sm';
+          folder.textContent = desktopCapabilities.folderRevealLabel || 'Show in Folder';
+          folder.addEventListener('click', async () => {
+            try {
+              const target = parentPath(job.outputPath || job.audioPath);
+              await invoke('cmd_open_file', { path: target });
+            } catch (e) {
+              console.error('Open processing job folder:', e);
+            }
+          });
+          actions.appendChild(folder);
+
+          if (['failed', 'needs-review'].includes(job.state)) {
+            const retry = document.createElement('button');
+            retry.className = 'btn btn-secondary btn-sm';
+            retry.textContent = job.state === 'needs-review' ? 'Retry Audio' : 'Queue Again';
+            retry.addEventListener('click', async () => {
+              try {
+                await invoke('cmd_retry_processing_job', { jobId: job.id });
+                await loadProcessingJobsCenter();
+                startFastPoll();
+              } catch (e) {
+                console.error('Retry processing job:', e);
+              }
+            });
+            actions.appendChild(retry);
+          }
+
+          card.appendChild(top);
+          card.appendChild(detail);
+          card.appendChild(path);
+          card.appendChild(meta);
+          card.appendChild(actions);
+          list.appendChild(card);
+        }
+      }
+
+      addSection('ACTIVE', activeJobs);
+      addSection('RECENT', recentJobs);
+      jobsScroll.appendChild(list);
+    }
+
     // ── Status polling ──
     async function checkStatus() {
       try {
@@ -2044,14 +3227,39 @@
         const mode = status.recordingMode || 'meeting';
         isRecording = status.recording;
         isProcessing = !!status.processing;
+        updateJobsChip(status.processingJobCount || 0);
+        renderProcessingJobs(status.processingJobs || []);
         updateOutputNotice(status.latestOutput);
 
         if (isRecording) {
           statusPill.className = 'status-pill recording';
+          const queueCount = status.processingJobCount || 0;
+          const callHealth = status.callCaptureHealth;
           statusPill.textContent = mode === 'quick-thought' ? 'quick thought' : 'recording';
-          recordingLabel.textContent = currentModeLabel(mode);
+          const statusBits = [];
+          if (queueCount > 0) {
+            statusBits.push(`${queueCount} background job${queueCount === 1 ? '' : 's'}`);
+          }
+          if (callHealth) {
+            statusBits.push(callHealth.mic_live ? 'Mic live' : 'Mic missing');
+            statusBits.push(callHealth.call_audio_live ? 'Call audio live' : 'Call audio missing');
+          }
+          recordingLabel.textContent = statusBits.length
+            ? `${currentModeLabel(mode)} · ${statusBits.join(' · ')}`
+            : currentModeLabel(mode);
+          if (callHealth) {
+            recordingSourceHealth.classList.add('active');
+            setCallHealthChip(recordingHealthMic, callHealth.mic_live ? 'Mic live' : 'Mic missing', callHealth.mic_live);
+            setCallHealthChip(recordingHealthAudio, callHealth.call_audio_live ? 'Call audio live' : 'Call audio missing', callHealth.call_audio_live);
+          } else {
+            recordingSourceHealth.classList.remove('active');
+          }
           recordingBar.classList.add('active');
-          processingBar.classList.remove('active');
+          processingBar.classList.toggle('active', isProcessing);
+          liveBar.classList.remove('active'); // T4: clear live bar if recording starts externally
+          isLiveTranscript = false;
+          callBanner.classList.remove('active');
+          if (activeCallSession) activeCallSession.dismissed = true;
           footer.style.display = 'none';
           if (status.elapsed) recordingTime.textContent = status.elapsed;
           updateViz(status.audioLevel || 0);
@@ -2064,11 +3272,31 @@
         } else if (isProcessing) {
           statusPill.className = 'status-pill processing';
           statusPill.textContent = 'processing';
-          processingTitle.textContent = currentProcessingTitle(mode);
+          processingTitle.textContent = status.processingTitle
+            ? `Processing ${status.processingTitle}`
+            : currentProcessingTitle(mode);
           recordingBar.classList.remove('active');
           processingBar.classList.add('active');
-          footer.style.display = 'none';
+          liveBar.classList.remove('active'); // T4
+          isLiveTranscript = false;
+          callBanner.classList.remove('active');
+          footer.style.display = '';
           processingStage.textContent = status.processingStage || 'Preparing transcript...';
+
+          // Start elapsed timer when processing begins
+          if (!wasProcessing) {
+            processingStartTime = Date.now();
+            if (processingTimerInterval) clearInterval(processingTimerInterval);
+            processingTimerInterval = setInterval(() => {
+              if (!processingStartTime) return;
+              const secs = Math.floor((Date.now() - processingStartTime) / 1000);
+              const m = Math.floor(secs / 60);
+              const s = secs % 60;
+              processingElapsed.textContent = m > 0
+                ? `${m}:${String(s).padStart(2, '0')} elapsed`
+                : `${s}s elapsed`;
+            }, 1000);
+          }
 
           if (!wasRecording && !wasProcessing) {
             startFastPoll();
@@ -2077,20 +3305,66 @@
             playCue('stop');
           }
         } else {
+          // Check live transcript status
+          let wasLive = isLiveTranscript;
+          try {
+            const liveStatus = await invoke('cmd_live_transcript_status');
+            isLiveTranscript = !!liveStatus.active;
+            if (isLiveTranscript) {
+              statusPill.className = 'status-pill live';
+              statusPill.textContent = 'live';
+              recordingBar.classList.remove('active');
+              processingBar.classList.remove('active');
+              liveBar.classList.add('active');
+              footer.style.display = 'none';
+              const n = liveStatus.line_count || 0;
+              const d = Math.round(liveStatus.duration_secs || 0);
+              const min = Math.floor(d / 60);
+              const sec = d % 60;
+              document.getElementById('live-time').textContent = `${min}:${String(sec).padStart(2, '0')}`;
+              document.getElementById('live-utterances').textContent = `${n} utterance${n !== 1 ? 's' : ''}`;
+              const lvl = Math.min(100, liveStatus.audioLevel || 0);
+              document.getElementById('live-level-fill').style.width = lvl + '%';
+              if (!wasLive) startFastPoll();
+            } else {
+              liveBar.classList.remove('active');
+            }
+          } catch { isLiveTranscript = false; liveBar.classList.remove('active'); }
+
+          if (!isLiveTranscript) {
           statusPill.className = 'status-pill';
           statusPill.textContent = 'idle';
           recordingLabel.textContent = 'Recording';
+          recordingSourceHealth.classList.remove('active');
           processingTitle.textContent = 'Processing recording';
           recordingBar.classList.remove('active');
           processingBar.classList.remove('active');
+          processingSummary.textContent = '';
+          processingJobsEl.replaceChildren();
           quickNote.classList.remove('active');
           footer.style.display = '';
 
-          // Slow down polling when recording/processing stops
-          if (wasRecording || wasProcessing) {
+          if (activeCallSession && !activeCallSession.dismissed) {
+            callBanner.classList.add('active');
+          }
+
+          // Clear processing elapsed timer
+          if (processingTimerInterval) { clearInterval(processingTimerInterval); processingTimerInterval = null; }
+          processingStartTime = null;
+          processingElapsed.textContent = '';
+
+          // Slow down polling when recording/processing/live stops (T5)
+          if (wasRecording || wasProcessing || wasLive) {
             stopFastPoll();
             loadMeetings(); // Refresh list
+            if (jobsOverlay.classList.contains('active')) loadProcessingJobsCenter();
+
+            // Auto-open the result when processing completes successfully
+            if (wasProcessing && latestOutput && latestOutput.kind === 'saved') {
+              openMeetingDetail(latestOutput.path);
+            }
           }
+          } // end if (!isLiveTranscript)
         }
       } catch (e) {
         console.error('Status:', e);
@@ -2196,6 +3470,8 @@
     }
 
     async function loadHotkeySettings() {
+      // Skip entirely if the unified shortcut system is active
+      if (typeof unifiedShortcutsActive !== 'undefined' && unifiedShortcutsActive) return;
       try {
         const settings = await invoke('cmd_global_hotkey_settings');
         hotkeyShortcut =
@@ -2324,14 +3600,14 @@
         retry.textContent = item.retry_type === 'memo' ? 'Retry as Memo' : 'Retry as Meeting';
         retry.addEventListener('click', async () => {
           try {
-            const notice = await invoke('cmd_retry_recovery', {
+            await invoke('cmd_retry_recovery', {
               path: item.path,
               contentType: item.retry_type
             });
-            updateOutputNotice(notice);
+            // Processing now runs in background — close recovery panel
+            // and let status polling pick up the processing state + result
             closeRecovery();
-            loadMeetings();
-            loadRecoveryItems();
+            startFastPoll();
           } catch (e) {
             console.error('Retry recovery:', e);
           }
@@ -2350,10 +3626,10 @@
 
         const folder = document.createElement('button');
         folder.className = 'btn btn-secondary btn-sm';
-        folder.textContent = 'Show in Finder';
+        folder.textContent = desktopCapabilities.folderRevealLabel || 'Show in Folder';
         folder.addEventListener('click', async () => {
           try {
-            const parent = item.path.slice(0, item.path.lastIndexOf('/'));
+            const parent = parentPath(item.path);
             await invoke('cmd_open_file', { path: parent });
           } catch (e) {
             console.error('Open recovery folder:', e);
@@ -2374,6 +3650,46 @@
       recoveryScroll.appendChild(list);
     }
 
+    // ── Device picker ──
+    const devicePicker = document.getElementById('device-picker');
+    async function loadDevices() {
+      try {
+        const result = await invoke('cmd_list_devices');
+        devicePicker.replaceChildren();
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = 'System Default';
+        devicePicker.appendChild(defaultOpt);
+        for (const fullName of result.devices) {
+          const opt = document.createElement('option');
+          opt.value = fullName;
+          opt.textContent = fullName;
+          if (result.configured_device && fullName === result.configured_device) {
+            opt.selected = true;
+          }
+          devicePicker.appendChild(opt);
+        }
+      } catch (e) {
+        console.error('Load devices:', e);
+      }
+    }
+    loadDevices();
+    // Re-scan devices when the picker is focused (handles hotplug)
+    devicePicker.addEventListener('focus', loadDevices);
+
+    // Persist device choice to config — recording reads config.recording.device at capture time
+    devicePicker.addEventListener('change', async () => {
+      try {
+        await invoke('cmd_set_setting', {
+          section: 'recording',
+          key: 'device',
+          value: devicePicker.value || '',
+        });
+      } catch (e) {
+        console.error('Set device:', e);
+      }
+    });
+
     // ── Recording controls ──
     document.getElementById('btn-record').addEventListener('click', async () => {
       try {
@@ -2391,6 +3707,32 @@
       }
     });
 
+    // ── Delete meeting ──
+    document.getElementById('btn-delete-meeting').addEventListener('click', async () => {
+      if (!currentMeetingPath) return;
+      const title = document.getElementById('detail-title').textContent || 'this meeting';
+      if (!confirm(`Archive "${title}" and its audio recording? They will be moved to the archive folder.`)) return;
+      try {
+        const result = await invoke('cmd_delete_meeting', {
+          path: currentMeetingPath,
+          withAudio: true,
+          force: false,
+        });
+        console.log(result);
+        // Return to meeting list
+        currentMeetingPath = null;
+        currentMeetingDetail = null;
+        const detailPanel = document.getElementById('detail-scroll');
+        if (detailPanel) detailPanel.replaceChildren();
+        document.getElementById('detail-title').textContent = 'Meeting';
+        document.getElementById('detail-meta').replaceChildren();
+        loadMeetings();
+      } catch (e) {
+        console.error('Delete:', e);
+        alert('Failed to delete: ' + e);
+      }
+    });
+
     document.getElementById('btn-stop').addEventListener('click', async () => {
       try {
         await invoke('cmd_stop_recording');
@@ -2399,10 +3741,60 @@
       }
     });
 
+    // ── Live transcript controls ──
+    document.getElementById('btn-live').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-live');
+
+      // First-use explainer (shown once, stored in localStorage)
+      if (!localStorage.getItem('minutes_live_intro_seen')) {
+        localStorage.setItem('minutes_live_intro_seen', '1');
+        const noticeTitle = document.getElementById('output-notice-title');
+        const noticeDetail = document.getElementById('output-notice-detail');
+        const noticeIcon = document.getElementById('output-notice-icon');
+        const notice = document.getElementById('output-notice');
+        if (noticeIcon) noticeIcon.textContent = '\u{1F399}';
+        if (noticeTitle) noticeTitle.textContent = 'Live Transcript';
+        if (noticeDetail) noticeDetail.textContent = 'Transcribes your meeting in real time. Ask your agent in Recall for coaching during the call.';
+        if (notice) notice.classList.add('active');
+        // Auto-dismiss after 4 seconds, then proceed with start
+        await new Promise(r => setTimeout(r, 3000));
+        if (notice) notice.classList.remove('active');
+      }
+
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Starting...';
+      try {
+        await invoke('cmd_start_live_transcript');
+      } catch (e) {
+        console.error('Live:', e);
+        // Show visible error using the output-notice pattern
+        const noticeIcon = document.getElementById('output-notice-icon');
+        const noticeTitle = document.getElementById('output-notice-title');
+        const noticeDetail = document.getElementById('output-notice-detail');
+        const notice = document.getElementById('output-notice');
+        if (noticeIcon) noticeIcon.textContent = '✕';
+        if (noticeTitle) noticeTitle.textContent = 'Live transcript failed';
+        if (noticeDetail) noticeDetail.textContent = String(e);
+        if (notice) notice.classList.add('active');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    });
+
+    document.getElementById('btn-stop-live').addEventListener('click', async () => {
+      try {
+        await invoke('cmd_stop_live_transcript');
+      } catch (e) {
+        console.error('Stop live:', e);
+      }
+    });
+
     document.getElementById('btn-open-output').addEventListener('click', async () => {
       if (!latestOutput?.path) return;
       try {
-        await invoke('cmd_open_file', { path: latestOutput.path });
+        await openMeetingDetail(latestOutput.path);
       } catch (e) {
         console.error('Open output:', e);
       }
@@ -2411,7 +3803,7 @@
     document.getElementById('btn-open-output-folder').addEventListener('click', async () => {
       if (!latestOutput?.path) return;
       try {
-        const folder = latestOutput.path.slice(0, latestOutput.path.lastIndexOf('/'));
+        const folder = parentPath(latestOutput.path);
         await invoke('cmd_open_file', { path: folder });
       } catch (e) {
         console.error('Open folder:', e);
@@ -2434,6 +3826,15 @@
     document.getElementById('btn-readiness-close').addEventListener('click', closeReadiness);
     readinessOverlay.addEventListener('click', (e) => {
       if (e.target === readinessOverlay) closeReadiness();
+    });
+
+    jobsButton.addEventListener('click', () => {
+      loadProcessingJobsCenter();
+      jobsOverlay.classList.add('active');
+    });
+    document.getElementById('btn-jobs-close').addEventListener('click', closeJobs);
+    jobsOverlay.addEventListener('click', (e) => {
+      if (e.target === jobsOverlay) closeJobs();
     });
 
     notificationToggle.addEventListener('click', async () => {
@@ -2632,6 +4033,124 @@
         detailScroll.appendChild(contextCard);
       }
 
+      // Speaker attribution card
+      if (detail.speaker_map && detail.speaker_map.length > 0) {
+        const speakerCard = document.createElement('div');
+        speakerCard.className = 'detail-speakers';
+
+        const label = document.createElement('div');
+        label.className = 'detail-speakers-label';
+        label.textContent = 'Speakers';
+        speakerCard.appendChild(label);
+
+        for (const attr of detail.speaker_map) {
+          const row = document.createElement('div');
+          row.className = 'speaker-row';
+
+          const labelSpan = document.createElement('span');
+          labelSpan.className = 'speaker-label';
+          labelSpan.textContent = attr.speaker_label;
+          row.appendChild(labelSpan);
+
+          const nameSpan = document.createElement('span');
+          nameSpan.className = 'speaker-name';
+          nameSpan.textContent = attr.name;
+          row.appendChild(nameSpan);
+
+          const badge = document.createElement('span');
+          badge.className = `speaker-badge ${attr.confidence}`;
+          badge.textContent = attr.confidence;
+          row.appendChild(badge);
+
+          // Show confirm button for non-high confidence
+          if (attr.confidence !== 'high') {
+            const btn = document.createElement('button');
+            btn.className = 'speaker-confirm-btn';
+            btn.textContent = 'Confirm';
+            btn.onclick = async () => {
+              const newName = prompt(`Confirm speaker name for ${attr.speaker_label}:`, attr.name);
+              if (newName) {
+                try {
+                  await invoke('cmd_confirm_speaker', {
+                    meetingPath: detail.path,
+                    speakerLabel: attr.speaker_label,
+                    name: newName,
+                  });
+                  // Refresh the detail view
+                  openMeetingDetail(detail.path);
+                } catch (e) {
+                  console.error('Confirm speaker failed:', e);
+                }
+              }
+            };
+            row.appendChild(btn);
+          }
+
+          speakerCard.appendChild(row);
+        }
+
+        detailScroll.appendChild(speakerCard);
+      }
+
+      // Action items card
+      if (detail.action_items && detail.action_items.length > 0) {
+        const aiCard = document.createElement('div');
+        aiCard.className = 'detail-context';
+
+        const aiLabel = document.createElement('div');
+        aiLabel.className = 'detail-context-label';
+        aiLabel.textContent = 'Action Items';
+        aiCard.appendChild(aiLabel);
+
+        const aiList = document.createElement('div');
+        aiList.className = 'detail-action-list';
+        for (const item of detail.action_items) {
+          const row = document.createElement('div');
+          row.className = 'detail-action-item';
+          const isDone = (item.status || '').toLowerCase() === 'done';
+          const check = isDone ? '\u2611' : '\u2610';
+          const due = item.due ? ` \u00b7 ${item.due}` : '';
+          const checkSpan = document.createElement('span');
+          checkSpan.className = 'detail-action-check';
+          checkSpan.textContent = check;
+          const textSpan = document.createElement('span');
+          textSpan.className = 'detail-action-text';
+          setHighlightedText(textSpan, `${item.assignee}: ${item.task}${due}`, activeSearchQuery);
+          if (isDone) textSpan.style.textDecoration = 'line-through';
+          row.appendChild(checkSpan);
+          row.appendChild(textSpan);
+          aiList.appendChild(row);
+        }
+        aiCard.appendChild(aiList);
+        detailScroll.appendChild(aiCard);
+      }
+
+      // Decisions card
+      if (detail.decisions && detail.decisions.length > 0) {
+        const decCard = document.createElement('div');
+        decCard.className = 'detail-context';
+
+        const decLabel = document.createElement('div');
+        decLabel.className = 'detail-context-label';
+        decLabel.textContent = 'Decisions';
+        decCard.appendChild(decLabel);
+
+        const decList = document.createElement('div');
+        decList.className = 'detail-action-list';
+        for (const dec of detail.decisions) {
+          const row = document.createElement('div');
+          row.className = 'detail-action-item';
+          const topic = dec.topic ? `[${dec.topic}] ` : '';
+          const textSpan = document.createElement('span');
+          textSpan.className = 'detail-action-text';
+          setHighlightedText(textSpan, `${topic}${dec.text}`, activeSearchQuery);
+          row.appendChild(textSpan);
+          decList.appendChild(row);
+        }
+        decCard.appendChild(decList);
+        detailScroll.appendChild(decCard);
+      }
+
       if (!detail.sections || detail.sections.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'detail-empty';
@@ -2655,6 +4174,22 @@
           detailScroll.appendChild(sectionEl);
         }
       }
+
+      // Bottom CTA — "Ask your agent about this meeting"
+      const bottomCta = document.createElement('div');
+      bottomCta.className = 'detail-bottom-cta';
+      const ctaText = document.createElement('div');
+      ctaText.className = 'detail-bottom-cta-text';
+      ctaText.textContent = 'Have questions about this ' + (detail.content_type || 'meeting') + '?';
+      const ctaBtn = document.createElement('button');
+      ctaBtn.className = 'btn btn-primary btn-sm';
+      ctaBtn.textContent = 'Discuss with Agent';
+      ctaBtn.addEventListener('click', () => {
+        document.getElementById('btn-discuss-ai').click();
+      });
+      bottomCta.appendChild(ctaText);
+      bottomCta.appendChild(ctaBtn);
+      detailScroll.appendChild(bottomCta);
 
       detailOverlay.classList.add('active');
     }
@@ -2730,10 +4265,23 @@
           }
 
           const badge = document.createElement('span');
-          badge.className = 'meeting-badge' + (m.content_type === 'memo' ? ' memo' : '');
+          const typeClass = m.content_type === 'memo' ? ' memo' : m.content_type === 'dictation' ? ' dictation' : '';
+          badge.className = 'meeting-badge' + typeClass;
           badge.textContent = m.content_type || 'meeting';
 
+          const chatBtn = document.createElement('button');
+          chatBtn.className = 'meeting-chat-btn';
+          chatBtn.setAttribute('aria-label', 'Discuss with Agent');
+          chatBtn.setAttribute('title', 'Discuss with Agent');
+          chatBtn.textContent = '\u279C';
+          chatBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await openRecall('meeting', m.path);
+            setRecallPhase('debrief', m.title || 'Meeting');
+          });
+
           item.appendChild(info);
+          item.appendChild(chatBtn);
           item.appendChild(badge);
           meetingsScroll.appendChild(item);
         }
@@ -2898,6 +4446,10 @@
 
     // ── Upcoming meetings ──
     async function checkUpcoming() {
+      if (!desktopCapabilities.supportsCalendarIntegration) {
+        document.getElementById('upcoming').style.display = 'none';
+        return;
+      }
       if (isRecording) return;
       try {
         const events = await invoke('cmd_upcoming_meetings');
@@ -2950,18 +4502,25 @@
         // General: sync with existing app state
         setSettingsToggle('settings-notifications', notifyOnCompletion);
         setSettingsToggle('settings-cues', playCaptureCues);
-        setSettingsToggle('settings-hotkey', hotkeyEnabled);
-        // Populate hotkey shortcut dropdown from existing choices
-        const hkSettings = await invoke('cmd_global_hotkey_settings').catch(() => null);
-        const settingsHkSelect = document.getElementById('settings-hotkey-shortcut');
-        settingsHkSelect.replaceChildren();
-        if (hkSettings && hkSettings.choices) {
-          for (const choice of hkSettings.choices) {
-            const o = document.createElement('option'); o.value = choice.value; o.textContent = choice.label; settingsHkSelect.appendChild(o);
+        // Autostart
+        try { const autoOn = await invoke('cmd_get_autostart'); setSettingsToggle('settings-autostart', autoOn); } catch(e) { console.error('autostart check:', e); }
+        // Legacy hotkey settings -- guarded for removed HTML elements
+        if (document.getElementById('settings-hotkey')) {
+          setSettingsToggle('settings-hotkey', hotkeyEnabled);
+          const hkSettings = await invoke('cmd_global_hotkey_settings').catch(() => null);
+          const settingsHkSelect = document.getElementById('settings-hotkey-shortcut');
+          if (settingsHkSelect) {
+            settingsHkSelect.replaceChildren();
+            if (hkSettings && hkSettings.choices) {
+              for (const choice of hkSettings.choices) {
+                const o = document.createElement('option'); o.value = choice.value; o.textContent = choice.label; settingsHkSelect.appendChild(o);
+              }
+              settingsHkSelect.value = hotkeyShortcut || hkSettings.shortcut || '';
+            }
           }
-          settingsHkSelect.value = hotkeyShortcut || hkSettings.shortcut || '';
+          const hkStatus = document.getElementById('settings-hotkey-status');
+          if (hkStatus) hkStatus.textContent = hotkeyEnabled ? 'Active' : 'Off';
         }
-        document.getElementById('settings-hotkey-status').textContent = hotkeyEnabled ? 'Active' : 'Off';
         document.getElementById('settings-whisper-model').value = s.transcription.model;
         const dl = s.transcription.downloaded_models || [];
         const selectedModel = s.transcription.model;
@@ -2970,31 +4529,61 @@
           ? 'Downloaded: ' + dl.join(', ')
           : dl.length ? 'Downloaded: ' + dl.join(', ') + '  •  "' + selectedModel + '" not yet downloaded' : 'No models downloaded yet.';
         document.getElementById('btn-download-model').style.display = isDownloaded ? 'none' : '';
-        setSettingsToggle('settings-diarization', s.diarization.engine !== 'none');
+        document.getElementById('settings-whisper-language').value = s.transcription.language || '';
+        setSettingsToggle('settings-diarization', s.diarization.engine !== 'none'); // "auto" shows as On
         document.getElementById('settings-summarization-engine').value = s.summarization.engine;
         updateSumStatus(s);
         // Agent command picker (visible when engine = "agent")
         const agentCmdRow = document.getElementById('settings-agent-command-row');
         agentCmdRow.style.display = s.summarization.engine === 'agent' ? '' : 'none';
+        try {
         const agentCmdSel = document.getElementById('settings-agent-command');
         const sumAgents = await invoke('cmd_list_agents');
         const currentCmd = s.summarization.agent_command || 'claude';
-        agentCmdSel.innerHTML = '';
+        agentCmdSel.replaceChildren();
         for (const a of sumAgents) { const o = document.createElement('option'); o.value = a.name; o.textContent = a.name; agentCmdSel.appendChild(o); }
         if (!sumAgents.find(a => a.name === currentCmd)) {
           const o = document.createElement('option'); o.value = currentCmd; o.textContent = currentCmd + ' (custom)'; agentCmdSel.appendChild(o);
         }
         agentCmdSel.value = currentCmd;
         document.getElementById('settings-agent-command-status').textContent = sumAgents.find(a => a.name === currentCmd) ? 'Installed' : 'Custom command';
+        } catch(e) { console.error('agent command picker:', e); }
         setSettingsToggle('settings-screen-context', s.screen_context.enabled);
         document.getElementById('settings-screen-interval-row').style.display = s.screen_context.enabled ? '' : 'none';
         document.getElementById('settings-screen-interval').value = String(s.screen_context.interval_secs);
+        try {
         const agents = await invoke('cmd_list_agents');
         const sel = document.getElementById('settings-agent');
-        sel.innerHTML = '';
+        sel.replaceChildren();
         for (const a of agents) { const o = document.createElement('option'); o.value = a.name; o.textContent = a.name; sel.appendChild(o); }
         sel.value = s.assistant.agent;
         document.getElementById('settings-agent-status').textContent = agents.length + ' agent(s) installed';
+        } catch(e) { console.error('agent list:', e); }
+        // Agent launch flags — separate skip-permissions toggle from extra args
+        try {
+        const argsArr = s.assistant.agent_args || [];
+        const skipPerm = argsArr.includes('--dangerously-skip-permissions');
+        const extraArgs = argsArr.filter(a => a !== '--dangerously-skip-permissions');
+        setSettingsToggle('settings-skip-permissions', skipPerm);
+        document.getElementById('settings-skip-permissions-hint').textContent = skipPerm
+          ? 'The agent will run without asking for approval. Takes effect next session.'
+          : 'The agent will ask before running tools like file edits and shell commands.';
+        // Only show the toggle for agents that support it (claude, codex)
+        const skipRow = document.getElementById('settings-skip-permissions-row');
+        const skipHint = document.getElementById('settings-skip-permissions-hint');
+        const supportsSkip = ['claude', 'codex'].includes(s.assistant.agent);
+        skipRow.style.display = supportsSkip ? '' : 'none';
+        skipHint.style.display = supportsSkip ? '' : 'none';
+        document.getElementById('settings-agent-args').value = extraArgs.join(' ');
+        document.getElementById('settings-agent-args-status').textContent = extraArgs.length ? extraArgs.length + ' flag(s)' : '';
+        } catch(e) { console.error('agent flags:', e); }
+        // Call detection settings
+        if (s.call_detection) {
+          setSettingsToggle('settings-call-detection', s.call_detection.enabled);
+          document.getElementById('settings-call-detection-polling-interval').value = String(s.call_detection.poll_interval_secs ?? 1);
+          document.getElementById('settings-call-detection-cooldown').value = String(s.call_detection.cooldown_minutes ?? 5);
+          setSettingsToggle('settings-call-detection-google-meet', Boolean(s.call_detection.google_meet_enabled));
+        }
         // Dictation settings
         if (s.dictation) {
           document.getElementById('settings-dictation-model').value = s.dictation.model || 'base';
@@ -3004,15 +4593,66 @@
           const savedKeycode = s.dictation.hotkey_keycode || 57;
           dictationKeycode = savedKeycode;
           const keyName = dictationHotkeyLabel(savedKeycode);
-          document.getElementById('settings-dictation-hotkey-record').textContent = keyName;
+          if (hotkeyRecordBtn) {
+            hotkeyRecordBtn.textContent = keyName;
+          }
+        }
+        const dictationShortcutSettings = await invoke('cmd_dictation_shortcut_settings').catch(() => null);
+        const dictationShortcutSelect = document.getElementById('settings-dictation-shortcut-select');
+        if (dictationShortcutSelect) dictationShortcutSelect.replaceChildren();
+        if (dictationShortcutSettings && dictationShortcutSettings.choices && dictationShortcutSelect) {
+          for (const choice of dictationShortcutSettings.choices) {
+            const o = document.createElement('option');
+            o.value = choice.value;
+            o.textContent = choice.label;
+            dictationShortcutSelect.appendChild(o);
+          }
+          dictationShortcutSelect.value = s.dictation?.shortcut || dictationShortcutSettings.shortcut || '';
+          setSettingsToggle('settings-dictation-shortcut', Boolean(dictationShortcutSettings.enabled));
+          dictationShortcutActive = Boolean(dictationShortcutSettings.enabled);
+          dictationShortcutLabel = dictationShortcutSettings.enabled
+            ? `Dictate ${dictationShortcutSettings.shortcut}`
+            : 'Dictate';
+          renderDictationShortcutChip();
+          const dsStatus = document.getElementById('settings-dictation-shortcut-status');
+          if (dsStatus) dsStatus.textContent =
+            dictationShortcutSettings.enabled
+              ? `Active - ${dictationShortcutSettings.shortcut}`
+              : 'Uses the standard global shortcut system. Recommended for most users.';
+          if (s.dictation?.shortcut_enabled && !dictationShortcutSettings.enabled) {
+            const restored = await invoke('cmd_set_dictation_shortcut', {
+              enabled: true,
+              shortcut: s.dictation?.shortcut || dictationShortcutSettings.shortcut,
+            }).catch(() => null);
+            if (restored) {
+              setSettingsToggle('settings-dictation-shortcut', restored.enabled);
+              dictationShortcutActive = Boolean(restored.enabled);
+              dictationShortcutLabel = restored.enabled ? `Dictate ${restored.shortcut}` : 'Dictate';
+              renderDictationShortcutChip();
+              document.getElementById('settings-dictation-shortcut-status').textContent =
+                restored.enabled
+                  ? `Active - ${restored.shortcut}`
+                  : 'Uses the standard global shortcut system. Recommended for most users.';
+            }
+          }
         }
         const nativeDictationHotkey = await invoke('cmd_dictation_hotkey_status').catch(() => null);
         if (nativeDictationHotkey) {
           applyDictationHotkeyStatus(nativeDictationHotkey);
+          if (s.dictation?.hotkey_enabled && nativeDictationHotkey.state === 'disabled') {
+            const restored = await invoke('cmd_enable_dictation_hotkey', {
+              enabled: true,
+              keycode: dictationKeycode,
+            }).catch(() => null);
+            if (restored) {
+              applyDictationHotkeyStatus(restored);
+            }
+          }
         }
-        loadStorageStats();
-        loadVaultStatus();
       } catch (e) { console.error('loadSettings:', e); }
+      // Always load these, even if other settings fail
+      loadStorageStats();
+      loadVaultStatus();
     }
 
     async function loadVaultStatus() {
@@ -3033,7 +4673,7 @@
           activePath.textContent = v.strategy + ': ' + v.path;
         } else if (v.enabled) {
           detail.textContent = v.detail;
-          detail.style.color = 'var(--yellow, #e8b339)';
+          detail.style.color = 'var(--yellow, var(--orange))';
           setupBtn.textContent = 'Fix';
           unlinkRow.style.display = '';
           activePath.textContent = v.path;
@@ -3106,18 +4746,30 @@
       setCueToggle(!playCaptureCues);
       setSettingsToggle('settings-cues', playCaptureCues);
     });
-    document.getElementById('settings-hotkey').addEventListener('click', async () => {
-      const shortcut = document.getElementById('settings-hotkey-shortcut').value || hotkeyShortcut;
-      await syncHotkey(!hotkeyEnabled, shortcut);
-      setSettingsToggle('settings-hotkey', hotkeyEnabled);
-      document.getElementById('settings-hotkey-status').textContent = hotkeyEnabled ? 'Active' : 'Off';
+    document.getElementById('settings-autostart').addEventListener('click', async () => {
+      const isOn = await invoke('cmd_get_autostart').catch(() => false);
+      const next = !isOn;
+      try { await invoke('cmd_set_autostart', { enabled: next }); setSettingsToggle('settings-autostart', next); } catch(e) { console.error('autostart toggle:', e); }
     });
-    document.getElementById('settings-hotkey-shortcut').addEventListener('change', async () => {
-      const shortcut = document.getElementById('settings-hotkey-shortcut').value;
-      await syncHotkey(hotkeyEnabled, shortcut);
-      setSettingsToggle('settings-hotkey', hotkeyEnabled);
-      document.getElementById('settings-hotkey-status').textContent = hotkeyEnabled ? 'Active' : 'Off';
-    });
+    // Legacy hotkey settings — guarded for removed HTML elements
+    if (document.getElementById('settings-hotkey')) {
+      document.getElementById('settings-hotkey').addEventListener('click', async () => {
+        const shortcut = document.getElementById('settings-hotkey-shortcut').value || hotkeyShortcut;
+        await syncHotkey(!hotkeyEnabled, shortcut);
+        setSettingsToggle('settings-hotkey', hotkeyEnabled);
+        const el = document.getElementById('settings-hotkey-status');
+        if (el) el.textContent = hotkeyEnabled ? 'Active' : 'Off';
+      });
+    }
+    if (document.getElementById('settings-hotkey-shortcut')) {
+      document.getElementById('settings-hotkey-shortcut').addEventListener('change', async () => {
+        const shortcut = document.getElementById('settings-hotkey-shortcut').value;
+        await syncHotkey(hotkeyEnabled, shortcut);
+        setSettingsToggle('settings-hotkey', hotkeyEnabled);
+        const el = document.getElementById('settings-hotkey-status');
+        if (el) el.textContent = hotkeyEnabled ? 'Active' : 'Off';
+      });
+    }
 
     // Settings change handlers
     document.getElementById('settings-whisper-model').addEventListener('change', async (e) => {
@@ -3147,9 +4799,13 @@
       btn.disabled = false;
       btn.textContent = 'Download';
     });
+    document.getElementById('settings-whisper-language').addEventListener('change', async (e) => {
+      await invoke('cmd_set_setting', {section:'transcription',key:'language',value:e.target.value});
+    });
     document.getElementById('settings-diarization').addEventListener('click', async () => {
       const s = await invoke('cmd_get_settings');
-      const next = s.diarization.engine==='none'?'pyannote':'none';
+      // Toggle: none → pyannote-rs, anything else (auto/pyannote-rs/pyannote) → none
+      const next = s.diarization.engine==='none'?'pyannote-rs':'none';
       await invoke('cmd_set_setting', {section:'diarization',key:'engine',value:next});
       setSettingsToggle('settings-diarization', next!=='none');
     });
@@ -3171,9 +4827,93 @@
       document.getElementById('settings-screen-interval-row').style.display = next ? '' : 'none';
     });
     document.getElementById('settings-screen-interval').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'screen_context',key:'interval_secs',value:e.target.value}));
-    document.getElementById('settings-agent').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'assistant',key:'agent',value:e.target.value}));
+    document.getElementById('settings-agent').addEventListener('change', async (e) => {
+      await invoke('cmd_set_setting', {section:'assistant',key:'agent',value:e.target.value});
+      const supportsSkip = ['claude', 'codex'].includes(e.target.value);
+      document.getElementById('settings-skip-permissions-row').style.display = supportsSkip ? '' : 'none';
+      document.getElementById('settings-skip-permissions-hint').style.display = supportsSkip ? '' : 'none';
+    });
+    // Helper: rebuild agent_args from toggle + text field and save
+    async function saveAgentArgs() {
+      const skipOn = document.getElementById('settings-skip-permissions').textContent.trim() === 'On';
+      const extra = document.getElementById('settings-agent-args').value.trim();
+      const parts = [];
+      if (skipOn) parts.push('--dangerously-skip-permissions');
+      if (extra) parts.push(...extra.split(/\s+/));
+      await invoke('cmd_set_setting', {section:'assistant',key:'agent_args',value:parts.join(' ')});
+      document.getElementById('settings-skip-permissions-hint').textContent = skipOn
+        ? 'The agent will run without asking for approval. Takes effect next session.'
+        : 'The agent will ask before running tools like file edits and shell commands.';
+      const extraCount = extra ? extra.split(/\s+/).length : 0;
+      document.getElementById('settings-agent-args-status').textContent = extraCount ? extraCount + ' flag(s)' : '';
+    }
+    document.getElementById('settings-skip-permissions').addEventListener('click', async () => {
+      const btn = document.getElementById('settings-skip-permissions');
+      const next = btn.textContent.trim() !== 'On';
+      setSettingsToggle('settings-skip-permissions', next);
+      await saveAgentArgs();
+    });
+    document.getElementById('settings-agent-args').addEventListener('change', () => saveAgentArgs());
 
-    // Dictation settings handlers
+    // Call detection settings handlers
+    document.getElementById('settings-call-detection').addEventListener('click', async () => {
+      const s = await invoke('cmd_get_settings');
+      const next = !s.call_detection.enabled;
+      await invoke('cmd_set_setting', {section:'call_detection',key:'enabled',value:String(next)});
+      setSettingsToggle('settings-call-detection', next);
+    });
+    document.getElementById('settings-call-detection-polling-interval').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'call_detection',key:'poll_interval_secs',value:e.target.value}));
+    document.getElementById('settings-call-detection-cooldown').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'call_detection',key:'cooldown_minutes',value:e.target.value}));
+    document.getElementById('settings-call-detection-google-meet').addEventListener('click', async () => {
+      const s = await invoke('cmd_get_settings');
+      const next = !Boolean(s.call_detection.google_meet_enabled);
+      await invoke('cmd_set_setting', {section:'call_detection',key:'google_meet_enabled',value:String(next)});
+      setSettingsToggle('settings-call-detection-google-meet', next);
+    });
+
+    // Dictation settings handlers — guarded for removed HTML elements
+    if (document.getElementById('settings-dictation-shortcut')) document.getElementById('settings-dictation-shortcut').addEventListener('click', async () => {
+      const select = document.getElementById('settings-dictation-shortcut-select');
+      const currentEnabled = document.getElementById('settings-dictation-shortcut').textContent === 'On';
+      try {
+        const settings = await invoke('cmd_set_dictation_shortcut', {
+          enabled: !currentEnabled,
+          shortcut: select.value,
+        });
+        setSettingsToggle('settings-dictation-shortcut', settings.enabled);
+        dictationShortcutActive = Boolean(settings.enabled);
+        dictationShortcutLabel = settings.enabled ? `Dictate ${settings.shortcut}` : 'Dictate';
+        renderDictationShortcutChip();
+        document.getElementById('settings-dictation-shortcut-status').textContent =
+          settings.enabled
+            ? `Active - ${settings.shortcut}`
+            : 'Uses the standard global shortcut system. Recommended for most users.';
+      } catch (e) {
+        document.getElementById('settings-dictation-shortcut-status').textContent = String(e);
+      }
+    });
+    if (document.getElementById('settings-dictation-shortcut-select')) document.getElementById('settings-dictation-shortcut-select').addEventListener('change', async (e) => {
+      const button = document.getElementById('settings-dictation-shortcut');
+      const enabled = button.textContent === 'On';
+      if (!enabled) {
+        await invoke('cmd_set_setting', {section:'dictation',key:'shortcut',value:e.target.value});
+        document.getElementById('settings-dictation-shortcut-status').textContent = `${e.target.value} saved. Toggle the standard shortcut on when you're ready to use it.`;
+        return;
+      }
+      try {
+        const settings = await invoke('cmd_set_dictation_shortcut', {
+          enabled: true,
+          shortcut: e.target.value,
+        });
+        setSettingsToggle('settings-dictation-shortcut', settings.enabled);
+        dictationShortcutActive = Boolean(settings.enabled);
+        dictationShortcutLabel = settings.enabled ? `Dictate ${settings.shortcut}` : 'Dictate';
+        renderDictationShortcutChip();
+        document.getElementById('settings-dictation-shortcut-status').textContent = `Active - ${settings.shortcut}`;
+      } catch (e2) {
+        document.getElementById('settings-dictation-shortcut-status').textContent = String(e2);
+      }
+    });
     document.getElementById('settings-dictation-model').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'dictation',key:'model',value:e.target.value}));
     document.getElementById('settings-dictation-silence').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'dictation',key:'silence_timeout_ms',value:e.target.value}));
     document.getElementById('settings-dictation-daily-note').addEventListener('click', async () => {
@@ -3182,7 +4922,411 @@
       await invoke('cmd_set_setting', {section:'dictation',key:'daily_note_log',value:String(next)});
       setSettingsToggle('settings-dictation-daily-note', next);
     });
-    // Dictation hotkey — "press to record" key capture
+
+    // ── Live transcript shortcut settings ──
+    document.getElementById('settings-live-shortcut').addEventListener('click', async () => {
+      const select = document.getElementById('settings-live-shortcut-select');
+      const currentEnabled = document.getElementById('settings-live-shortcut').textContent === 'On';
+      try {
+        const settings = await invoke('cmd_set_live_shortcut', {
+          enabled: !currentEnabled,
+          shortcut: select.value,
+        });
+        setSettingsToggle('settings-live-shortcut', settings.enabled);
+      } catch (e) {
+        console.error('Live shortcut:', e);
+      }
+    });
+    document.getElementById('settings-live-shortcut-select').addEventListener('change', async (e) => {
+      const enabled = document.getElementById('settings-live-shortcut').textContent === 'On';
+      if (!enabled) return;
+      try {
+        const settings = await invoke('cmd_set_live_shortcut', {
+          enabled: true,
+          shortcut: e.target.value,
+        });
+        setSettingsToggle('settings-live-shortcut', settings.enabled);
+      } catch (e2) {
+        console.error('Live shortcut change:', e2);
+      }
+    });
+    // Load initial live shortcut state
+    invoke('cmd_live_shortcut_settings').then(settings => {
+      setSettingsToggle('settings-live-shortcut', settings.enabled);
+      const select = document.getElementById('settings-live-shortcut-select');
+      if (select) select.value = settings.shortcut;
+    }).catch(() => {});
+
+    // ── Unified Shortcut Recorder ──────────────────────────────
+    // Replaces the old 3-system approach (dropdown, dropdown, raw-key capture)
+    // with a single "click to record" button per slot.
+
+    const UNIFIED_SLOTS = ['quick_thought', 'dictation'];
+    const SLOT_DEFAULTS = {
+      quick_thought: { shortcut: 'CmdOrCtrl+Shift+M', keycode: -1 },
+      dictation: { shortcut: 'CmdOrCtrl+Shift+Space', keycode: -1 },
+    };
+    const unifiedSlotState = {};
+
+    function shortcutDisplayLabel(shortcut, keycode) {
+      if (keycode === 57) return 'Caps Lock';
+      if (keycode === 63) return 'fn';
+      // Format "CmdOrCtrl+Shift+Space" as "⌘ Shift Space"
+      return shortcut
+        .replace(/CmdOrCtrl/g, '\u2318')
+        .replace(/Shift/g, 'Shift')
+        .replace(/Alt/g, 'Option')
+        .replace(/\+/g, ' ');
+    }
+
+    function updateSlotUI(slot, status) {
+      unifiedSlotState[slot] = status;
+
+      // Sync QuickThought state to localStorage for persistence and legacy compat
+      if (slot === 'quick_thought') {
+        localStorage.setItem('minutes.globalHotkeyEnabled', status.enabled ? 'true' : 'false');
+        if (status.shortcut) localStorage.setItem('minutes.globalHotkeyShortcut', status.shortcut);
+      }
+
+      const recorder = document.getElementById('shortcut-recorder-' + slot);
+      const statusEl = document.getElementById('shortcut-status-' + slot);
+      const toggle = document.getElementById('shortcut-toggle-' + slot);
+      if (!recorder || !statusEl || !toggle) return;
+
+      recorder.textContent = shortcutDisplayLabel(status.shortcut, status.keycode);
+      recorder.style.borderColor = '';
+      recorder.style.color = '';
+
+      const isOn = status.enabled;
+      toggle.textContent = isOn ? 'On' : 'Off';
+      toggle.classList.toggle('btn-primary', isOn);
+      toggle.classList.toggle('btn-secondary', !isOn);
+
+      if (status.pending) {
+        statusEl.textContent = 'Starting ' + shortcutDisplayLabel(status.shortcut, status.keycode) + '...';
+        statusEl.classList.remove('error');
+      } else if (status.needsPermission) {
+        statusEl.textContent = 'Requires Input Monitoring permission. Open System Settings to grant it.';
+        statusEl.classList.add('error');
+      } else if (isOn) {
+        statusEl.textContent = status.message;
+        statusEl.classList.remove('error');
+      } else {
+        const defaultMsg = slot === 'dictation'
+          ? 'Hold to dictate, or tap to lock and tap again to stop.'
+          : 'Hold to record a quick thought, or tap to lock and tap again to stop.';
+        statusEl.textContent = status.message === 'Off.' ? defaultMsg : status.message;
+        statusEl.classList.toggle('error', status.message !== 'Off.' && !status.enabled);
+      }
+    }
+
+    async function loadSlotStatus(slot) {
+      try {
+        const status = await invoke('cmd_shortcut_status', { slot });
+        updateSlotUI(slot, status);
+      } catch (e) {
+        console.error('Load shortcut status for ' + slot + ':', e);
+      }
+    }
+
+    async function toggleSlot(slot) {
+      const current = unifiedSlotState[slot];
+      const wasEnabled = current && current.enabled;
+      const shortcut = (current && current.shortcut) || SLOT_DEFAULTS[slot].shortcut;
+      const keycode = (current && current.keycode) || SLOT_DEFAULTS[slot].keycode;
+      try {
+        const status = await invoke('cmd_set_shortcut', {
+          slot,
+          enabled: !wasEnabled,
+          shortcut,
+          keycode,
+        });
+        updateSlotUI(slot, status);
+      } catch (e) {
+        const statusEl = document.getElementById('shortcut-status-' + slot);
+        if (statusEl) {
+          statusEl.textContent = String(e);
+          statusEl.classList.add('error');
+        }
+      }
+    }
+
+    // Build shortcut string from keyboard event
+    function buildShortcutString(e) {
+      const parts = [];
+      if (e.metaKey || e.ctrlKey) parts.push('CmdOrCtrl');
+      if (e.shiftKey) parts.push('Shift');
+      if (e.altKey) parts.push('Alt');
+
+      // Get the base key using event.code -> macOS keycode mapping
+      const macKeycode = BROWSER_CODE_TO_MAC[e.code]
+        ?? BROWSER_KEY_TO_MAC[e.key]
+        ?? LEGACY_KEYCODE_TO_MAC[e.keyCode]
+        ?? -1;
+
+      // Special keys that are standalone (no modifiers needed)
+      if (e.code === 'CapsLock' || macKeycode === 57) {
+        return { shortcut: 'CapsLock', keycode: 57 };
+      }
+      if (e.key === 'Fn' || e.key === 'fn' || macKeycode === 63) {
+        return { shortcut: 'fn', keycode: 63 };
+      }
+
+      // Skip if only modifier keys were pressed (no base key)
+      const modifierCodes = ['MetaLeft', 'MetaRight', 'ControlLeft', 'ControlRight',
+        'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight'];
+      if (modifierCodes.includes(e.code)) {
+        return null; // Modifier-only, wait for base key
+      }
+
+      // Need at least one modifier for a standard combo
+      if (parts.length === 0) {
+        return null; // Bare key without modifier, not valid
+      }
+
+      // Get key name for the shortcut string
+      const keyName = KEYCODE_NAMES[macKeycode] || e.key;
+      parts.push(keyName);
+
+      return { shortcut: parts.join('+'), keycode: macKeycode };
+    }
+
+    // Shortcut recorder: click button to start recording, press keys to capture
+    function initRecorder(slot) {
+      const btn = document.getElementById('shortcut-recorder-' + slot);
+      if (!btn) return;
+      let recording = false;
+      let handler = null;
+
+      btn.addEventListener('click', async () => {
+        if (recording) return;
+        recording = true;
+        btn.textContent = 'Press your shortcut...';
+        btn.style.borderColor = 'var(--accent)';
+
+        // Temporarily unregister the slot's shortcut so key events reach the webview
+        try { await invoke('cmd_suspend_shortcut', { slot }); } catch (e) { /* ok if not registered */ }
+        btn.style.color = 'var(--accent)';
+
+        async function restoreButton() {
+          recording = false;
+          const current = unifiedSlotState[slot];
+          btn.textContent = shortcutDisplayLabel(
+            (current && current.shortcut) || SLOT_DEFAULTS[slot].shortcut,
+            (current && current.keycode) || SLOT_DEFAULTS[slot].keycode
+          );
+          btn.style.borderColor = '';
+          btn.style.color = '';
+          // Re-register the previous shortcut if it was enabled
+          if (current && current.enabled) {
+            try {
+              await invoke('cmd_set_shortcut', {
+                slot,
+                enabled: true,
+                shortcut: current.shortcut,
+                keycode: current.keycode,
+              });
+            } catch (e) { console.error('Re-register shortcut after cancel:', e); }
+          }
+        }
+
+        handler = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          // Escape cancels recording
+          if (e.key === 'Escape' || e.code === 'Escape') {
+            document.removeEventListener('keydown', handler, true);
+            restoreButton();
+            return;
+          }
+
+          const result = buildShortcutString(e);
+          if (!result) return; // Modifier-only press, keep waiting
+
+          document.removeEventListener('keydown', handler, true);
+          recording = false;
+
+          const current = unifiedSlotState[slot];
+          const wasEnabled = current && current.enabled;
+
+          try {
+            const probe = await invoke('cmd_probe_shortcut', { keycode: result.keycode });
+            let effectiveEnabled = wasEnabled;
+            if (probe.needs_permission) {
+              const statusEl = document.getElementById('shortcut-status-' + slot);
+              if (statusEl) {
+                statusEl.textContent = shortcutDisplayLabel(result.shortcut, result.keycode) + ' requires Input Monitoring permission.';
+                statusEl.classList.add('error');
+              }
+              // Save choice but don't try to enable until permission is granted
+              effectiveEnabled = false;
+            }
+            if (!probe.supported) {
+              const statusEl = document.getElementById('shortcut-status-' + slot);
+              if (statusEl) {
+                statusEl.textContent = shortcutDisplayLabel(result.shortcut, result.keycode) + ' is not available on this platform.';
+                statusEl.classList.add('error');
+              }
+              btn.textContent = shortcutDisplayLabel(result.shortcut, result.keycode);
+              btn.style.borderColor = '';
+              btn.style.color = '';
+              return;
+            }
+
+            // Register the shortcut (save even if disabled)
+            const status = await invoke('cmd_set_shortcut', {
+              slot,
+              enabled: effectiveEnabled,
+              shortcut: result.shortcut,
+              keycode: result.keycode,
+            });
+            updateSlotUI(slot, status);
+          } catch (e2) {
+            btn.textContent = shortcutDisplayLabel(result.shortcut, result.keycode);
+            btn.style.borderColor = '';
+            btn.style.color = '';
+            const statusEl = document.getElementById('shortcut-status-' + slot);
+            if (statusEl) {
+              statusEl.textContent = String(e2);
+              statusEl.classList.add('error');
+            }
+          }
+        };
+
+        document.addEventListener('keydown', handler, true);
+      });
+    }
+
+    // Special key picker: Caps Lock / fn (can't be captured via keydown in a webview)
+    function initSpecialKeyPicker(slot) {
+      const links = document.querySelectorAll(`.special-key-link[data-slot="${slot}"]`);
+      links.forEach(link => {
+        link.querySelectorAll('u').forEach(u => {
+          u.style.cursor = 'pointer';
+          u.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const keyName = u.textContent.trim();
+            let shortcut, keycode;
+            if (keyName === 'Caps Lock') {
+              shortcut = 'CapsLock'; keycode = 57;
+            } else if (keyName === 'fn') {
+              shortcut = 'fn'; keycode = 63;
+            } else return;
+
+            const current = unifiedSlotState[slot];
+            const wasEnabled = current && current.enabled;
+
+            // Probe permission first
+            try {
+              const probe = await invoke('cmd_probe_shortcut', { keycode });
+              let effectiveEnabled = wasEnabled;
+              if (probe.needs_permission) {
+                effectiveEnabled = false;
+              }
+              if (!probe.supported) {
+                const statusEl = document.getElementById('shortcut-status-' + slot);
+                if (statusEl) {
+                  statusEl.textContent = keyName + ' is not available on this platform.';
+                  statusEl.classList.add('error');
+                }
+                return;
+              }
+              const status = await invoke('cmd_set_shortcut', {
+                slot, enabled: effectiveEnabled, shortcut, keycode,
+              });
+              updateSlotUI(slot, status);
+              if (probe.needs_permission) {
+                const statusEl = document.getElementById('shortcut-status-' + slot);
+                if (statusEl) {
+                  statusEl.textContent = keyName + ' requires Input Monitoring permission. Toggle On after granting it in System Settings.';
+                  statusEl.classList.add('error');
+                }
+              }
+            } catch (err) {
+              const statusEl = document.getElementById('shortcut-status-' + slot);
+              if (statusEl) { statusEl.textContent = String(err); statusEl.classList.add('error'); }
+            }
+          });
+        });
+      });
+    }
+
+    // Wire toggle buttons
+    for (const slot of UNIFIED_SLOTS) {
+      const toggle = document.getElementById('shortcut-toggle-' + slot);
+      if (toggle) {
+        toggle.addEventListener('click', () => toggleSlot(slot));
+      }
+      initRecorder(slot);
+      initSpecialKeyPicker(slot);
+    }
+
+    // Listen for status updates from the backend (native monitor lifecycle)
+    window.__TAURI__.event.listen('shortcut:status', (event) => {
+      const status = event.payload;
+      if (status && status.slot) {
+        updateSlotUI(status.slot, status);
+      }
+    });
+
+    // Flag: set synchronously so loadHotkeySettings() knows to skip
+    let unifiedShortcutsActive = true;
+
+    // Load initial state for all slots
+    // Also restore from saved config
+    (async () => {
+      const settings = await invoke('cmd_get_settings').catch(() => null);
+      for (const slot of UNIFIED_SLOTS) {
+        await loadSlotStatus(slot);
+
+        // If config says enabled but backend says disabled, restore
+        if (settings) {
+          const current = unifiedSlotState[slot];
+          let shouldRestore = false;
+          let shortcut = SLOT_DEFAULTS[slot].shortcut;
+          let keycode = SLOT_DEFAULTS[slot].keycode;
+
+          // Skip restore if backend already shows enabled (Rust setup handles it)
+          if (current && current.enabled) continue;
+
+          if (slot === 'dictation') {
+            if (settings.dictation?.hotkey_enabled) {
+              shouldRestore = true;
+              keycode = settings.dictation.hotkey_keycode || 57;
+              shortcut = keycode === 57 ? 'CapsLock' : keycode === 63 ? 'fn' : settings.dictation.shortcut;
+            } else if (settings.dictation?.shortcut_enabled) {
+              shouldRestore = true;
+              shortcut = settings.dictation.shortcut || shortcut;
+              keycode = -1;
+            }
+          }
+
+          if (slot === 'quick_thought') {
+            const storedEnabled = localStorage.getItem('minutes.globalHotkeyEnabled');
+            const storedShortcut = localStorage.getItem('minutes.globalHotkeyShortcut');
+            if (storedEnabled === 'true') {
+              shouldRestore = true;
+              shortcut = storedShortcut || shortcut;
+              keycode = -1;
+            }
+          }
+
+          if (shouldRestore) {
+            try {
+              const status = await invoke('cmd_set_shortcut', { slot, enabled: true, shortcut, keycode });
+              updateSlotUI(slot, status);
+            } catch (e) {
+              console.error('Restore shortcut for ' + slot + ':', e);
+            }
+          }
+        }
+      }
+    })();
+
+    // ── End Unified Shortcut Recorder ──────────────────────────
+
+    // Dictation hotkey — "press to record" key capture (legacy, kept for old UI paths)
     const KEYCODE_NAMES = {
       0: 'A', 1: 'S', 2: 'D', 3: 'F', 4: 'H', 5: 'G', 6: 'Z', 7: 'X', 8: 'C', 9: 'V',
       11: 'B', 12: 'Q', 13: 'W', 14: 'E', 15: 'R', 16: 'Y', 17: 'T',
@@ -3210,6 +5354,24 @@
       Home: 115, End: 119, PageUp: 116, PageDown: 121, Delete: 117,
       ArrowLeft: 123, ArrowRight: 124, ArrowDown: 125, ArrowUp: 126,
     };
+    const BROWSER_KEY_TO_MAC = {
+      CapsLock: 57, 'Caps Lock': 57, Fn: 63, fn: 63,
+      Backspace: 51, Delete: 117, Escape: 53, Esc: 53, Tab: 48, ' ': 49, Space: 49,
+      Enter: 36, Return: 36,
+      ArrowLeft: 123, ArrowRight: 124, ArrowDown: 125, ArrowUp: 126,
+      Home: 115, End: 119, PageUp: 116, PageDown: 121,
+      F1: 122, F2: 120, F3: 99, F4: 118, F5: 96, F6: 97, F7: 98, F8: 100,
+      F9: 101, F10: 109, F11: 103, F12: 111, F13: 105, F14: 107, F15: 113, F16: 106,
+      F18: 79, F19: 80,
+    };
+    const LEGACY_KEYCODE_TO_MAC = {
+      8: 51, 9: 48, 13: 36, 20: 57, 27: 53, 32: 49,
+      33: 116, 34: 121, 35: 119, 36: 115,
+      37: 123, 38: 126, 39: 124, 40: 125,
+      112: 122, 113: 120, 114: 99, 115: 118, 116: 96, 117: 97, 118: 98, 119: 100,
+      120: 101, 121: 109, 122: 103, 123: 111,
+      144: 63,
+    };
     let dictationKeycode = 57; // default: Caps Lock
     let dictationHotkeyEnabled = false;
     let dictationHotkeyPending = false;
@@ -3220,6 +5382,20 @@
 
     function dictationHotkeyLabel(keycode) {
       return KEYCODE_NAMES[keycode] || `Key ${keycode}`;
+    }
+
+    function eventToMacKeycode(e) {
+      if (typeof BROWSER_CODE_TO_MAC[e.code] === 'number') {
+        return BROWSER_CODE_TO_MAC[e.code];
+      }
+      if (typeof BROWSER_KEY_TO_MAC[e.key] === 'number') {
+        return BROWSER_KEY_TO_MAC[e.key];
+      }
+      const legacy = e.keyCode ?? e.which;
+      if (typeof LEGACY_KEYCODE_TO_MAC[legacy] === 'number') {
+        return LEGACY_KEYCODE_TO_MAC[legacy];
+      }
+      return null;
     }
 
     function clearDictationHotkeyStartupTimer() {
@@ -3257,12 +5433,18 @@
       const toggleBtn = document.getElementById('settings-dictation-hotkey');
       const statusEl = document.getElementById('settings-dictation-hotkey-status');
 
-      hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);
-      hotkeyRecordBtn.style.borderColor = '';
-      hotkeyRecordBtn.style.color = '';
+      if (hotkeyRecordBtn) {
+        hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);
+        hotkeyRecordBtn.style.borderColor = '';
+        hotkeyRecordBtn.style.color = '';
+      }
 
-      toggleBtn.disabled = false;
       if (dictationHotkeyPending) {
+        toggleBtn.disabled = false;
+        if (hotkeyRecordBtn) {
+          hotkeyRecordBtn.disabled = false;
+          hotkeyRecordBtn.style.opacity = '';
+        }
         toggleBtn.textContent = 'Starting...';
         toggleBtn.style.opacity = '0.85';
         statusEl.style.color = '';
@@ -3271,37 +5453,73 @@
         return;
       }
 
+      toggleBtn.style.opacity = '';
       setSettingsToggle('settings-dictation-hotkey', dictationHotkeyEnabled);
 
       if (status.state === 'failed') {
+        toggleBtn.disabled = false;
+        if (hotkeyRecordBtn) {
+          hotkeyRecordBtn.disabled = false;
+          hotkeyRecordBtn.style.opacity = '';
+        }
         statusEl.style.color = 'var(--red)';
         statusEl.textContent = status.message || 'Could not start the native dictation hotkey.';
       } else if (status.state === 'active') {
+        toggleBtn.disabled = false;
+        if (hotkeyRecordBtn) {
+          hotkeyRecordBtn.disabled = false;
+          hotkeyRecordBtn.style.opacity = '';
+        }
         statusEl.style.color = '';
-        statusEl.textContent = `Active - tap ${dictationHotkeyLabel(dictationKeycode)} to start/stop dictation`;
+        statusEl.textContent = `Active - hold ${dictationHotkeyLabel(dictationKeycode)} to dictate, or tap it to lock and tap again to stop`;
       } else if (status.state === 'unsupported') {
-        statusEl.style.color = 'var(--red)';
-        statusEl.textContent = status.message || 'Native dictation hotkey is only available on macOS.';
+        toggleBtn.disabled = true;
+        toggleBtn.textContent = 'N/A';
+        toggleBtn.style.opacity = '0.5';
+        if (hotkeyRecordBtn) {
+          hotkeyRecordBtn.disabled = true;
+          hotkeyRecordBtn.style.opacity = '0.5';
+        }
+        statusEl.style.color = 'var(--text-secondary)';
+        statusEl.textContent = status.message || 'Native dictation hotkey is currently available on macOS only.';
       } else {
+        toggleBtn.disabled = false;
+        if (hotkeyRecordBtn) {
+          hotkeyRecordBtn.disabled = false;
+          hotkeyRecordBtn.style.opacity = '';
+        }
         statusEl.style.color = '';
-        statusEl.textContent = 'Tap to start dictation, tap again to stop. Requires Input Monitoring permission.';
+        statusEl.textContent = 'Hold the selected key to dictate, or tap to lock and tap again to stop. Requires Input Monitoring permission.';
       }
     }
 
-    hotkeyRecordBtn.addEventListener('click', () => {
+    if (hotkeyRecordBtn) hotkeyRecordBtn.addEventListener('click', () => {
       if (isRecordingHotkey) return;
       isRecordingHotkey = true;
       hotkeyRecordBtn.textContent = 'Press any key...';
       hotkeyRecordBtn.style.borderColor = 'var(--accent)';
       hotkeyRecordBtn.style.color = 'var(--accent)';
 
-      function captureKey(e) {
+      async function persistDictationHotkeySelection(macKeycode) {
+        await invoke('cmd_set_setting', {
+          section: 'dictation',
+          key: 'hotkey_keycode',
+          value: String(macKeycode),
+        });
+      }
+
+      function cleanupCaptureListeners() {
+        document.removeEventListener('keydown', captureKey, true);
+        document.removeEventListener('keyup', captureKey, true);
+      }
+
+      async function captureKey(e) {
         e.preventDefault();
         e.stopPropagation();
-        document.removeEventListener('keydown', captureKey, true);
+        cleanupCaptureListeners();
         isRecordingHotkey = false;
 
-        const macKeycode = BROWSER_CODE_TO_MAC[e.code];
+        const macKeycode = eventToMacKeycode(e);
         if (typeof macKeycode !== 'number') {
           hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);
           hotkeyRecordBtn.style.borderColor = '';
@@ -3319,10 +5537,15 @@
         hotkeyRecordBtn.style.borderColor = '';
         hotkeyRecordBtn.style.color = '';
 
-        // Save to config
-        invoke('cmd_set_setting', { section: 'dictation', key: 'hotkey_keycode', value: String(macKeycode) }).catch((error) => {
+        try {
+          await persistDictationHotkeySelection(macKeycode);
+        } catch (error) {
           console.error('Save dictation hotkey:', error);
-        });
+          const status = document.getElementById('settings-dictation-hotkey-status');
+          status.style.color = 'var(--red)';
+          status.textContent = `Minutes couldn't save ${name} as the dictation hotkey.`;
+          return;
+        }
 
         // If hotkey is enabled, restart with new key
         if (dictationHotkeyEnabled || dictationHotkeyPending) {
@@ -3337,18 +5560,33 @@
                 message: String(error),
               });
             });
+        } else {
+          const status = document.getElementById('settings-dictation-hotkey-status');
+          status.style.color = '';
+          status.textContent = `${name} saved. Toggle the dictation hotkey on when you're ready to use it.`;
         }
       }
 
       document.addEventListener('keydown', captureKey, true);
+      document.addEventListener('keyup', captureKey, true);
     });
 
-    document.getElementById('settings-dictation-hotkey').addEventListener('click', async () => {
+    if (document.getElementById('settings-dictation-hotkey')) document.getElementById('settings-dictation-hotkey').addEventListener('click', async () => {
       const next = !(dictationHotkeyEnabled || dictationHotkeyPending);
       try {
         const status = await invoke('cmd_enable_dictation_hotkey', { enabled: next, keycode: dictationKeycode });
+        await invoke('cmd_set_setting', {
+          section: 'dictation',
+          key: 'hotkey_enabled',
+          value: String(status.enabled || status.pending),
+        });
         applyDictationHotkeyStatus(status);
       } catch (e) {
+        await invoke('cmd_set_setting', {
+          section: 'dictation',
+          key: 'hotkey_enabled',
+          value: 'false',
+        }).catch(() => {});
         applyDictationHotkeyStatus({
           state: 'failed',
           enabled: false,
@@ -3390,6 +5628,9 @@
       }
       if (e.key === 'Escape' && recoveryOverlay.classList.contains('active')) {
         closeRecovery();
+      }
+      if (e.key === 'Escape' && jobsOverlay.classList.contains('active')) {
+        closeJobs();
       }
       if (e.key === 'Escape' && detailOverlay.classList.contains('active')) {
         closeDetailView();
@@ -3536,26 +5777,30 @@
       userExplicitlyCollapsed = false;
       recallNudge.classList.remove('active');
 
-      try {
-        // outerPosition() returns physical pixels; convert to logical
-        // so setPosition(LogicalPosition) doesn't shift on Retina displays.
-        const scaleFactor = await currentWindow.scaleFactor();
-        const pos = await currentWindow.outerPosition();
-        const logicalX = pos.x / scaleFactor;
-        const logicalY = pos.y / scaleFactor;
-        const screenWidth = window.screen.availWidth;
-        const newRight = logicalX + EXPANDED_WIDTH;
-        if (newRight > screenWidth) {
-          const shiftX = Math.max(0, logicalX - (newRight - screenWidth));
-          await currentWindow.setPosition(new window.__TAURI__.window.LogicalPosition(shiftX, logicalY));
-        }
-      } catch (e) {
-        console.error('Screen edge check:', e);
-      }
+      const isFullscreen = await currentWindow.isFullscreen().catch(() => false);
 
-      await currentWindow.setSize(
-        new window.__TAURI__.window.LogicalSize(EXPANDED_WIDTH, 640)
-      );
+      if (!isFullscreen) {
+        try {
+          // outerPosition() returns physical pixels; convert to logical
+          // so setPosition(LogicalPosition) doesn't shift on Retina displays.
+          const scaleFactor = await currentWindow.scaleFactor();
+          const pos = await currentWindow.outerPosition();
+          const logicalX = pos.x / scaleFactor;
+          const logicalY = pos.y / scaleFactor;
+          const screenWidth = window.screen.availWidth;
+          const newRight = logicalX + EXPANDED_WIDTH;
+          if (newRight > screenWidth) {
+            const shiftX = Math.max(0, logicalX - (newRight - screenWidth));
+            await currentWindow.setPosition(new window.__TAURI__.window.LogicalPosition(shiftX, logicalY));
+          }
+        } catch (e) {
+          console.error('Screen edge check:', e);
+        }
+
+        await currentWindow.setSize(
+          new window.__TAURI__.window.LogicalSize(EXPANDED_WIDTH, 640)
+        );
+      }
 
       recallPanel.classList.add('expanded');
       assistantBtn.setAttribute('aria-expanded', 'true');
@@ -3580,10 +5825,14 @@
       recallPanel.classList.remove('expanded');
       assistantBtn.setAttribute('aria-expanded', 'false');
 
+      const isFullscreen = await currentWindow.isFullscreen().catch(() => false);
+
       setTimeout(async () => {
-        await currentWindow.setSize(
-          new window.__TAURI__.window.LogicalSize(COLLAPSED_WIDTH, 640)
-        );
+        if (!isFullscreen) {
+          await currentWindow.setSize(
+            new window.__TAURI__.window.LogicalSize(COLLAPSED_WIDTH, 640)
+          );
+        }
         recallExpanded = false;
         expandAnimating = false;
         localStorage.setItem('minutes.recallExpanded', 'false');
@@ -3654,38 +5903,146 @@
     // ── Call detection banner ──
     const callBanner = document.getElementById('call-detected-banner');
     const callTitle = document.getElementById('call-detected-title');
-    let callBannerTimeout = null;
+    const callSubtitle = document.getElementById('call-detected-subtitle');
+    const callDetail = document.getElementById('call-detected-detail');
+    const callHealthMic = document.getElementById('call-health-mic');
+    const callHealthAudio = document.getElementById('call-health-audio');
+    let activeCallSession = null;
+
+    function setCallHealthChip(node, text, live) {
+      if (!node) return;
+      node.textContent = text;
+      node.classList.toggle('live', !!live);
+    }
 
     currentWindow.listen('call:detected', (event) => {
-      const { app_name } = event.payload;
+      const { app_name, is_reminder } = event.payload;
+      activeCallSession = {
+        app_name,
+        dismissed: false,
+      };
       callTitle.textContent = `${app_name} call detected`;
+      callSubtitle.textContent = 'Ready to record this call';
+      callDetail.textContent = 'Minutes will stay ready while this call is active until you start recording or dismiss this session.';
+      setCallHealthChip(callHealthMic, 'Mic waiting', false);
+      setCallHealthChip(callHealthAudio, 'Call audio waiting', false);
       callBanner.classList.add('active');
 
-      // Show the main window so user sees the banner
-      currentWindow.show();
-      currentWindow.setFocus();
-
-      // Auto-dismiss after 30s
-      clearTimeout(callBannerTimeout);
-      callBannerTimeout = setTimeout(() => {
-        callBanner.classList.remove('active');
-      }, 30000);
+      // Only steal focus on first detection, not periodic reminders
+      if (!is_reminder) {
+        currentWindow.show();
+        currentWindow.setFocus();
+      }
     });
 
     document.getElementById('btn-record-call').addEventListener('click', async () => {
-      callBanner.classList.remove('active');
-      clearTimeout(callBannerTimeout);
-      // Start recording via the existing record button handler
-      document.getElementById('btn-record').click();
+      try {
+        await invoke('cmd_start_recording', { intent: 'call' });
+      } catch (e) {
+        console.error('Call recording:', e);
+      }
     });
 
     document.getElementById('btn-dismiss-call').addEventListener('click', () => {
+      if (activeCallSession) activeCallSession.dismissed = true;
       callBanner.classList.remove('active');
-      clearTimeout(callBannerTimeout);
     });
 
     currentWindow.listen('dictation-hotkey:status', (event) => {
       applyDictationHotkeyStatus(event.payload);
+    });
+
+    // ── Auto-update banner ──
+    const updateBanner = document.getElementById('update-banner');
+    function showUpdateBanner(version, body) {
+      if (!updateBanner) return;
+      const titleEl = document.getElementById('update-banner-title');
+      const subEl = document.getElementById('update-banner-sub');
+      if (titleEl) titleEl.textContent = 'Update available (v' + version + ')';
+      if (subEl) subEl.textContent =
+        body ? body.split('\n')[0].slice(0, 80) : 'A new version is ready to install';
+      updateBanner.classList.add('active');
+    }
+    // Restore banner from localStorage if a pending update was stored,
+    // but only if the stored version is newer than the current app version
+    // (clears stale entries from a successfully applied update)
+    try {
+      const stored = localStorage.getItem('minutes-pending-update');
+      if (stored) {
+        const { version, body } = JSON.parse(stored);
+        window.__TAURI__.app.getVersion().then(currentVersion => {
+          if (version && version !== currentVersion) {
+            showUpdateBanner(version, body);
+          } else {
+            localStorage.removeItem('minutes-pending-update');
+          }
+        }).catch(() => {});
+      }
+    } catch (_) {}
+    currentWindow.listen('update-ready', (event) => {
+      const { version, body } = event.payload;
+      try { localStorage.setItem('minutes-pending-update', JSON.stringify({ version, body })); } catch (_) {}
+      showUpdateBanner(version, body);
+    });
+    document.getElementById('btn-restart-update').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-restart-update');
+      btn.textContent = 'Updating...';
+      btn.disabled = true;
+      try {
+        await window.__TAURI__.core.invoke('cmd_install_update');
+      } catch (e) {
+        console.error('[updater] update failed:', e);
+        btn.textContent = 'Restart Now';
+        btn.disabled = false;
+        const subEl = document.getElementById('update-banner-sub');
+        if (subEl) subEl.textContent = String(e);
+      }
+    });
+    document.getElementById('btn-dismiss-update').addEventListener('click', () => {
+      if (updateBanner) updateBanner.classList.remove('active');
+      try { localStorage.removeItem('minutes-pending-update'); } catch (_) {}
+    });
+
+    // ── Listen for live transcript events (T6: immediate UI feedback) ──
+    currentWindow.listen('live-transcript:started', () => {
+      isLiveTranscript = true;
+      liveBar.classList.add('active');
+      footer.style.display = 'none';
+      statusPill.className = 'status-pill live';
+      statusPill.textContent = 'live';
+      startFastPoll();
+      playCue('start');
+    });
+
+    currentWindow.listen('live-transcript:stopped', (event) => {
+      isLiveTranscript = false;
+      liveBar.classList.remove('active');
+      footer.style.display = '';
+      statusPill.className = 'status-pill';
+      statusPill.textContent = 'idle';
+      stopFastPoll();
+      loadMeetings();
+      playCue('stop');
+    });
+
+    currentWindow.listen('live-transcript:error', (event) => {
+      isLiveTranscript = false;
+      liveBar.classList.remove('active');
+      footer.style.display = '';
+      statusPill.className = 'status-pill';
+      statusPill.textContent = 'idle';
+      stopFastPoll();
+      const errMsg = event.payload?.error || 'Unknown error';
+      console.error('[live-transcript] error:', errMsg);
+      // Show visible error to user
+      const noticeIcon = document.getElementById('output-notice-icon');
+      const noticeTitle = document.getElementById('output-notice-title');
+      const noticeDetail = document.getElementById('output-notice-detail');
+      const notice = document.getElementById('output-notice');
+      if (noticeIcon) noticeIcon.textContent = '✕';
+      if (noticeTitle) noticeTitle.textContent = 'Live transcript stopped unexpectedly';
+      if (noticeDetail) noticeDetail.textContent = errMsg;
+      if (notice) notice.classList.add('active');
     });
 
     // ── Listen for recall:expand events from Rust backend ──
@@ -3701,6 +6058,22 @@
       recallLoading.style.display = 'none';
       recallTerminalContainer.style.display = '';
       recallEndBtn.style.display = '';
+    });
+
+    // ── Restore window size when exiting fullscreen with recall panel open ──
+    // Track prior fullscreen state so the snap only fires on the actual
+    // fullscreen → windowed transition, not on every user drag-resize
+    // (which would also risk a resize loop since setSize triggers onResized).
+    let wasFullscreen = false;
+    currentWindow.onResized(async () => {
+      const fs = await currentWindow.isFullscreen().catch(() => false);
+      if (wasFullscreen && !fs && recallExpanded) {
+        await currentWindow.setSize(
+          new window.__TAURI__.window.LogicalSize(EXPANDED_WIDTH, 640)
+        ).catch(() => {});
+        if (recallFitAddon) recallFitAddon.fit();
+      }
+      wasFullscreen = fs;
     });
 
     // ── Button handlers ──
@@ -3811,6 +6184,7 @@
     invoke('cmd_set_completion_notifications', { enabled: notifyOnCompletion }).catch((e) => {
       console.error('Init notifications:', e);
     });
+    loadDesktopCapabilities();
     loadHotkeySettings();
     checkSetup();
     checkStatus();

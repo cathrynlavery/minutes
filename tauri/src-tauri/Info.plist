@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Minutes needs microphone access to record meetings and voice memos.</string>
+    <string>Minutes needs microphone access to record meetings, voice memos, and your side of call audio.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Minutes can capture periodic screenshots during recordings to give the AI visual context about what was on screen. Enable in config: [screen_context] enabled = true</string>
+    <string>Minutes uses screen and system-audio capture for call recording and can optionally capture screenshots for visual context during recordings.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>Minutes shows upcoming meetings in the menu bar so you can start recording with one click.</string>
 </dict>

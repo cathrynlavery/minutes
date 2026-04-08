@@ -18,7 +18,7 @@ The `Release macOS` workflow:
 - builds the Tauri desktop bundle with macOS signing + notarization
 - uploads the signed `Minutes.app`
 - uploads the signed `.dmg`
-- attaches the `.dmg` to the GitHub Release when the workflow was triggered by a tag
+- uploads the `.dmg` to an existing GitHub Release when the workflow was triggered by a tag
 
 ## Required GitHub secrets
 
@@ -64,29 +64,29 @@ Run the workflow from the GitHub Actions UI:
 
 ### Tagged release
 
-Push a version tag:
+Create the GitHub Release first, with notes, and let that create the tag:
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+scripts/release_notes.sh HEAD stable > notes.md
+gh release create v0.1.1 -t "v0.1.1: Short title" -F notes.md --target main
 ```
 
 That will:
 
-- run the same workflow
+- create the release with a non-empty body
+- create the matching remote tag
+- trigger the same macOS workflow
 - build the signed + notarized artifacts
-- generate a release-note draft from the previous tag to the new tag
-- attach the generated `.dmg` to the GitHub Release for that tag
+- upload the `.dmg` to the existing GitHub Release for that tag
 
 For preview builds, use a prerelease tag such as:
 
 ```bash
-git tag v0.2.0-beta.1
-git push origin v0.2.0-beta.1
+scripts/release_notes.sh HEAD preview > notes.md
+gh release create v0.2.0-beta.1 -t "v0.2.0-beta.1: Preview title" -F notes.md --target main --prerelease
 ```
 
-The workflow will publish those as GitHub prereleases instead of stable
-releases.
+The workflow will upload artifacts to that prerelease instead of creating one.
 
 ## Local maintainer verification
 
@@ -106,11 +106,16 @@ first and then run the same commands.
 - The workflow is intentionally explicit rather than magical. If signing or
   notarization fails, the logs should point directly at the failing secret or
   Apple step.
+- On tag builds, CI now refuses to create a release on your behalf. If
+  `gh release view <tag>` fails, fix the release creation step first instead of
+  pushing the tag directly.
 - The workflow pins `TAURI_CLI_VERSION` in YAML. Bump that version
   intentionally when we decide to move the release toolchain forward.
 - The workflow currently builds the runner-native macOS bundle. If universal
   binaries become a requirement later, track that separately instead of
   complicating this first trusted pipeline.
+- Windows desktop release guidance lives in
+  [docs/RELEASE-WINDOWS.md](/Users/silverbook/Sites/minutes/docs/RELEASE-WINDOWS.md).
 - Channel and rollback rules live in
   [docs/RELEASE-CHANNELS.md](/Users/silverbook/Sites/minutes/docs/RELEASE-CHANNELS.md).
 - Reproducible release-note generation lives in

@@ -1,11 +1,16 @@
+use crate::call_capture;
+use minutes_core::capture::RecordingIntent;
 use minutes_core::{CaptureMode, Config, ContentType};
 use std::cmp::Reverse;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_shell::ShellExt;
 
 pub struct AppState {
     pub recording: Arc<AtomicBool>,
@@ -14,19 +19,86 @@ pub struct AppState {
     pub processing: Arc<AtomicBool>,
     pub processing_stage: Arc<Mutex<Option<String>>>,
     pub latest_output: Arc<Mutex<Option<OutputNotice>>>,
+    pub call_capture_health: Arc<Mutex<Option<crate::call_capture::CallSourceHealth>>>,
     pub completion_notifications_enabled: Arc<AtomicBool>,
     pub global_hotkey_enabled: Arc<AtomicBool>,
     pub global_hotkey_shortcut: Arc<Mutex<String>>,
     pub hotkey_runtime: Arc<Mutex<HotkeyRuntime>>,
     pub discard_short_hotkey_capture: Arc<AtomicBool>,
     pub pty_manager: Arc<Mutex<crate::pty::PtyManager>>,
+    pub dictation_active: Arc<AtomicBool>,
     pub dictation_stop_flag: Arc<AtomicBool>,
+    pub dictation_shortcut_enabled: Arc<AtomicBool>,
+    pub dictation_shortcut: Arc<Mutex<String>>,
+    pub live_transcript_active: Arc<AtomicBool>,
+    pub live_transcript_stop_flag: Arc<AtomicBool>,
+    pub live_shortcut_enabled: Arc<AtomicBool>,
+    pub live_shortcut: Arc<Mutex<String>>,
+    pub pending_update: Arc<Mutex<Option<PendingUpdate>>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingUpdate {
+    pub version: String,
+    pub body: String,
+}
+
+/// Surface a deferred update notification if one is pending and no session is active.
+/// Call this after recording/live/dictation stops.
+pub fn surface_deferred_update(app: &tauri::AppHandle) {
+    let state = match app.try_state::<AppState>() {
+        Some(s) => s,
+        None => return,
+    };
+    if state.recording.load(Ordering::Relaxed)
+        || state.starting.load(Ordering::Relaxed)
+        || state.processing.load(Ordering::Relaxed)
+        || state.live_transcript_active.load(Ordering::Relaxed)
+        || state.dictation_active.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    let pending = match state.pending_update.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => return,
+    };
+    if let Some(update) = pending {
+        let _ = app.emit(
+            "update-ready",
+            serde_json::json!({
+                "version": update.version,
+                "body": update.body,
+            }),
+        );
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MeetingSection {
     pub heading: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SpeakerAttributionView {
+    pub speaker_label: String,
+    pub name: String,
+    pub confidence: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActionItemView {
+    pub assignee: String,
+    pub task: String,
+    pub due: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DecisionView {
+    pub text: String,
+    pub topic: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -40,7 +112,10 @@ pub struct MeetingDetail {
     pub context: Option<String>,
     pub attendees: Vec<String>,
     pub calendar_event: Option<String>,
+    pub action_items: Vec<ActionItemView>,
+    pub decisions: Vec<DecisionView>,
     pub sections: Vec<MeetingSection>,
+    pub speaker_map: Vec<SpeakerAttributionView>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -69,6 +144,55 @@ pub struct RecoveryItem {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessingJobView {
+    pub id: String,
+    pub title: String,
+    pub mode: String,
+    pub state: String,
+    pub stage: Option<String>,
+    pub output_path: Option<String>,
+    pub audio_path: String,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub word_count: Option<usize>,
+}
+
+fn processing_job_view(job: minutes_core::jobs::ProcessingJob) -> ProcessingJobView {
+    ProcessingJobView {
+        id: job.id,
+        title: job.title.unwrap_or_else(|| "Queued recording".into()),
+        mode: match job.mode {
+            CaptureMode::Meeting => "meeting".into(),
+            CaptureMode::QuickThought => "quick-thought".into(),
+            CaptureMode::Dictation => "dictation".into(),
+            CaptureMode::LiveTranscript => "live-transcript".into(),
+        },
+        state: match job.state {
+            minutes_core::jobs::JobState::Queued => "queued".into(),
+            minutes_core::jobs::JobState::Transcribing => "transcribing".into(),
+            minutes_core::jobs::JobState::TranscriptOnly => "transcript-only".into(),
+            minutes_core::jobs::JobState::Diarizing => "diarizing".into(),
+            minutes_core::jobs::JobState::Summarizing => "summarizing".into(),
+            minutes_core::jobs::JobState::Saving => "saving".into(),
+            minutes_core::jobs::JobState::NeedsReview => "needs-review".into(),
+            minutes_core::jobs::JobState::Complete => "complete".into(),
+            minutes_core::jobs::JobState::Failed => "failed".into(),
+        },
+        stage: job.stage,
+        output_path: job.output_path,
+        audio_path: job.audio_path,
+        error: job.error,
+        created_at: job.created_at.to_rfc3339(),
+        started_at: job.started_at.map(|ts| ts.to_rfc3339()),
+        finished_at: job.finished_at.map(|ts| ts.to_rfc3339()),
+        word_count: job.word_count,
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct HotkeyChoice {
     pub value: String,
     pub label: String,
@@ -79,6 +203,17 @@ pub struct HotkeySettings {
     pub enabled: bool,
     pub shortcut: String,
     pub choices: Vec<HotkeyChoice>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopCapabilities {
+    pub platform: String,
+    pub folder_reveal_label: String,
+    pub supports_calendar_integration: bool,
+    pub supports_call_detection: bool,
+    pub supports_tray_artifact_copy: bool,
+    pub supports_dictation_hotkey: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -106,15 +241,62 @@ const HOTKEY_CHOICES: [(&str, &str); 3] = [
     ("CmdOrCtrl+Shift+J", "Cmd/Ctrl + Shift + J"),
     ("CmdOrCtrl+Shift+T", "Cmd/Ctrl + Shift + T"),
 ];
+const DICTATION_SHORTCUT_CHOICES: [(&str, &str); 3] = [
+    ("CmdOrCtrl+Shift+Space", "Cmd/Ctrl + Shift + Space"),
+    ("CmdOrCtrl+Alt+Space", "Cmd/Ctrl + Option/Alt + Space"),
+    ("CmdOrCtrl+Shift+D", "Cmd/Ctrl + Shift + D"),
+];
 const HOTKEY_HOLD_THRESHOLD_MS: u64 = 300;
 const HOTKEY_MIN_DURATION_MS: u64 = 400;
+
+pub fn current_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "other"
+    }
+}
+
+pub fn supports_calendar_integration() -> bool {
+    cfg!(target_os = "macos")
+}
+
+pub fn supports_call_detection() -> bool {
+    cfg!(target_os = "macos")
+}
+
+pub fn supports_tray_artifact_copy() -> bool {
+    cfg!(target_os = "macos")
+}
+
+pub fn supports_dictation_hotkey() -> bool {
+    cfg!(target_os = "macos")
+}
+
+pub fn folder_reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Show in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Show in Explorer"
+    } else {
+        "Show in Folder"
+    }
+}
 
 pub fn default_hotkey_shortcut() -> &'static str {
     HOTKEY_CHOICES[0].0
 }
 
-fn hotkey_choices() -> Vec<HotkeyChoice> {
-    HOTKEY_CHOICES
+pub fn default_dictation_shortcut() -> &'static str {
+    DICTATION_SHORTCUT_CHOICES[0].0
+}
+
+fn shortcut_choices(choices: &[(&str, &str)]) -> Vec<HotkeyChoice> {
+    choices
         .iter()
         .map(|(value, label)| HotkeyChoice {
             value: (*value).to_string(),
@@ -123,21 +305,37 @@ fn hotkey_choices() -> Vec<HotkeyChoice> {
         .collect()
 }
 
-fn validate_hotkey_shortcut(shortcut: &str) -> Result<String, String> {
-    HOTKEY_CHOICES
+fn hotkey_choices() -> Vec<HotkeyChoice> {
+    shortcut_choices(&HOTKEY_CHOICES)
+}
+
+fn dictation_shortcut_choices() -> Vec<HotkeyChoice> {
+    shortcut_choices(&DICTATION_SHORTCUT_CHOICES)
+}
+
+fn validate_shortcut(shortcut: &str, choices: &[(&str, &str)]) -> Result<String, String> {
+    choices
         .iter()
         .find_map(|(value, _)| (*value == shortcut).then(|| (*value).to_string()))
         .ok_or_else(|| {
             format!(
                 "Unsupported shortcut: {}. Choose one of: {}",
                 shortcut,
-                HOTKEY_CHOICES
+                choices
                     .iter()
                     .map(|(_, label)| *label)
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         })
+}
+
+fn validate_hotkey_shortcut(shortcut: &str) -> Result<String, String> {
+    validate_shortcut(shortcut, &HOTKEY_CHOICES)
+}
+
+fn validate_dictation_shortcut(shortcut: &str) -> Result<String, String> {
+    validate_shortcut(shortcut, &DICTATION_SHORTCUT_CHOICES)
 }
 
 fn current_hotkey_settings(state: &AppState) -> HotkeySettings {
@@ -151,6 +349,20 @@ fn current_hotkey_settings(state: &AppState) -> HotkeySettings {
         enabled: state.global_hotkey_enabled.load(Ordering::Relaxed),
         shortcut,
         choices: hotkey_choices(),
+    }
+}
+
+fn current_dictation_shortcut_settings(state: &AppState) -> HotkeySettings {
+    let shortcut = state
+        .dictation_shortcut
+        .lock()
+        .ok()
+        .map(|value| value.clone())
+        .unwrap_or_else(|| default_dictation_shortcut().to_string());
+    HotkeySettings {
+        enabled: state.dictation_shortcut_enabled.load(Ordering::Relaxed),
+        shortcut,
+        choices: dictation_shortcut_choices(),
     }
 }
 
@@ -181,6 +393,13 @@ fn reset_hotkey_capture_state(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn is_short_hotkey_tap(started_at: Option<Instant>, now: Instant) -> bool {
+    started_at
+        .map(|pressed| now.duration_since(pressed).as_millis() < HOTKEY_HOLD_THRESHOLD_MS as u128)
+        .unwrap_or(false)
+}
+
 fn preserve_failed_capture(wav_path: &std::path::Path, config: &Config) -> Option<PathBuf> {
     let metadata = wav_path.metadata().ok()?;
     if metadata.len() == 0 {
@@ -199,6 +418,252 @@ fn preserve_failed_capture(wav_path: &std::path::Path, config: &Config) -> Optio
     Some(dest)
 }
 
+fn preserve_failed_capture_path(path: &std::path::Path, config: &Config) -> Option<PathBuf> {
+    let metadata = path.metadata().ok()?;
+    if metadata.len() == 0 {
+        return None;
+    }
+
+    let dir = config.output_dir.join("failed-captures");
+    std::fs::create_dir_all(&dir).ok()?;
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("bin");
+    let dest = dir.join(format!(
+        "{}-capture.{}",
+        chrono::Local::now().format("%Y-%m-%d-%H%M%S"),
+        ext
+    ));
+
+    std::fs::copy(path, &dest).ok()?;
+    std::fs::remove_file(path).ok();
+    Some(dest)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn start_native_call_recording(
+    app_handle: &tauri::AppHandle,
+    recording: &Arc<AtomicBool>,
+    starting: &Arc<AtomicBool>,
+    stop_flag: &Arc<AtomicBool>,
+    processing: &Arc<AtomicBool>,
+    processing_stage: &Arc<Mutex<Option<String>>>,
+    latest_output: &Arc<Mutex<Option<OutputNotice>>>,
+    call_capture_health: &Arc<Mutex<Option<crate::call_capture::CallSourceHealth>>>,
+    completion_notifications_enabled: &Arc<AtomicBool>,
+    hotkey_runtime: Option<&Arc<Mutex<HotkeyRuntime>>>,
+    discard_short_hotkey_capture: Option<&Arc<AtomicBool>>,
+    mode: CaptureMode,
+    config: &Config,
+    requested_title: Option<String>,
+) -> Result<(), String> {
+    minutes_core::pid::create().map_err(|error| error.to_string())?;
+    let mut session = match call_capture::start_native_call_capture() {
+        Ok(session) => session,
+        Err(error) => {
+            minutes_core::pid::remove().ok();
+            return Err(error);
+        }
+    };
+    let output_path = session.output_path().to_path_buf();
+    let recording_started_at = chrono::Local::now();
+
+    starting.store(false, Ordering::Relaxed);
+    recording.store(true, Ordering::Relaxed);
+    stop_flag.store(false, Ordering::Relaxed);
+    sync_processing_indicator(processing, processing_stage);
+    set_latest_output(latest_output, None);
+    if let Ok(mut health) = call_capture_health.lock() {
+        *health = Some(session.source_health());
+    }
+    minutes_core::pid::write_recording_metadata(mode).ok();
+    crate::update_tray_state(app_handle, true);
+    minutes_core::notes::save_recording_start().ok();
+
+    eprintln!(
+        "[minutes] Native call capture started: {}",
+        output_path.display()
+    );
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
+        if minutes_core::pid::check_and_clear_sentinel() {
+            break;
+        }
+        if let Some(status) = session.try_wait()? {
+            if let Ok(mut health) = call_capture_health.lock() {
+                *health = Some(session.source_health());
+            }
+            if !status.success() {
+                let preserved = preserve_failed_capture_path(&output_path, config);
+                minutes_core::pid::remove().ok();
+                minutes_core::pid::clear_recording_metadata().ok();
+                minutes_core::notes::cleanup();
+                recording.store(false, Ordering::Relaxed);
+                starting.store(false, Ordering::Relaxed);
+                if let Ok(mut health) = call_capture_health.lock() {
+                    *health = None;
+                }
+                if let Some(saved) = preserved {
+                    let notice = OutputNotice {
+                        kind: "preserved-capture".into(),
+                        title: "Native call capture failed".into(),
+                        path: saved.display().to_string(),
+                        detail:
+                            "ScreenCaptureKit capture ended early, but the raw output was preserved."
+                                .into(),
+                    };
+                    set_latest_output(latest_output, Some(notice.clone()));
+                    maybe_show_completion_notification(
+                        app_handle,
+                        completion_notifications_enabled,
+                        &notice,
+                    );
+                }
+                reset_hotkey_capture_state(hotkey_runtime, discard_short_hotkey_capture);
+                return Ok(());
+            }
+            break;
+        }
+    }
+
+    if let Err(error) = session.stop() {
+        let preserved = preserve_failed_capture_path(&output_path, config);
+        minutes_core::notes::cleanup();
+        minutes_core::pid::remove().ok();
+        minutes_core::pid::clear_recording_metadata().ok();
+        processing.store(false, Ordering::Relaxed);
+        set_processing_stage(processing_stage, None);
+        starting.store(false, Ordering::Relaxed);
+        recording.store(false, Ordering::Relaxed);
+        if let Ok(mut health) = call_capture_health.lock() {
+            *health = None;
+        }
+        if let Some(saved) = preserved {
+            let notice = OutputNotice {
+                kind: "preserved-capture".into(),
+                title: "Native call capture preserved".into(),
+                path: saved.display().to_string(),
+                detail: format!("Stopping native call capture failed: {}", error),
+            };
+            set_latest_output(latest_output, Some(notice.clone()));
+            maybe_show_completion_notification(
+                app_handle,
+                completion_notifications_enabled,
+                &notice,
+            );
+        }
+        reset_hotkey_capture_state(hotkey_runtime, discard_short_hotkey_capture);
+        return Ok(());
+    }
+
+    recording.store(false, Ordering::Relaxed);
+    if let Ok(mut health) = call_capture_health.lock() {
+        *health = Some(session.source_health());
+    }
+    let should_discard = discard_short_hotkey_capture
+        .as_ref()
+        .map(|flag| flag.swap(false, Ordering::Relaxed))
+        .unwrap_or(false);
+    if should_discard {
+        if output_path.exists() {
+            std::fs::remove_file(&output_path).ok();
+        }
+        minutes_core::notes::cleanup();
+        minutes_core::pid::remove().ok();
+        minutes_core::pid::clear_recording_metadata().ok();
+        starting.store(false, Ordering::Relaxed);
+        if let Ok(mut health) = call_capture_health.lock() {
+            *health = None;
+        }
+        reset_hotkey_capture_state(hotkey_runtime, discard_short_hotkey_capture);
+        return Ok(());
+    }
+
+    let recording_finished_at = chrono::Local::now();
+    let user_notes = minutes_core::notes::read_notes();
+    let pre_context = minutes_core::notes::read_context();
+    // Don't block the stop path with a calendar query (can take 10s if Calendar.app hangs).
+    // The pipeline already falls back to events_overlapping_now() during background processing.
+    let calendar_event = None;
+
+    match minutes_core::jobs::enqueue_capture_job(
+        mode,
+        requested_title,
+        output_path.clone(),
+        user_notes,
+        pre_context,
+        Some(recording_started_at),
+        Some(recording_finished_at),
+        calendar_event,
+    ) {
+        Ok(job) => {
+            processing.store(true, Ordering::Relaxed);
+            set_processing_stage(processing_stage, job.stage.as_deref());
+            minutes_core::pid::set_processing_status(
+                job.stage.as_deref(),
+                Some(mode),
+                job.title.as_deref(),
+                Some(&job.id),
+                minutes_core::jobs::active_job_count(),
+            )
+            .ok();
+            minutes_core::pid::remove().ok();
+            minutes_core::pid::clear_recording_metadata().ok();
+            minutes_core::notes::cleanup();
+            if let Ok(mut health) = call_capture_health.lock() {
+                *health = Some(session.source_health());
+            }
+            spawn_processing_worker(
+                app_handle.clone(),
+                processing.clone(),
+                processing_stage.clone(),
+                latest_output.clone(),
+                completion_notifications_enabled.clone(),
+            );
+            sync_processing_indicator(processing, processing_stage);
+        }
+        Err(error) => {
+            let preserved = preserve_failed_capture_path(&output_path, config);
+            minutes_core::notes::cleanup();
+            minutes_core::pid::remove().ok();
+            minutes_core::pid::clear_recording_metadata().ok();
+            processing.store(false, Ordering::Relaxed);
+            set_processing_stage(processing_stage, None);
+            if let Ok(mut health) = call_capture_health.lock() {
+                *health = None;
+            }
+            if let Some(saved) = preserved {
+                let notice = OutputNotice {
+                    kind: "preserved-capture".into(),
+                    title: "Native call capture preserved".into(),
+                    path: saved.display().to_string(),
+                    detail: format!(
+                        "Failed to queue native call capture for processing: {}",
+                        error
+                    ),
+                };
+                set_latest_output(latest_output, Some(notice.clone()));
+                maybe_show_completion_notification(
+                    app_handle,
+                    completion_notifications_enabled,
+                    &notice,
+                );
+            }
+            starting.store(false, Ordering::Relaxed);
+            reset_hotkey_capture_state(hotkey_runtime, discard_short_hotkey_capture);
+            return Ok(());
+        }
+    }
+
+    starting.store(false, Ordering::Relaxed);
+    reset_hotkey_capture_state(hotkey_runtime, discard_short_hotkey_capture);
+    Ok(())
+}
+
 pub fn recording_active(recording: &Arc<AtomicBool>) -> bool {
     recording.load(Ordering::Relaxed) || minutes_core::pid::status().recording
 }
@@ -214,10 +679,20 @@ pub fn request_stop(
                 recording.store(true, Ordering::Relaxed);
                 Ok(())
             } else {
-                let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                if rc != 0 {
-                    return Err(std::io::Error::last_os_error().to_string());
+                minutes_core::pid::write_stop_sentinel().map_err(|e| e.to_string())?;
+
+                #[cfg(unix)]
+                {
+                    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                    if rc != 0 {
+                        let err = std::io::Error::last_os_error();
+                        eprintln!(
+                            "SIGTERM failed (PID {}): {} — sentinel file will stop recording",
+                            pid, err
+                        );
+                    }
                 }
+
                 Ok(())
             }
         }
@@ -263,6 +738,40 @@ fn parse_capture_mode(mode: Option<&str>) -> Result<CaptureMode, String> {
     }
 }
 
+fn parse_recording_intent(intent: Option<&str>) -> Result<Option<RecordingIntent>, String> {
+    match intent.unwrap_or("auto") {
+        "auto" => Ok(None),
+        "memo" => Ok(Some(RecordingIntent::Memo)),
+        "room" => Ok(Some(RecordingIntent::Room)),
+        "call" => Ok(Some(RecordingIntent::Call)),
+        other => Err(format!(
+            "Unsupported recording intent: {}. Use auto, memo, room, or call.",
+            other
+        )),
+    }
+}
+
+fn parse_optional_string_setting(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn call_detection_has_sentinel(config: &Config, sentinel: &str) -> bool {
+    config.call_detection.apps.iter().any(|app| app == sentinel)
+}
+
+fn set_call_detection_sentinel(config: &mut Config, sentinel: &str, enabled: bool) {
+    config.call_detection.apps.retain(|app| app != sentinel);
+    if enabled {
+        config.call_detection.apps.push(sentinel.to_string());
+    }
+}
+
+#[cfg(test)]
 fn stage_label(stage: minutes_core::pipeline::PipelineStage, mode: CaptureMode) -> &'static str {
     match (stage, mode) {
         (minutes_core::pipeline::PipelineStage::Transcribing, CaptureMode::Meeting) => {
@@ -291,6 +800,7 @@ fn stage_label(stage: minutes_core::pipeline::PipelineStage, mode: CaptureMode) 
         (minutes_core::pipeline::PipelineStage::Saving, CaptureMode::Dictation) => {
             "Saving dictation"
         }
+        (_, CaptureMode::LiveTranscript) => "Processing live transcript",
     }
 }
 
@@ -309,6 +819,99 @@ fn set_latest_output(
     }
 }
 
+fn sync_processing_indicator(
+    processing: &Arc<AtomicBool>,
+    processing_stage: &Arc<Mutex<Option<String>>>,
+) {
+    let summary = minutes_core::jobs::processing_summary();
+    processing.store(summary.is_some(), Ordering::Relaxed);
+    set_processing_stage(
+        processing_stage,
+        summary.as_ref().and_then(|job| job.stage.as_deref()),
+    );
+}
+
+fn output_notice_from_job(job: &minutes_core::jobs::ProcessingJob) -> Option<OutputNotice> {
+    match job.state {
+        minutes_core::jobs::JobState::NeedsReview => Some(OutputNotice {
+            kind: "preserved-capture".into(),
+            title: job
+                .title
+                .clone()
+                .unwrap_or_else(|| "Recording needs review".into()),
+            path: job.audio_path.clone(),
+            detail: job.error.clone().unwrap_or_else(|| {
+                "Transcript was marked as no speech. Raw capture preserved for retry.".into()
+            }),
+        }),
+        minutes_core::jobs::JobState::Complete => {
+            job.output_path.as_ref().map(|path| OutputNotice {
+                kind: "saved".into(),
+                title: job
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "Processed recording".into()),
+                path: path.clone(),
+                detail: "Saved meeting markdown".into(),
+            })
+        }
+        minutes_core::jobs::JobState::Failed => {
+            let path = job
+                .output_path
+                .clone()
+                .unwrap_or_else(|| job.audio_path.clone());
+            Some(OutputNotice {
+                kind: "preserved-capture".into(),
+                title: job
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "Processing failed".into()),
+                path,
+                detail: job
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Processing failed, recoverable capture preserved.".into()),
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn spawn_processing_worker(
+    app_handle: tauri::AppHandle,
+    processing: Arc<AtomicBool>,
+    processing_stage: Arc<Mutex<Option<String>>>,
+    latest_output: Arc<Mutex<Option<OutputNotice>>>,
+    completion_notifications_enabled: Arc<AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        let config = Config::load();
+        let result = minutes_core::jobs::process_pending_jobs(&config, |job| {
+            sync_processing_indicator(&processing, &processing_stage);
+
+            if let Some(notice) = output_notice_from_job(job) {
+                set_latest_output(&latest_output, Some(notice.clone()));
+                maybe_show_completion_notification(
+                    &app_handle,
+                    &completion_notifications_enabled,
+                    &notice,
+                );
+            }
+        });
+
+        if let Err(error) = result {
+            if !matches!(
+                error,
+                minutes_core::MinutesError::Pid(minutes_core::error::PidError::AlreadyRecording(_))
+            ) {
+                eprintln!("[minutes] processing worker failed: {}", error);
+            }
+        }
+
+        sync_processing_indicator(&processing, &processing_stage);
+    });
+}
+
 fn display_path(path: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         let home_display = home.display().to_string();
@@ -319,10 +922,24 @@ fn display_path(path: &str) -> String {
     path.to_string()
 }
 
+#[cfg(target_os = "macos")]
 fn escape_applescript_literal(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', " ")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn escape_applescript_literal(text: &str) -> String {
+    text.to_string()
+}
+
+pub fn open_target(app_handle: &tauri::AppHandle, target: &str) -> Result<(), String> {
+    #[allow(deprecated)]
+    app_handle
+        .shell()
+        .open(target.to_string(), None)
+        .map_err(|e| e.to_string())
 }
 
 fn maybe_show_completion_notification(
@@ -348,46 +965,85 @@ fn maybe_show_completion_notification(
     }
 
     let body = format!("{} {}", notice.detail, display_path(&notice.path));
-    let script = format!(
-        "display notification \"{}\" with title \"Minutes\" subtitle \"{}\"",
-        escape_applescript_literal(&body),
-        escape_applescript_literal(&notice.title)
-    );
-
-    let _ = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .spawn();
+    show_user_notification(app_handle, &notice.title, &body);
 }
 
-pub fn show_user_notification(title: &str, body: &str) {
-    let script = format!(
-        "display notification \"{}\" with title \"Minutes\" subtitle \"{}\"",
-        escape_applescript_literal(body),
-        escape_applescript_literal(title)
-    );
+pub fn show_user_notification(app_handle: &tauri::AppHandle, title: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let identifier = app_handle.config().identifier.as_str();
+        let _ = notify_rust::set_application(identifier);
 
-    let _ = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .spawn();
+        let mut notification = notify_rust::Notification::new();
+        notification.summary(title);
+        notification.body(body);
+        notification.auto_icon();
+
+        if notification.show().is_ok() {
+            return;
+        }
+    }
+
+    let plugin_notification_result = app_handle
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
+
+    if plugin_notification_result.is_ok() {
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{}\" with title \"Minutes\" subtitle \"{}\"",
+            escape_applescript_literal(body),
+            escape_applescript_literal(title)
+        );
+
+        if std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+    }
+
+    app_handle
+        .dialog()
+        .message(body.to_string())
+        .title(title.to_string())
+        .kind(MessageDialogKind::Info)
+        .show(|_| {});
 }
 
 pub fn frontmost_application_name() -> Option<String> {
-    let script = r#"tell application "System Events" to get name of first application process whose frontmost is true"#;
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"tell application "System Events" to get name of first application process whose frontmost is true"#;
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if name.is_empty() || name == "Minutes" {
+            None
+        } else {
+            Some(name)
+        }
     }
-    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if name.is_empty() || name == "Minutes" {
+
+    #[cfg(not(target_os = "macos"))]
+    {
         None
-    } else {
-        Some(name)
     }
 }
 
@@ -444,56 +1100,74 @@ fn extract_paste_text(content: &str, kind: &str) -> Result<String, String> {
         .ok_or_else(|| format!("The latest artifact does not contain a {} section.", kind))
 }
 
-fn copy_to_clipboard(text: &str) -> Result<(), String> {
-    use std::io::Write;
+pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
 
-    let mut child = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Could not start pbcopy: {}", e))?;
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Could not start pbcopy: {}", e))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| format!("Could not write to clipboard: {}", e))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| format!("Could not write to clipboard: {}", e))?;
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| format!("Could not finish clipboard write: {}", e))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("pbcopy failed to update the clipboard.".into())
+        }
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Could not finish clipboard write: {}", e))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("pbcopy failed to update the clipboard.".into())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = text;
+        Err("Tray copy/paste automation is currently available on macOS only.".into())
     }
 }
 
 fn paste_into_application(app_name: &str) -> Result<(), String> {
-    let script = format!(
-        r#"tell application "{}" to activate
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"tell application "{}" to activate
 delay 0.15
 tell application "System Events" to keystroke "v" using command down"#,
-        escape_applescript_literal(app_name)
-    );
+            escape_applescript_literal(app_name)
+        );
 
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Could not run paste automation: {}", e))?;
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| format!("Could not run paste automation: {}", e))?;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!(
-            "Paste automation failed{}. Minutes already copied the text to your clipboard.",
-            if stderr.trim().is_empty() {
-                ".".to_string()
-            } else {
-                format!(" ({})", stderr.trim())
-            }
-        ))
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!(
+                "Paste automation failed{}. Minutes already copied the text to your clipboard.",
+                if stderr.trim().is_empty() {
+                    ".".to_string()
+                } else {
+                    format!(" ({})", stderr.trim())
+                }
+            ))
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_name;
+        Err("Tray paste automation is currently available on macOS only.".into())
     }
 }
 
@@ -584,18 +1258,60 @@ fn microphone_status() -> ReadinessItem {
         state: if has_devices { "ready" } else { "attention" }.into(),
         detail: if has_devices {
             format!(
-                "{} audio input device{} detected. macOS may still prompt the first time you record.",
+                "{} audio input device{} detected. Minutes may still prompt for microphone access the first time you record.",
                 devices.len(),
                 if devices.len() == 1 { "" } else { "s" }
             )
         } else {
-            "No audio input devices detected. Check hardware, macOS input settings, and permissions.".into()
+            "No audio input devices detected. Check hardware and system audio settings.".into()
         },
         optional: false,
     }
 }
 
+fn call_capture_status() -> ReadinessItem {
+    match call_capture::availability() {
+        call_capture::CallCaptureAvailability::Available { backend } => ReadinessItem {
+            label: "Call capture".into(),
+            state: "ready".into(),
+            detail: format!(
+                "Native call capture is available via {}. Screen Recording permission will be requested when capture actually starts if macOS still needs it.",
+                backend
+            ),
+            optional: true,
+        },
+        call_capture::CallCaptureAvailability::PermissionRequired { detail } => ReadinessItem {
+            label: "Call capture".into(),
+            state: "attention".into(),
+            detail,
+            optional: true,
+        },
+        call_capture::CallCaptureAvailability::Unavailable { detail } => ReadinessItem {
+            label: "Call capture".into(),
+            state: "attention".into(),
+            detail,
+            optional: true,
+        },
+        call_capture::CallCaptureAvailability::Unsupported { detail } => ReadinessItem {
+            label: "Call capture".into(),
+            state: "unsupported".into(),
+            detail,
+            optional: true,
+        },
+    }
+}
+
 fn calendar_status() -> ReadinessItem {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return ReadinessItem {
+            label: "Calendar suggestions".into(),
+            state: "unsupported".into(),
+            detail: "Calendar suggestions are currently available on macOS only.".into(),
+            optional: true,
+        };
+    }
+
     let output = std::process::Command::new("osascript")
         .arg("-e")
         .arg(r#"tell application "Calendar" to get name of every calendar"#)
@@ -848,6 +1564,13 @@ pub fn cmd_vault_unlink() -> Result<String, String> {
     Ok(format!("Vault unlinked (was: {})", old))
 }
 
+fn is_hidden_or_system_file(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.starts_with('.'))
+        .unwrap_or(false)
+}
+
 fn recovery_title(path: &std::path::Path, fallback: &str) -> String {
     path.file_stem()
         .and_then(|stem| stem.to_str())
@@ -881,7 +1604,7 @@ fn scan_recovery_items(config: &Config) -> Vec<RecoveryItem> {
     if let Ok(entries) = std::fs::read_dir(&failed_captures) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
+            if path.is_file() && !is_hidden_or_system_file(&path) {
                 let modified = entry
                     .metadata()
                     .ok()
@@ -908,7 +1631,7 @@ fn scan_recovery_items(config: &Config) -> Vec<RecoveryItem> {
         if let Ok(entries) = std::fs::read_dir(&failed_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_file() {
+                if path.is_file() && !is_hidden_or_system_file(&path) {
                     let modified = entry
                         .metadata()
                         .ok()
@@ -943,17 +1666,112 @@ pub fn start_recording(
     processing: Arc<AtomicBool>,
     processing_stage: Arc<Mutex<Option<String>>>,
     latest_output: Arc<Mutex<Option<OutputNotice>>>,
+    call_capture_health: Arc<Mutex<Option<crate::call_capture::CallSourceHealth>>>,
     completion_notifications_enabled: Arc<AtomicBool>,
     hotkey_runtime: Option<Arc<Mutex<HotkeyRuntime>>>,
     discard_short_hotkey_capture: Option<Arc<AtomicBool>>,
     mode: CaptureMode,
+    requested_intent: Option<RecordingIntent>,
+    allow_degraded: bool,
+    requested_title: Option<String>,
+    language_override: Option<String>,
 ) {
-    let config = Config::load();
+    let mut config = Config::load();
+    if let Some(language) = language_override {
+        config.transcription.language = Some(language);
+    }
+    let preflight = match minutes_core::capture::preflight_recording(
+        mode,
+        requested_intent,
+        allow_degraded,
+        &config,
+    ) {
+        Ok(preflight) => preflight,
+        Err(error) => {
+            eprintln!("Recording preflight failed: {}", error);
+            show_user_notification(&app_handle, "Recording blocked", &error);
+            starting.store(false, Ordering::Relaxed);
+            recording.store(false, Ordering::Relaxed);
+            reset_hotkey_capture_state(
+                hotkey_runtime.as_ref(),
+                discard_short_hotkey_capture.as_ref(),
+            );
+            return;
+        }
+    };
+    let native_call_capture_available = preflight.intent == RecordingIntent::Call
+        && matches!(
+            call_capture::availability(),
+            call_capture::CallCaptureAvailability::Available { .. }
+        );
+    if let Some(reason) = &preflight.blocking_reason {
+        if !(preflight.intent == RecordingIntent::Call && native_call_capture_available) {
+            eprintln!("Recording preflight blocked: {}", reason);
+            show_user_notification(&app_handle, "Recording blocked", reason);
+            starting.store(false, Ordering::Relaxed);
+            recording.store(false, Ordering::Relaxed);
+            reset_hotkey_capture_state(
+                hotkey_runtime.as_ref(),
+                discard_short_hotkey_capture.as_ref(),
+            );
+            return;
+        }
+    }
+    for warning in &preflight.warnings {
+        eprintln!("[minutes] {}", warning);
+    }
+
+    #[cfg(target_os = "macos")]
+    if preflight.intent == RecordingIntent::Call && native_call_capture_available {
+        match start_native_call_recording(
+            &app_handle,
+            &recording,
+            &starting,
+            &stop_flag,
+            &processing,
+            &processing_stage,
+            &latest_output,
+            &call_capture_health,
+            &completion_notifications_enabled,
+            hotkey_runtime.as_ref(),
+            discard_short_hotkey_capture.as_ref(),
+            mode,
+            &config,
+            requested_title.clone(),
+        ) {
+            Ok(()) => {
+                return;
+            }
+            Err(error) => {
+                eprintln!("Native call recording unavailable, falling back: {}", error);
+                if let Some(reason) = &preflight.blocking_reason {
+                    show_user_notification(
+                        &app_handle,
+                        "Recording blocked",
+                        &format!("{}\n\nNative call capture failed: {}", reason, error),
+                    );
+                    starting.store(false, Ordering::Relaxed);
+                    recording.store(false, Ordering::Relaxed);
+                    reset_hotkey_capture_state(
+                        hotkey_runtime.as_ref(),
+                        discard_short_hotkey_capture.as_ref(),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
     let wav_path = minutes_core::pid::current_wav_path();
+    let recording_started_at = chrono::Local::now();
 
     if let Err(e) = minutes_core::pid::create() {
         eprintln!("Failed to create PID: {}", e);
-        show_user_notification("Recording", &format!("Could not start recording: {}", e));
+        show_user_notification(
+            &app_handle,
+            "Recording",
+            &format!("Could not start recording: {}", e),
+        );
         starting.store(false, Ordering::Relaxed);
         recording.store(false, Ordering::Relaxed);
         reset_hotkey_capture_state(
@@ -965,17 +1783,21 @@ pub fn start_recording(
     starting.store(false, Ordering::Relaxed);
     recording.store(true, Ordering::Relaxed);
     stop_flag.store(false, Ordering::Relaxed);
-    processing.store(false, Ordering::Relaxed);
-    set_processing_stage(&processing_stage, None);
+    sync_processing_indicator(&processing, &processing_stage);
     set_latest_output(&latest_output, None);
-    minutes_core::pid::clear_processing_status().ok();
     minutes_core::pid::write_recording_metadata(mode).ok();
     crate::update_tray_state(&app_handle, true);
 
     minutes_core::notes::save_recording_start().ok();
     eprintln!("{} started...", mode.noun());
 
-    let mut remove_current_wav = false;
+    // Inject live transcript context into the assistant workspace so the Recall
+    // panel (and any connected agent) can read the live JSONL during recording.
+    if let Ok(workspace) = crate::context::create_workspace(&config) {
+        update_assistant_live_context(&workspace, true);
+    }
+
+    let mut clear_processing_on_exit = true;
     match minutes_core::capture::record_to_wav(&wav_path, stop_flag, &config) {
         Ok(()) => {
             recording.store(false, Ordering::Relaxed);
@@ -984,67 +1806,61 @@ pub fn start_recording(
                 .map(|flag| flag.swap(false, Ordering::Relaxed))
                 .unwrap_or(false);
             if should_discard {
-                remove_current_wav = true;
+                if wav_path.exists() {
+                    std::fs::remove_file(&wav_path).ok();
+                }
                 eprintln!("Discarded short {} capture.", mode.noun());
             } else {
-                processing.store(true, Ordering::Relaxed);
-            }
-            if !should_discard {
-                match minutes_core::pipeline::process_with_progress(
+                let recording_finished_at = chrono::Local::now();
+                let user_notes = minutes_core::notes::read_notes();
+                let pre_context = minutes_core::notes::read_context();
+                // Don't block the stop path with a calendar query (can take 10s if Calendar.app hangs).
+                // The pipeline already falls back to events_overlapping_now() during background processing.
+                let calendar_event = None;
+
+                match minutes_core::jobs::queue_live_capture(
+                    mode,
+                    requested_title.clone(),
                     &wav_path,
-                    mode.content_type(),
-                    None,
-                    &config,
-                    |stage| {
-                        let label = stage_label(stage, mode);
-                        set_processing_stage(&processing_stage, Some(label));
-                        let _ = minutes_core::pid::set_processing_status(Some(label), Some(mode));
-                    },
+                    user_notes,
+                    pre_context,
+                    Some(recording_started_at),
+                    Some(recording_finished_at),
+                    calendar_event,
                 ) {
-                    Ok(result) => {
-                        remove_current_wav = true;
-                        let detail = match mode {
-                            CaptureMode::Meeting => "Saved meeting markdown",
-                            CaptureMode::QuickThought => "Saved quick thought memo",
-                            CaptureMode::Dictation => "Saved dictation",
-                        };
-                        let notice = OutputNotice {
-                            kind: "saved".into(),
-                            title: result.title.clone(),
-                            path: result.path.display().to_string(),
-                            detail: detail.into(),
-                        };
-                        set_latest_output(&latest_output, Some(notice.clone()));
-                        maybe_show_completion_notification(
-                            &app_handle,
-                            &completion_notifications_enabled,
-                            &notice,
-                        );
-                        eprintln!(
-                            "Saved {}: {} ({} words)",
-                            mode.noun(),
-                            result.path.display(),
-                            result.word_count
+                    Ok(job) => {
+                        processing.store(true, Ordering::Relaxed);
+                        set_processing_stage(&processing_stage, job.stage.as_deref());
+                        minutes_core::pid::set_processing_status(
+                            job.stage.as_deref(),
+                            Some(mode),
+                            job.title.as_deref(),
+                            Some(&job.id),
+                            minutes_core::jobs::active_job_count(),
+                        )
+                        .ok();
+                        minutes_core::pid::remove().ok();
+                        minutes_core::pid::clear_recording_metadata().ok();
+                        minutes_core::notes::cleanup();
+                        clear_processing_on_exit = false;
+                        spawn_processing_worker(
+                            app_handle.clone(),
+                            processing.clone(),
+                            processing_stage.clone(),
+                            latest_output.clone(),
+                            completion_notifications_enabled.clone(),
                         );
                     }
                     Err(e) => {
                         if let Some(saved) = preserve_failed_capture(&wav_path, &config) {
-                            let detail = match mode {
-                                CaptureMode::Meeting => {
-                                    "Processing failed, but the raw meeting capture was preserved."
-                                }
-                                CaptureMode::QuickThought => {
-                                    "Processing failed, but the raw quick thought capture was preserved."
-                                }
-                                CaptureMode::Dictation => {
-                                    "Processing failed, but the raw dictation capture was preserved."
-                                }
-                            };
                             let notice = OutputNotice {
                                 kind: "preserved-capture".into(),
                                 title: "Raw capture preserved".into(),
                                 path: saved.display().to_string(),
-                                detail: detail.into(),
+                                detail: format!(
+                                    "Failed to queue background processing. Raw {} capture preserved.",
+                                    mode.noun()
+                                ),
                             };
                             set_latest_output(&latest_output, Some(notice.clone()));
                             maybe_show_completion_notification(
@@ -1053,16 +1869,12 @@ pub fn start_recording(
                                 &notice,
                             );
                             eprintln!(
-                                "Pipeline error: {}. Raw audio preserved at {}",
+                                "Queue error: {}. Raw audio preserved at {}",
                                 e,
                                 saved.display()
                             );
                         } else {
-                            eprintln!(
-                                "Pipeline error: {}. Raw audio left at {}",
-                                e,
-                                wav_path.display()
-                            );
+                            eprintln!("Queue error: {}", e);
                         }
                     }
                 }
@@ -1080,6 +1892,9 @@ pub fn start_recording(
                     }
                     CaptureMode::Dictation => {
                         "Dictation failed, but the audio was preserved."
+                    }
+                    CaptureMode::LiveTranscript => {
+                        "Live transcript failed, but the audio was preserved."
                     }
                 };
                 let notice = OutputNotice {
@@ -1105,15 +1920,21 @@ pub fn start_recording(
         }
     }
 
-    minutes_core::notes::cleanup();
-    minutes_core::pid::remove().ok();
-    if remove_current_wav && wav_path.exists() {
-        std::fs::remove_file(&wav_path).ok();
+    // Remove live transcript context from assistant workspace
+    if let Ok(workspace) = crate::context::create_workspace(&config) {
+        update_assistant_live_context(&workspace, false);
     }
-    processing.store(false, Ordering::Relaxed);
-    set_processing_stage(&processing_stage, None);
-    minutes_core::pid::clear_processing_status().ok();
-    minutes_core::pid::clear_recording_metadata().ok();
+
+    if clear_processing_on_exit {
+        minutes_core::notes::cleanup();
+        minutes_core::pid::remove().ok();
+        processing.store(false, Ordering::Relaxed);
+        set_processing_stage(&processing_stage, None);
+        minutes_core::pid::clear_processing_status().ok();
+        minutes_core::pid::clear_recording_metadata().ok();
+    } else {
+        sync_processing_indicator(&processing, &processing_stage);
+    }
     starting.store(false, Ordering::Relaxed);
     recording.store(false, Ordering::Relaxed);
     reset_hotkey_capture_state(
@@ -1122,9 +1943,137 @@ pub fn start_recording(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn launch_recording(
+    app: tauri::AppHandle,
+    state: &AppState,
+    mode: CaptureMode,
+    requested_intent: Option<RecordingIntent>,
+    allow_degraded: bool,
+    requested_title: Option<String>,
+    language_override: Option<String>,
+    hotkey_runtime: Option<Arc<Mutex<HotkeyRuntime>>>,
+    discard_short_hotkey_capture: Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
+    if recording_active(&state.recording) || state.starting.load(Ordering::Relaxed) {
+        return Err("Already recording".into());
+    }
+    if state.live_transcript_active.load(Ordering::Relaxed) {
+        return Err("Live transcript in progress — stop it first".into());
+    }
+
+    state.starting.store(true, Ordering::Relaxed);
+    let rec = state.recording.clone();
+    let starting = state.starting.clone();
+    let stop = state.stop_flag.clone();
+    let processing = state.processing.clone();
+    let processing_stage = state.processing_stage.clone();
+    let latest_output = state.latest_output.clone();
+    let call_capture_health = state.call_capture_health.clone();
+    let completion_notifications_enabled = state.completion_notifications_enabled.clone();
+    let app_done = app.clone();
+
+    std::thread::spawn(move || {
+        start_recording(
+            app,
+            rec,
+            starting,
+            stop,
+            processing,
+            processing_stage,
+            latest_output,
+            call_capture_health,
+            completion_notifications_enabled,
+            hotkey_runtime,
+            discard_short_hotkey_capture,
+            mode,
+            requested_intent,
+            allow_degraded,
+            requested_title,
+            language_override,
+        );
+        crate::update_tray_state(&app_done, false);
+    });
+
+    Ok(())
+}
+
+pub fn handle_desktop_control_request(
+    app: tauri::AppHandle,
+    state: &AppState,
+    request: minutes_core::desktop_control::DesktopControlRequest,
+) -> minutes_core::desktop_control::DesktopControlResponse {
+    fn activation_detail(state: &AppState) -> String {
+        state
+            .latest_output
+            .lock()
+            .ok()
+            .and_then(|notice| notice.clone())
+            .map(|notice| notice.detail)
+            .filter(|detail| !detail.trim().is_empty())
+            .unwrap_or_else(|| {
+                "Minutes desktop app did not confirm that recording became active.".into()
+            })
+    }
+
+    let detail = match request.action {
+        minutes_core::desktop_control::DesktopControlAction::StartRecording(payload) => {
+            match launch_recording(
+                app,
+                state,
+                payload.mode,
+                payload.intent,
+                payload.allow_degraded,
+                payload.title,
+                payload.language,
+                None,
+                None,
+            ) {
+                Ok(()) => {
+                    let start = Instant::now();
+                    while start.elapsed() < Duration::from_secs(12) {
+                        if recording_active(&state.recording) {
+                            return minutes_core::desktop_control::DesktopControlResponse {
+                                id: request.id,
+                                handled_at: chrono::Local::now(),
+                                accepted: true,
+                                detail:
+                                    "Recording request accepted by the running Minutes desktop app."
+                                        .into(),
+                            };
+                        }
+                        if !state.starting.load(Ordering::Relaxed) {
+                            return minutes_core::desktop_control::DesktopControlResponse {
+                                id: request.id,
+                                handled_at: chrono::Local::now(),
+                                accepted: false,
+                                detail: activation_detail(state),
+                            };
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    return minutes_core::desktop_control::DesktopControlResponse {
+                        id: request.id,
+                        handled_at: chrono::Local::now(),
+                        accepted: false,
+                        detail: activation_detail(state),
+                    };
+                }
+                Err(error) => error,
+            }
+        }
+    };
+
+    minutes_core::desktop_control::DesktopControlResponse {
+        id: request.id,
+        handled_at: chrono::Local::now(),
+        accepted: false,
+        detail,
+    }
+}
+
 fn spawn_hotkey_recording(app: &tauri::AppHandle, style: HotkeyCaptureStyle) {
     let state = app.state::<AppState>();
-    state.starting.store(true, Ordering::Relaxed);
     if let Ok(mut runtime) = state.hotkey_runtime.lock() {
         runtime.active_capture = Some(style);
         runtime.recording_started_at = Some(Instant::now());
@@ -1132,33 +2081,19 @@ fn spawn_hotkey_recording(app: &tauri::AppHandle, style: HotkeyCaptureStyle) {
     state
         .discard_short_hotkey_capture
         .store(false, Ordering::Relaxed);
-    let rec = state.recording.clone();
-    let starting = state.starting.clone();
-    let stop = state.stop_flag.clone();
-    let processing = state.processing.clone();
-    let processing_stage = state.processing_stage.clone();
-    let latest_output = state.latest_output.clone();
-    let completion_notifications_enabled = state.completion_notifications_enabled.clone();
     let hotkey_runtime = state.hotkey_runtime.clone();
     let discard_short_hotkey_capture = state.discard_short_hotkey_capture.clone();
-    let app_handle = app.clone();
-    let app_done = app.clone();
-    std::thread::spawn(move || {
-        start_recording(
-            app_handle,
-            rec,
-            starting,
-            stop,
-            processing,
-            processing_stage,
-            latest_output,
-            completion_notifications_enabled,
-            Some(hotkey_runtime),
-            Some(discard_short_hotkey_capture),
-            CaptureMode::QuickThought,
-        );
-        crate::update_tray_state(&app_done, false);
-    });
+    let _ = launch_recording(
+        app.clone(),
+        &state,
+        CaptureMode::QuickThought,
+        Some(RecordingIntent::Memo),
+        false,
+        None,
+        None,
+        Some(hotkey_runtime),
+        Some(discard_short_hotkey_capture),
+    );
 }
 
 pub fn handle_global_hotkey_event(
@@ -1172,14 +2107,6 @@ pub fn handle_global_hotkey_event(
 
     match shortcut_state {
         tauri_plugin_global_shortcut::ShortcutState::Pressed => {
-            if minutes_core::pid::status().processing || state.processing.load(Ordering::Relaxed) {
-                show_user_notification(
-                    "Quick thought",
-                    "Minutes is still processing the previous capture. Finish that first.",
-                );
-                return;
-            }
-
             let generation = {
                 let mut runtime = match state.hotkey_runtime.lock() {
                     Ok(runtime) => runtime,
@@ -1251,6 +2178,7 @@ pub fn handle_global_hotkey_event(
                 }
                 if let Err(err) = request_stop(&state.recording, &state.stop_flag) {
                     show_user_notification(
+                        app,
                         "Quick thought",
                         &format!("Could not stop recording: {}", err),
                     );
@@ -1265,18 +2193,11 @@ pub fn handle_global_hotkey_event(
             if recording_active(&state.recording) {
                 if let Err(err) = request_stop(&state.recording, &state.stop_flag) {
                     show_user_notification(
+                        app,
                         "Quick thought",
                         &format!("Could not stop recording: {}", err),
                     );
                 }
-                return;
-            }
-
-            if minutes_core::pid::status().processing || state.processing.load(Ordering::Relaxed) {
-                show_user_notification(
-                    "Quick thought",
-                    "Minutes is still processing the previous capture. Finish that first.",
-                );
                 return;
             }
 
@@ -1285,47 +2206,115 @@ pub fn handle_global_hotkey_event(
     }
 }
 
+pub fn handle_dictation_shortcut_event(
+    app: &tauri::AppHandle,
+    shortcut_state: tauri_plugin_global_shortcut::ShortcutState,
+) {
+    let state = app.state::<AppState>();
+    if !state.dictation_shortcut_enabled.load(Ordering::Relaxed) {
+        return;
+    }
+
+    if shortcut_state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+        return;
+    }
+
+    let shortcut = state
+        .dictation_shortcut
+        .lock()
+        .ok()
+        .map(|value| value.clone())
+        .unwrap_or_else(|| default_dictation_shortcut().to_string());
+    minutes_core::logging::append_log(&serde_json::json!({
+        "ts": chrono::Local::now().to_rfc3339(),
+        "level": "info",
+        "step": "dictation_shortcut_event",
+        "file": "",
+        "extra": {
+            "shortcut": shortcut,
+            "state": "pressed",
+        }
+    }))
+    .ok();
+
+    if state.dictation_active.load(Ordering::Relaxed) {
+        minutes_core::logging::append_log(&serde_json::json!({
+            "ts": chrono::Local::now().to_rfc3339(),
+            "level": "info",
+            "step": "dictation_shortcut_action",
+            "file": "",
+            "extra": {
+                "shortcut": shortcut,
+                "action": "stop",
+            }
+        }))
+        .ok();
+        state.dictation_stop_flag.store(true, Ordering::Relaxed);
+        return;
+    }
+
+    if let Err(error) = start_dictation_session(app, None) {
+        minutes_core::logging::append_log(&serde_json::json!({
+            "ts": chrono::Local::now().to_rfc3339(),
+            "level": "error",
+            "step": "dictation_shortcut_action",
+            "file": "",
+            "error": error,
+            "extra": {
+                "shortcut": shortcut,
+                "action": "start_failed",
+            }
+        }))
+        .ok();
+        show_user_notification(app, "Dictation", &error);
+    } else {
+        minutes_core::logging::append_log(&serde_json::json!({
+            "ts": chrono::Local::now().to_rfc3339(),
+            "level": "info",
+            "step": "dictation_shortcut_action",
+            "file": "",
+            "extra": {
+                "shortcut": shortcut,
+                "action": "start",
+            }
+        }))
+        .ok();
+    }
+}
+
 #[tauri::command]
 pub fn cmd_start_recording(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
     mode: Option<String>,
+    intent: Option<String>,
+    allow_degraded: Option<bool>,
+    title: Option<String>,
+    language: Option<String>,
 ) -> Result<(), String> {
-    if recording_active(&state.recording) || state.starting.load(Ordering::Relaxed) {
-        return Err("Already recording".into());
-    }
     let capture_mode = parse_capture_mode(mode.as_deref())?;
-    state.starting.store(true, Ordering::Relaxed);
-    let rec = state.recording.clone();
-    let starting = state.starting.clone();
-    let stop = state.stop_flag.clone();
-    let processing = state.processing.clone();
-    let processing_stage = state.processing_stage.clone();
-    let latest_output = state.latest_output.clone();
-    let completion_notifications_enabled = state.completion_notifications_enabled.clone();
-    let app_done = app.clone();
-    std::thread::spawn(move || {
-        start_recording(
-            app,
-            rec,
-            starting,
-            stop,
-            processing,
-            processing_stage,
-            latest_output,
-            completion_notifications_enabled,
-            None,
-            None,
-            capture_mode,
-        );
-        crate::update_tray_state(&app_done, false);
-    });
-    Ok(())
+    let requested_intent = parse_recording_intent(intent.as_deref())?;
+    launch_recording(
+        app,
+        &state,
+        capture_mode,
+        requested_intent,
+        allow_degraded.unwrap_or(false),
+        title,
+        language,
+        None,
+        None,
+    )
 }
 
 #[tauri::command]
 pub fn cmd_stop_recording(state: tauri::State<AppState>) -> Result<(), String> {
     request_stop(&state.recording, &state.stop_flag)
+}
+
+#[tauri::command]
+pub fn cmd_extend_recording() -> Result<(), String> {
+    minutes_core::capture::write_extend_sentinel().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1350,6 +2339,15 @@ pub fn cmd_status(state: tauri::State<AppState>) -> serde_json::Value {
         .lock()
         .ok()
         .and_then(|notice| notice.clone());
+    let call_capture_health = state
+        .call_capture_health
+        .lock()
+        .ok()
+        .and_then(|health| health.clone());
+    let processing_jobs: Vec<ProcessingJobView> = minutes_core::jobs::active_jobs()
+        .into_iter()
+        .map(processing_job_view)
+        .collect();
 
     // Get elapsed time if recording
     let elapsed = if recording || (status.recording && !processing) {
@@ -1387,11 +2385,54 @@ pub fn cmd_status(state: tauri::State<AppState>) -> serde_json::Value {
         "processing": processing,
         "recordingMode": status.recording_mode,
         "processingStage": processing_stage,
+        "processingTitle": status.processing_title,
+        "processingJobId": status.processing_job_id,
+        "processingJobCount": status.processing_job_count,
+        "processingJobs": processing_jobs,
         "latestOutput": latest_output,
+        "callCaptureHealth": call_capture_health,
         "pid": status.pid,
         "elapsed": elapsed,
         "audioLevel": audio_level,
     })
+}
+
+#[tauri::command]
+pub fn cmd_processing_jobs(limit: Option<usize>) -> serde_json::Value {
+    let jobs: Vec<ProcessingJobView> = minutes_core::jobs::display_jobs(limit, true)
+        .into_iter()
+        .map(processing_job_view)
+        .collect();
+    serde_json::to_value(jobs).unwrap_or(serde_json::json!([]))
+}
+
+#[tauri::command]
+pub fn cmd_retry_processing_job(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    job_id: String,
+) -> Result<(), String> {
+    let queued = minutes_core::jobs::requeue_job(&job_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Processing job not found: {}", job_id))?;
+
+    minutes_core::pid::set_processing_status(
+        queued.stage.as_deref(),
+        Some(queued.mode),
+        queued.title.as_deref(),
+        Some(&queued.id),
+        minutes_core::jobs::active_job_count(),
+    )
+    .ok();
+    sync_processing_indicator(&state.processing, &state.processing_stage);
+    spawn_processing_worker(
+        app,
+        state.processing.clone(),
+        state.processing_stage.clone(),
+        state.latest_output.clone(),
+        state.completion_notifications_enabled.clone(),
+    );
+    Ok(())
 }
 
 /// Scan ~/.minutes/preps/ for existing prep files and return a set of
@@ -1505,12 +2546,57 @@ pub fn cmd_search(query: String) -> serde_json::Value {
 }
 
 #[tauri::command]
-pub fn cmd_open_file(path: String) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+pub fn cmd_list_devices() -> serde_json::Value {
+    let config = Config::load();
+    let configured_device = config.recording.device.clone();
+    let devices = minutes_core::capture::list_input_devices();
+    serde_json::json!({
+        "devices": devices,
+        "configured_device": configured_device,
+    })
+}
+
+#[tauri::command]
+pub fn cmd_delete_meeting(path: String, with_audio: bool, force: bool) -> Result<String, String> {
+    let md_path = std::path::PathBuf::from(&path);
+    if !md_path.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+
+    let title = md_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let audio_path = md_path.with_extension("wav");
+    let has_audio = audio_path.exists();
+
+    if force {
+        std::fs::remove_file(&md_path).map_err(|e| e.to_string())?;
+        if with_audio && has_audio {
+            std::fs::remove_file(&audio_path).map_err(|e| e.to_string())?;
+        }
+        Ok(format!("Deleted: {}", title))
+    } else {
+        let config = Config::load();
+        let archive_dir = config.output_dir.join("archive");
+        std::fs::create_dir_all(&archive_dir).map_err(|e| e.to_string())?;
+
+        let dest_md = archive_dir.join(md_path.file_name().unwrap());
+        std::fs::rename(&md_path, &dest_md).map_err(|e| e.to_string())?;
+
+        if with_audio && has_audio {
+            let dest_audio = archive_dir.join(audio_path.file_name().unwrap());
+            std::fs::rename(&audio_path, &dest_audio).map_err(|e| e.to_string())?;
+        }
+        Ok(format!("Archived: {}", title))
+    }
+}
+
+#[tauri::command]
+pub fn cmd_open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    open_target(&app, &path)
 }
 
 #[tauri::command]
@@ -1528,6 +2614,11 @@ pub fn cmd_set_completion_notifications(state: tauri::State<AppState>, enabled: 
 #[tauri::command]
 pub fn cmd_global_hotkey_settings(state: tauri::State<AppState>) -> HotkeySettings {
     current_hotkey_settings(&state)
+}
+
+#[tauri::command]
+pub fn cmd_dictation_shortcut_settings(state: tauri::State<AppState>) -> HotkeySettings {
+    current_dictation_shortcut_settings(&state)
 }
 
 #[tauri::command]
@@ -1572,17 +2663,94 @@ pub fn cmd_set_global_hotkey(
 }
 
 #[tauri::command]
+pub fn cmd_set_dictation_shortcut(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    enabled: bool,
+    shortcut: String,
+) -> Result<HotkeySettings, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let next_shortcut = validate_dictation_shortcut(&shortcut)?;
+    let previous = current_dictation_shortcut_settings(&state);
+    let manager = app.global_shortcut();
+    let quick_thought_shortcut = current_hotkey_settings(&state).shortcut;
+
+    if next_shortcut == quick_thought_shortcut {
+        return Err(format!(
+            "{} is already used by the quick-thought shortcut. Choose a different dictation shortcut.",
+            next_shortcut
+        ));
+    }
+
+    if previous.enabled {
+        manager
+            .unregister(previous.shortcut.as_str())
+            .map_err(|e| format!("Could not unregister {}: {}", previous.shortcut, e))?;
+    }
+
+    if enabled {
+        if let Err(e) = manager.register(next_shortcut.as_str()) {
+            if previous.enabled {
+                let _ = manager.register(previous.shortcut.as_str());
+            }
+            return Err(format!(
+                "Could not register {}. Another app may already be using it. ({})",
+                next_shortcut, e
+            ));
+        }
+    }
+
+    state
+        .dictation_shortcut_enabled
+        .store(enabled, Ordering::Relaxed);
+    if let Ok(mut current) = state.dictation_shortcut.lock() {
+        *current = next_shortcut.clone();
+    }
+
+    let mut config = Config::load();
+    config.dictation.shortcut_enabled = enabled;
+    config.dictation.shortcut = next_shortcut.clone();
+    config
+        .save()
+        .map_err(|e| format!("Failed to save config: {}", e))?;
+
+    // Preload model when user enables dictation for the first time
+    if enabled {
+        let preload_config = Config::load();
+        std::thread::spawn(move || {
+            minutes_core::dictation::preload_model(&preload_config).ok();
+        });
+    }
+
+    Ok(current_dictation_shortcut_settings(&state))
+}
+
+#[tauri::command]
 pub fn cmd_permission_center() -> serde_json::Value {
     let config = Config::load();
     let items = vec![
         model_status(&config),
         microphone_status(),
+        call_capture_status(),
         calendar_status(),
         watcher_status(&config),
         output_dir_status(&config),
         vault_status(&config),
     ];
     serde_json::to_value(items).unwrap_or(serde_json::json!([]))
+}
+
+#[tauri::command]
+pub fn cmd_desktop_capabilities() -> DesktopCapabilities {
+    DesktopCapabilities {
+        platform: current_platform().into(),
+        folder_reveal_label: folder_reveal_label().into(),
+        supports_calendar_integration: supports_calendar_integration(),
+        supports_call_detection: supports_call_detection(),
+        supports_tray_artifact_copy: supports_tray_artifact_copy(),
+        supports_dictation_hotkey: supports_dictation_hotkey(),
+    }
 }
 
 #[tauri::command]
@@ -1596,12 +2764,11 @@ pub fn cmd_retry_recovery(
     state: tauri::State<AppState>,
     path: String,
     content_type: String,
-) -> Result<OutputNotice, String> {
+) -> Result<(), String> {
     if recording_active(&state.recording) || state.processing.load(Ordering::Relaxed) {
         return Err("Finish the current recording before retrying recovery items.".into());
     }
 
-    let config = Config::load();
     let audio_path = PathBuf::from(&path);
     if !audio_path.exists() {
         return Err(format!("Recovery item not found: {}", path));
@@ -1613,18 +2780,65 @@ pub fn cmd_retry_recovery(
         other => return Err(format!("Unsupported recovery type: {}", other)),
     };
 
-    let result =
-        minutes_core::pipeline::process_with_progress(&audio_path, ct, None, &config, |_| {})
-            .map_err(|e| e.to_string())?;
+    // Run pipeline on a background thread so the UI stays responsive
+    let processing = state.processing.clone();
+    let processing_stage = state.processing_stage.clone();
+    let latest_output = state.latest_output.clone();
 
-    let notice = OutputNotice {
-        kind: "saved".into(),
-        title: result.title.clone(),
-        path: result.path.display().to_string(),
-        detail: "Recovery item was processed successfully.".into(),
-    };
-    set_latest_output(&state.latest_output, Some(notice.clone()));
-    Ok(notice)
+    processing.store(true, Ordering::Relaxed);
+    set_processing_stage(&processing_stage, Some("Preparing transcript..."));
+
+    std::thread::spawn(move || {
+        let config = Config::load();
+        match minutes_core::pipeline::process_with_progress(
+            &audio_path,
+            ct,
+            None,
+            &config,
+            |stage| {
+                let label = match stage {
+                    minutes_core::pipeline::PipelineStage::Transcribing => "Transcribing...",
+                    minutes_core::pipeline::PipelineStage::Diarizing => "Identifying speakers...",
+                    minutes_core::pipeline::PipelineStage::Summarizing => "Generating summary...",
+                    minutes_core::pipeline::PipelineStage::Saving => "Saving...",
+                };
+                set_processing_stage(&processing_stage, Some(label));
+                let _ = minutes_core::pid::set_processing_status(
+                    Some(label),
+                    Some(minutes_core::pid::CaptureMode::Meeting),
+                    None,
+                    None,
+                    0,
+                );
+            },
+        ) {
+            Ok(result) => {
+                let notice = OutputNotice {
+                    kind: "saved".into(),
+                    title: result.title.clone(),
+                    path: result.path.display().to_string(),
+                    detail: "Recovery item was processed successfully.".into(),
+                };
+                set_latest_output(&latest_output, Some(notice));
+                eprintln!("Recovery retry succeeded: {}", result.path.display());
+            }
+            Err(e) => {
+                let notice = OutputNotice {
+                    kind: "error".into(),
+                    title: "Retry failed".into(),
+                    path: audio_path.display().to_string(),
+                    detail: format!("Recovery retry failed: {}", e),
+                };
+                set_latest_output(&latest_output, Some(notice));
+                eprintln!("Recovery retry failed: {}", e);
+            }
+        }
+        processing.store(false, Ordering::Relaxed);
+        set_processing_stage(&processing_stage, None);
+        minutes_core::pid::clear_processing_status().ok();
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1654,6 +2868,37 @@ pub fn cmd_get_meeting_detail(path: String) -> Result<MeetingDetail, String> {
         .to_string()
     });
 
+    let speaker_map: Vec<SpeakerAttributionView> = frontmatter
+        .speaker_map
+        .iter()
+        .map(|a| SpeakerAttributionView {
+            speaker_label: a.speaker_label.clone(),
+            name: a.name.clone(),
+            confidence: format!("{:?}", a.confidence).to_lowercase(),
+            source: format!("{:?}", a.source).to_lowercase(),
+        })
+        .collect();
+
+    let action_items: Vec<ActionItemView> = frontmatter
+        .action_items
+        .iter()
+        .map(|a| ActionItemView {
+            assignee: a.assignee.clone(),
+            task: a.task.clone(),
+            due: a.due.clone(),
+            status: a.status.clone(),
+        })
+        .collect();
+
+    let decisions: Vec<DecisionView> = frontmatter
+        .decisions
+        .iter()
+        .map(|d| DecisionView {
+            text: d.text.clone(),
+            topic: d.topic.clone(),
+        })
+        .collect();
+
     Ok(MeetingDetail {
         path,
         title: frontmatter.title,
@@ -1664,8 +2909,62 @@ pub fn cmd_get_meeting_detail(path: String) -> Result<MeetingDetail, String> {
         context: frontmatter.context,
         attendees: frontmatter.attendees,
         calendar_event: frontmatter.calendar_event,
+        action_items,
+        decisions,
         sections: parse_sections(body),
+        speaker_map,
     })
+}
+
+#[tauri::command]
+pub async fn cmd_list_voices() -> Result<serde_json::Value, String> {
+    let conn = minutes_core::voice::open_db().map_err(|e| e.to_string())?;
+    let profiles = minutes_core::voice::list_profiles(&conn).map_err(|e| e.to_string())?;
+    serde_json::to_value(&profiles).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cmd_confirm_speaker(
+    meeting_path: String,
+    speaker_label: String,
+    name: String,
+) -> Result<String, String> {
+    let path = std::path::PathBuf::from(&meeting_path);
+    if !path.exists() {
+        return Err(format!("Meeting not found: {}", meeting_path));
+    }
+
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let (fm_str, body) = minutes_core::markdown::split_frontmatter(&content);
+    if fm_str.is_empty() {
+        return Err("Meeting has no frontmatter".into());
+    }
+
+    let mut frontmatter: minutes_core::markdown::Frontmatter =
+        serde_yaml::from_str(fm_str).map_err(|e| e.to_string())?;
+
+    let found = frontmatter
+        .speaker_map
+        .iter_mut()
+        .find(|a| a.speaker_label == speaker_label);
+
+    if let Some(attr) = found {
+        attr.name = name.clone();
+        attr.confidence = minutes_core::diarize::Confidence::High;
+        attr.source = minutes_core::diarize::AttributionSource::Manual;
+    } else {
+        return Err(format!(
+            "Speaker '{}' not found in speaker_map",
+            speaker_label
+        ));
+    }
+
+    let new_body = minutes_core::diarize::apply_confirmed_names(body, &frontmatter.speaker_map);
+    let new_yaml = serde_yaml::to_string(&frontmatter).map_err(|e| e.to_string())?;
+    let new_content = format!("---\n{}---\n{}", new_yaml, new_body);
+    std::fs::write(&path, new_content).map_err(|e| e.to_string())?;
+
+    Ok(format!("Confirmed: {} = {}", speaker_label, name))
 }
 
 #[tauri::command]
@@ -1773,6 +3072,7 @@ fn sync_workspace_for_mode(
     mode: &str,
     meeting_path: Option<&str>,
 ) -> Result<(), String> {
+    // write_assistant_context preserves live transcript markers if present (U2/T3)
     crate::context::write_assistant_context(workspace, config)?;
 
     match mode {
@@ -1819,7 +3119,9 @@ fn context_switch_prompt(command: &str, mode: &str, title: &str) -> String {
 /// Resolve an agent name or path to an executable.
 ///
 /// Accepts either:
-/// - A bare command name ("claude", "codex", "bash") — searched in common PATH dirs
+/// - A bare command name ("claude", "codex", "bash") — looked up via PATH
+///   (with PATHEXT on Windows, so `claude.cmd` resolves from `claude`), then
+///   searched in well-known install dirs as a fallback
 /// - An absolute path ("/usr/local/bin/my-agent") — used directly if it exists
 ///
 /// This is intentionally open: users can set `assistant.agent` to any binary
@@ -1831,8 +3133,16 @@ pub fn find_agent_binary(name: &str) -> Option<PathBuf> {
         return Some(as_path);
     }
 
+    // PATH lookup (cross-platform). On Windows this respects PATHEXT and
+    // resolves `claude` → `claude.cmd` / `claude.exe` correctly. GUI apps
+    // launched from Finder/Explorer often have a minimal PATH, so the
+    // fallback below catches common install dirs that aren't on PATH.
+    if let Ok(path) = which::which(name) {
+        return Some(path);
+    }
+
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let search_dirs = [
+    let mut search_dirs: Vec<PathBuf> = vec![
         home.join(".cargo/bin"),
         home.join(".local/bin"),
         home.join(".npm-global/bin"),
@@ -1841,13 +3151,41 @@ pub fn find_agent_binary(name: &str) -> Option<PathBuf> {
         PathBuf::from("/usr/bin"),
         PathBuf::from("/bin"),
     ];
+    if cfg!(windows) {
+        // npm-global on Windows lands in %APPDATA%\npm by default, which
+        // isn't always on PATH for GUI processes. LOCALAPPDATA covers a few
+        // installer conventions (e.g., scoop, native installers).
+        if let Some(appdata) = dirs::data_dir() {
+            search_dirs.push(appdata.join("npm"));
+        }
+        if let Some(local) = dirs::data_local_dir() {
+            search_dirs.push(local.join("npm"));
+            search_dirs.push(local.join("Programs"));
+        }
+    }
+
+    let exts: &[&str] = if cfg!(windows) {
+        &["", "cmd", "exe", "bat"]
+    } else {
+        &[""]
+    };
     for dir in &search_dirs {
-        let candidate = dir.join(name);
-        if candidate.exists() {
-            return Some(candidate);
+        for ext in exts {
+            let mut candidate = dir.join(name);
+            if !ext.is_empty() {
+                candidate.set_extension(ext);
+            }
+            if candidate.exists() {
+                return Some(candidate);
+            }
         }
     }
     None
+}
+
+/// Platform-correct path to the user's config file, used in error messages.
+fn user_config_path_for_display() -> String {
+    Config::config_path().display().to_string()
 }
 
 /// Shared spawn logic used by both cmd_spawn_terminal and the tray menu handler.
@@ -1879,13 +3217,20 @@ pub fn spawn_terminal(
         }
     } else {
         let agent_name = agent_override.unwrap_or(&config.assistant.agent);
-        let agent_bin = find_agent_binary(agent_name)
-            .ok_or_else(|| {
-                format!(
-                    "'{}' not found. Install it or set a different agent in ~/.config/minutes/config.toml under [assistant].",
-                    agent_name
-                )
-            })?;
+        let agent_bin = find_agent_binary(agent_name).ok_or_else(|| {
+            let install_hint = if agent_name == "claude" {
+                " Install Claude Code with `npm i -g @anthropic-ai/claude-code`."
+            } else {
+                ""
+            };
+            format!(
+                "'{}' not found on PATH or in common install dirs.{} \
+                 Then set the agent in {} under [assistant].",
+                agent_name,
+                install_hint,
+                user_config_path_for_display(),
+            )
+        })?;
 
         manager.spawn(
             crate::pty::SpawnConfig {
@@ -2042,9 +3387,13 @@ pub fn cmd_get_settings() -> serde_json::Value {
 
     serde_json::json!({
         "config_path": path.display().to_string(),
+        "recording": {
+            "device": config.recording.device,
+        },
         "transcription": {
             "model": config.transcription.model,
             "downloaded_models": downloaded_models,
+            "language": config.transcription.language,
         },
         "diarization": {
             "engine": config.diarization.engine,
@@ -2067,20 +3416,28 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "agent": config.assistant.agent,
             "agent_args": config.assistant.agent_args,
         },
+        "hooks": {
+            "post_record": config.hooks.post_record,
+        },
         "call_detection": {
             "enabled": config.call_detection.enabled,
             "poll_interval_secs": config.call_detection.poll_interval_secs,
             "cooldown_minutes": config.call_detection.cooldown_minutes,
             "apps": config.call_detection.apps,
+            "google_meet_enabled": call_detection_has_sentinel(&config, "google-meet"),
         },
         "dictation": {
             "model": config.dictation.model,
             "destination": config.dictation.destination,
+            "accumulate": config.dictation.accumulate,
             "daily_note_log": config.dictation.daily_note_log,
             "cleanup_engine": config.dictation.cleanup_engine,
             "auto_paste": config.dictation.auto_paste,
             "silence_timeout_ms": config.dictation.silence_timeout_ms,
             "max_utterance_secs": config.dictation.max_utterance_secs,
+            "shortcut_enabled": config.dictation.shortcut_enabled,
+            "shortcut": config.dictation.shortcut,
+            "hotkey_enabled": config.dictation.hotkey_enabled,
             "hotkey_keycode": config.dictation.hotkey_keycode,
         },
     })
@@ -2093,6 +3450,14 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
     match (section.as_str(), key.as_str()) {
         // Transcription
         ("transcription", "model") => config.transcription.model = value.clone(),
+        ("transcription", "language") => {
+            config.transcription.language = parse_optional_string_setting(&value);
+        }
+
+        // Recording
+        ("recording", "device") => {
+            config.recording.device = parse_optional_string_setting(&value);
+        }
 
         // Diarization
         ("diarization", "engine") => config.diarization.engine = value.clone(),
@@ -2118,16 +3483,48 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
 
         // Assistant
         ("assistant", "agent") => config.assistant.agent = value.clone(),
+        ("assistant", "agent_args") => {
+            config.assistant.agent_args = if value.trim().is_empty() {
+                vec![]
+            } else {
+                value.split_whitespace().map(String::from).collect()
+            };
+        }
 
         // Call detection
         ("call_detection", "enabled") => {
             config.call_detection.enabled = value == "true";
         }
+        ("call_detection", "poll_interval_secs") => {
+            config.call_detection.poll_interval_secs = value
+                .parse()
+                .map_err(|_| "poll_interval_secs must be a number")?;
+        }
+        ("call_detection", "cooldown_minutes") => {
+            config.call_detection.cooldown_minutes = value
+                .parse()
+                .map_err(|_| "cooldown_minutes must be a number")?;
+        }
+        ("call_detection", "google_meet_enabled") => {
+            set_call_detection_sentinel(&mut config, "google-meet", value == "true");
+        }
 
         // Dictation
-        ("dictation", "model") => config.dictation.model = value.clone(),
+        ("dictation", "model") => {
+            config.dictation.model = value.clone();
+            // Re-preload the new model in background so next dictation is instant
+            let preload_config = config.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = minutes_core::dictation::preload_model(&preload_config) {
+                    eprintln!("[dictation] model re-preload failed: {}", e);
+                }
+            });
+        }
         ("dictation", "daily_note_log") => {
             config.dictation.daily_note_log = value == "true";
+        }
+        ("dictation", "accumulate") => {
+            config.dictation.accumulate = value == "true";
         }
         ("dictation", "silence_timeout_ms") => {
             config.dictation.silence_timeout_ms = value
@@ -2139,10 +3536,30 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
             config.dictation.auto_paste = value == "true";
         }
         ("dictation", "cleanup_engine") => config.dictation.cleanup_engine = value.clone(),
+        ("dictation", "shortcut_enabled") => {
+            config.dictation.shortcut_enabled = value == "true";
+        }
+        ("dictation", "shortcut") => config.dictation.shortcut = value.clone(),
+        ("dictation", "hotkey_enabled") => {
+            config.dictation.hotkey_enabled = value == "true";
+        }
         ("dictation", "hotkey_keycode") => {
             config.dictation.hotkey_keycode = value
                 .parse()
                 .map_err(|_| "hotkey_keycode must be a number")?;
+        }
+
+        // Live transcript
+        ("live_transcript", "shortcut_enabled") => {
+            config.live_transcript.shortcut_enabled = value == "true";
+        }
+        ("live_transcript", "shortcut") => {
+            config.live_transcript.shortcut = value.clone();
+        }
+
+        // Hooks
+        ("hooks", "post_record") => {
+            config.hooks.post_record = parse_optional_string_setting(&value);
         }
 
         _ => return Err(format!("Unknown setting: {}.{}", section, key)),
@@ -2153,6 +3570,23 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         .map_err(|e| format!("Failed to save config: {}", e))?;
 
     Ok(format!("Set {}.{} = {}", section, key, value))
+}
+
+#[tauri::command]
+pub fn cmd_get_autostart(app: tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn cmd_set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())
+    } else {
+        manager.disable().map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]
@@ -2191,12 +3625,8 @@ pub fn cmd_get_storage_stats() -> serde_json::Value {
 }
 
 #[tauri::command]
-pub fn cmd_open_meeting_url(url: String) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(&url)
-        .spawn()
-        .map_err(|e| format!("Failed to open URL: {}", e))?;
-    Ok(())
+pub fn cmd_open_meeting_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    open_target(&app, &url)
 }
 
 #[cfg(test)]
@@ -2270,6 +3700,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_optional_string_setting_preserves_auto_detect_state() {
+        assert_eq!(parse_optional_string_setting(""), None);
+        assert_eq!(parse_optional_string_setting("   "), None);
+        assert_eq!(parse_optional_string_setting("en"), Some("en".to_string()));
+        assert_eq!(
+            parse_optional_string_setting(" es "),
+            Some("es".to_string())
+        );
+    }
+
+    #[test]
+    fn call_detection_sentinel_toggle_is_idempotent() {
+        let mut config = Config::default();
+        assert!(!call_detection_has_sentinel(&config, "google-meet"));
+
+        set_call_detection_sentinel(&mut config, "google-meet", true);
+        assert!(call_detection_has_sentinel(&config, "google-meet"));
+
+        set_call_detection_sentinel(&mut config, "google-meet", true);
+        assert_eq!(
+            config
+                .call_detection
+                .apps
+                .iter()
+                .filter(|app| app.as_str() == "google-meet")
+                .count(),
+            1
+        );
+
+        set_call_detection_sentinel(&mut config, "google-meet", false);
+        assert!(!call_detection_has_sentinel(&config, "google-meet"));
+    }
+
+    #[test]
     fn set_latest_output_replaces_previous_notice() {
         let latest_output = Arc::new(Mutex::new(None));
         set_latest_output(
@@ -2285,6 +3749,54 @@ mod tests {
         let current = latest_output.lock().unwrap().clone().unwrap();
         assert_eq!(current.title, "Demo");
         assert_eq!(current.path, "/tmp/demo.md");
+    }
+
+    #[test]
+    fn needs_review_jobs_surface_as_preserved_capture_notices() {
+        let job = minutes_core::jobs::ProcessingJob {
+            id: "job-review".into(),
+            title: Some("Interview".into()),
+            mode: CaptureMode::Meeting,
+            content_type: ContentType::Meeting,
+            state: minutes_core::jobs::JobState::NeedsReview,
+            stage: minutes_core::jobs::JobState::NeedsReview.default_stage(),
+            output_path: Some("/tmp/interview.md".into()),
+            audio_path: "/tmp/interview.wav".into(),
+            error: Some("silence strip removed ALL audio".into()),
+            created_at: chrono::Local::now(),
+            started_at: None,
+            finished_at: Some(chrono::Local::now()),
+            recording_started_at: None,
+            recording_finished_at: None,
+            user_notes: None,
+            pre_context: None,
+            calendar_event: None,
+            word_count: Some(0),
+            owner_pid: None,
+        };
+
+        let notice = output_notice_from_job(&job).expect("needs-review notice");
+        assert_eq!(notice.kind, "preserved-capture");
+        assert_eq!(notice.path, "/tmp/interview.wav");
+        assert!(notice.detail.contains("silence strip"));
+    }
+
+    #[test]
+    fn desktop_capabilities_align_with_helper_flags() {
+        let caps = cmd_desktop_capabilities();
+
+        assert_eq!(caps.platform, current_platform());
+        assert_eq!(caps.folder_reveal_label, folder_reveal_label());
+        assert_eq!(
+            caps.supports_calendar_integration,
+            supports_calendar_integration()
+        );
+        assert_eq!(caps.supports_call_detection, supports_call_detection());
+        assert_eq!(
+            caps.supports_tray_artifact_copy,
+            supports_tray_artifact_copy()
+        );
+        assert_eq!(caps.supports_dictation_hotkey, supports_dictation_hotkey());
     }
 
     #[test]
@@ -2326,6 +3838,9 @@ mod tests {
                 model_path: dir.path().join("models"),
                 min_words: 3,
                 language: Some("en".into()),
+                vad_model: "silero-v6.2.0".into(),
+                noise_reduction: false,
+                ..minutes_core::config::TranscriptionConfig::default()
             },
             ..Config::default()
         };
@@ -2404,6 +3919,39 @@ mod tests {
         assert!(!discard.load(Ordering::Relaxed));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn short_hotkey_tap_detection_matches_threshold() {
+        let started = Instant::now() - std::time::Duration::from_millis(200);
+        assert!(is_short_hotkey_tap(Some(started), Instant::now()));
+
+        let started = Instant::now() - std::time::Duration::from_millis(350);
+        assert!(!is_short_hotkey_tap(Some(started), Instant::now()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clear_dictation_hotkey_capture_state_resets_press_tracking() {
+        let mut runtime = DictationHotkeyRuntime {
+            generation: 2,
+            keycode: 57,
+            lifecycle: DictationHotkeyLifecycle::Active,
+            last_error: None,
+            monitor: None,
+            key_down: true,
+            key_down_started_at: Some(Instant::now()),
+            active_capture: Some(HotkeyCaptureStyle::Hold),
+            hold_generation: 4,
+        };
+
+        clear_dictation_hotkey_capture_state(&mut runtime);
+
+        assert!(!runtime.key_down);
+        assert!(runtime.key_down_started_at.is_none());
+        assert!(runtime.active_capture.is_none());
+        assert_eq!(runtime.hold_generation, 4);
+    }
+
     #[test]
     fn extract_paste_text_returns_summary_section() {
         let content = "---\ntitle: Demo\n---\n\n## Summary\n\nShort summary.\n\n## Transcript\n\nFull transcript.\n";
@@ -2423,67 +3971,21 @@ mod tests {
 #[tauri::command]
 pub fn cmd_start_dictation(
     app: tauri::AppHandle,
-    state: tauri::State<AppState>,
+    _state: tauri::State<AppState>,
 ) -> Result<String, String> {
-    if state.recording.load(Ordering::Relaxed) {
-        return Err("Recording in progress — stop recording before dictating".into());
-    }
-
-    // Show the floating overlay
-    show_dictation_overlay(&app);
-
-    // Reset and use dedicated dictation stop flag
-    state.dictation_stop_flag.store(false, Ordering::Relaxed);
-
-    // Start dictation in background thread
-    let app_clone = app.clone();
-    let stop_flag = Arc::clone(&state.dictation_stop_flag);
-
-    std::thread::spawn(move || {
-        let config = Config::load();
-        let app_for_events = app_clone.clone();
-        let app_for_results = app_clone.clone();
-
-        let result = minutes_core::dictation::run(
-            stop_flag,
-            &config,
-            move |event| {
-                use minutes_core::dictation::DictationEvent;
-                let state_str = match event {
-                    DictationEvent::Listening => "listening",
-                    DictationEvent::Accumulating => "accumulating",
-                    DictationEvent::Processing => "processing",
-                    DictationEvent::Success => "success",
-                    DictationEvent::Error => "error",
-                    DictationEvent::Cancelled => "cancelled",
-                    DictationEvent::Yielded => "yielded",
-                };
-                app_for_events.emit("dictation:state", state_str).ok();
-
-                // Send audio level for waveform
-                if matches!(event, DictationEvent::Accumulating) {
-                    let level = minutes_core::streaming::stream_audio_level();
-                    app_for_events.emit("dictation:level", level).ok();
-                }
-            },
-            move |result| {
-                app_for_results.emit("dictation:result", &result.text).ok();
-            },
-        );
-
-        if let Err(e) = result {
-            eprintln!("[dictation] error: {}", e);
-            app_clone.emit("dictation:state", "error").ok();
-        }
-    });
-
-    Ok("Dictation started".into())
+    start_dictation_session(&app, None)
 }
 
 #[tauri::command]
 pub fn cmd_stop_dictation(state: tauri::State<AppState>) -> Result<String, String> {
-    state.dictation_stop_flag.store(true, Ordering::Relaxed);
-    Ok("Dictation stop requested".into())
+    if state.dictation_active.load(Ordering::Relaxed) {
+        state.dictation_stop_flag.store(true, Ordering::Relaxed);
+        return Ok("Dictation stop requested".into());
+    }
+    if dictation_pid_active() {
+        return Err("Dictation is running in another Minutes process.".into());
+    }
+    Err("Dictation is not active".into())
 }
 
 fn show_dictation_overlay(app: &tauri::AppHandle) {
@@ -2494,12 +3996,34 @@ fn show_dictation_overlay(app: &tauri::AppHandle) {
         win.close().ok();
     }
 
-    // Position: top-center, 60px below screen top
-    // Calculate center x for a 240px-wide window on a typical display
-    let width = 240.0;
-    let screen_width = 1440.0; // reasonable default
-    let x = (screen_width - width) / 2.0;
-    let y = 60.0;
+    // Position: bottom-right HUD, anchored to the current monitor work area.
+    let width = 320.0;
+    let height = 88.0;
+    let inset_x = 16.0;
+    let inset_y = 16.0;
+
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|window| window.current_monitor().ok().flatten())
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|window| window.primary_monitor().ok().flatten())
+        });
+
+    let (x, y) = if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let work_area = monitor.work_area();
+        let work_x = work_area.position.x as f64 / scale;
+        let work_y = work_area.position.y as f64 / scale;
+        let work_width = work_area.size.width as f64 / scale;
+        let work_height = work_area.size.height as f64 / scale;
+        (
+            work_x + work_width - width - inset_x,
+            work_y + work_height - height - inset_y,
+        )
+    } else {
+        (1440.0 - width - inset_x, 900.0 - height - inset_y)
+    };
 
     match tauri::WebviewWindowBuilder::new(
         app,
@@ -2507,10 +4031,12 @@ fn show_dictation_overlay(app: &tauri::AppHandle) {
         WebviewUrl::App("dictation-overlay.html".into()),
     )
     .title("Dictation")
-    .inner_size(width, 48.0)
+    .inner_size(width, height)
     .position(x, y)
     .resizable(false)
     .decorations(false)
+    .transparent(true)
+    .shadow(false)
     .always_on_top(true)
     .focused(false)
     .skip_taskbar(true)
@@ -2518,6 +4044,305 @@ fn show_dictation_overlay(app: &tauri::AppHandle) {
     {
         Ok(_) => eprintln!("[dictation] overlay shown"),
         Err(e) => eprintln!("[dictation] overlay failed: {}", e),
+    }
+}
+
+// ── Live transcript commands ─────────────────────────────────
+
+/// RAII guard that resets the live_transcript_active flag on drop (even on panic).
+struct LiveActiveGuard(Arc<AtomicBool>);
+impl Drop for LiveActiveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Shared live transcript session runner. Spawned on a background thread by both
+/// cmd_start_live_transcript and handle_live_shortcut_event.
+fn run_live_session(app: tauri::AppHandle, active: Arc<AtomicBool>, stop_flag: Arc<AtomicBool>) {
+    let _guard = LiveActiveGuard(active);
+
+    let config = Config::load();
+
+    if let Ok(workspace) = crate::context::create_workspace(&config) {
+        update_assistant_live_context(&workspace, true);
+    }
+
+    crate::update_tray_state_with_mode(&app, true, true);
+
+    let result = minutes_core::live_transcript::run(stop_flag.clone(), &config);
+
+    stop_flag.store(false, Ordering::Relaxed);
+
+    if let Ok(workspace) = crate::context::create_workspace(&config) {
+        update_assistant_live_context(&workspace, false);
+    }
+
+    match result {
+        Ok((lines, duration, _path)) => {
+            eprintln!(
+                "[live-transcript] ended: {} lines in {:.0}s",
+                lines, duration
+            );
+            if let Some(win) = app.get_webview_window("main") {
+                win.emit(
+                    "live-transcript:stopped",
+                    serde_json::json!({ "lines": lines, "duration_secs": duration }),
+                )
+                .ok();
+            }
+        }
+        Err(e) => {
+            eprintln!("[live-transcript] error: {}", e);
+            if let Some(win) = app.get_webview_window("main") {
+                win.emit(
+                    "live-transcript:error",
+                    serde_json::json!({ "error": e.to_string() }),
+                )
+                .ok();
+            }
+        }
+    }
+
+    crate::update_tray_state(&app, false);
+}
+
+/// Try to acquire the live transcript state. Returns Err with a message on conflict.
+fn try_acquire_live(state: &AppState) -> Result<(), String> {
+    if state
+        .live_transcript_active
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Live transcript already active".into());
+    }
+    if recording_active(&state.recording) {
+        state.live_transcript_active.store(false, Ordering::SeqCst);
+        return Err("Recording already in progress — it already includes a live transcript".into());
+    }
+    if state.dictation_active.load(Ordering::Relaxed) {
+        state.live_transcript_active.store(false, Ordering::SeqCst);
+        return Err("Dictation in progress — stop dictation first".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cmd_start_live_transcript(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    try_acquire_live(&state)?;
+
+    let active = state.live_transcript_active.clone();
+    let stop_flag = state.live_transcript_stop_flag.clone();
+    stop_flag.store(false, Ordering::Relaxed);
+
+    let app_clone = app.clone();
+    std::thread::spawn(move || run_live_session(app_clone, active, stop_flag));
+
+    if let Some(win) = app.get_webview_window("main") {
+        win.emit("live-transcript:started", ()).ok();
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cmd_stop_live_transcript(state: tauri::State<AppState>) -> Result<(), String> {
+    if state.live_transcript_active.load(Ordering::Relaxed) {
+        state
+            .live_transcript_stop_flag
+            .store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    // Check for external live transcript (started from CLI)
+    let lt_pid = minutes_core::pid::live_transcript_pid_path();
+    if let Ok(Some(pid)) = minutes_core::pid::check_pid_file(&lt_pid) {
+        minutes_core::pid::write_stop_sentinel()
+            .map_err(|e| format!("failed to write stop sentinel: {}", e))?;
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        return Ok(());
+    }
+    Err("No live transcript session active".into())
+}
+
+#[tauri::command]
+pub fn cmd_live_transcript_status(state: tauri::State<AppState>) -> serde_json::Value {
+    let in_app_active = state.live_transcript_active.load(Ordering::Relaxed);
+    let status = minutes_core::live_transcript::session_status();
+    let audio_level = if in_app_active {
+        minutes_core::streaming::stream_audio_level()
+    } else {
+        0
+    };
+    serde_json::json!({
+        "active": in_app_active || status.active,
+        "line_count": status.line_count,
+        "duration_secs": status.duration_secs,
+        "audioLevel": audio_level,
+    })
+}
+
+/// Update the CLAUDE.md in the assistant workspace to mention (or un-mention)
+/// the live transcript. This makes any agent (Claude, Codex, Gemini) aware
+/// of the live JSONL file without requiring MCP.
+pub fn handle_live_shortcut_event(
+    app: &tauri::AppHandle,
+    shortcut_state: tauri_plugin_global_shortcut::ShortcutState,
+) {
+    let state = app.state::<AppState>();
+    if !state.live_shortcut_enabled.load(Ordering::Relaxed) {
+        return;
+    }
+    if shortcut_state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+        return;
+    }
+
+    // Toggle: if active, stop. If idle, start.
+    if state.live_transcript_active.load(Ordering::Relaxed) {
+        state
+            .live_transcript_stop_flag
+            .store(true, Ordering::Relaxed);
+    } else if try_acquire_live(&state).is_ok() {
+        let active = state.live_transcript_active.clone();
+        let stop_flag = state.live_transcript_stop_flag.clone();
+        stop_flag.store(false, Ordering::Relaxed);
+        let app_clone = app.clone();
+        std::thread::spawn(move || run_live_session(app_clone, active, stop_flag));
+        if let Some(win) = app.get_webview_window("main") {
+            win.emit("live-transcript:started", ()).ok();
+        }
+    }
+    // else: conflicting mode, silently ignore (shortcut is best-effort)
+}
+
+#[tauri::command]
+pub fn cmd_live_shortcut_settings(state: tauri::State<AppState>) -> HotkeySettings {
+    let enabled = state.live_shortcut_enabled.load(Ordering::Relaxed);
+    let shortcut = state
+        .live_shortcut
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| "CmdOrCtrl+Shift+L".into());
+    HotkeySettings {
+        enabled,
+        shortcut,
+        choices: vec![],
+    }
+}
+
+#[tauri::command]
+pub fn cmd_set_live_shortcut(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    enabled: bool,
+    shortcut: String,
+) -> Result<HotkeySettings, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let next_shortcut = validate_hotkey_shortcut(&shortcut)?;
+    let previous = cmd_live_shortcut_settings(state.clone());
+    let manager = app.global_shortcut();
+
+    if previous.enabled {
+        manager
+            .unregister(previous.shortcut.as_str())
+            .map_err(|e| format!("Could not unregister {}: {}", previous.shortcut, e))?;
+    }
+
+    if enabled {
+        if let Err(e) = manager.register(next_shortcut.as_str()) {
+            if previous.enabled {
+                let _ = manager.register(previous.shortcut.as_str());
+            }
+            return Err(format!(
+                "Could not register {}. Another app may already be using it. ({})",
+                next_shortcut, e
+            ));
+        }
+    }
+
+    state
+        .live_shortcut_enabled
+        .store(enabled, Ordering::Relaxed);
+    if let Ok(mut current) = state.live_shortcut.lock() {
+        *current = next_shortcut.clone();
+    }
+
+    // Persist to config.toml
+    cmd_set_setting(
+        "live_transcript".into(),
+        "shortcut_enabled".into(),
+        enabled.to_string(),
+    )
+    .ok();
+    cmd_set_setting("live_transcript".into(), "shortcut".into(), next_shortcut).ok();
+
+    Ok(cmd_live_shortcut_settings(state))
+}
+
+fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool) {
+    let claude_md = workspace.join("CLAUDE.md");
+    let existing = std::fs::read_to_string(&claude_md).unwrap_or_default();
+
+    let marker_start = "<!-- LIVE_TRANSCRIPT_START -->";
+    let marker_end = "<!-- LIVE_TRANSCRIPT_END -->";
+
+    // Remove any existing live transcript section (T4: validate marker order)
+    let cleaned = if let (Some(start), Some(end)) =
+        (existing.find(marker_start), existing.find(marker_end))
+    {
+        if start < end {
+            let end_pos = end + marker_end.len();
+            format!("{}{}", &existing[..start], &existing[end_pos..])
+        } else {
+            // Markers out of order (corrupt file). Remove both markers individually.
+            existing.replace(marker_start, "").replace(marker_end, "")
+        }
+    } else {
+        // Remove any orphaned single marker
+        existing.replace(marker_start, "").replace(marker_end, "")
+    };
+
+    let updated = if live_active {
+        let jsonl_path = minutes_core::pid::live_transcript_jsonl_path();
+        let section = format!(
+            "\n{marker_start}\n\
+            ## Live Transcript Active\n\
+            \n\
+            A live meeting transcript is being recorded right now.\n\
+            \n\
+            **JSONL file:** `{path}`\n\
+            \n\
+            Each line is a JSON object with: `line` (sequence number), `ts` (wall clock), \
+            `offset_ms` (ms since session start), `duration_ms`, `text`, `speaker` (null for now).\n\
+            \n\
+            To read the latest utterances:\n\
+            - **File:** `cat {path} | tail -5` (last 5 utterances)\n\
+            - **CLI:** `minutes transcript --since 5m` (last 5 minutes)\n\
+            - **MCP:** Use `read_live_transcript` tool with `since: \"5m\"`\n\
+            \n\
+            The user may ask for coaching during the meeting. Read the recent transcript \
+            to understand what's being discussed, then provide tactical advice.\n\
+            {marker_end}\n",
+            marker_start = marker_start,
+            marker_end = marker_end,
+            path = jsonl_path.display(),
+        );
+        format!("{}{}", cleaned.trim_end(), section)
+    } else {
+        cleaned
+    };
+
+    // Atomic write: write to temp file then rename (T7)
+    let content = updated.trim_end().to_string() + "\n";
+    let tmp = claude_md.with_extension("md.tmp");
+    if std::fs::write(&tmp, &content).is_ok() {
+        std::fs::rename(&tmp, &claude_md).ok();
     }
 }
 
@@ -2551,6 +4376,10 @@ struct DictationHotkeyRuntime {
     lifecycle: DictationHotkeyLifecycle,
     last_error: Option<String>,
     monitor: Option<minutes_core::hotkey_macos::HotkeyMonitor>,
+    key_down: bool,
+    key_down_started_at: Option<Instant>,
+    active_capture: Option<HotkeyCaptureStyle>,
+    hold_generation: u64,
 }
 
 #[cfg(target_os = "macos")]
@@ -2562,6 +4391,10 @@ impl Default for DictationHotkeyRuntime {
             lifecycle: DictationHotkeyLifecycle::Disabled,
             last_error: None,
             monitor: None,
+            key_down: false,
+            key_down_started_at: None,
+            active_capture: None,
+            hold_generation: 0,
         }
     }
 }
@@ -2584,7 +4417,9 @@ fn dictation_hotkey_status_for_other_platform() -> DictationHotkeyStatus {
         enabled: false,
         pending: false,
         keycode: 57,
-        message: "Native dictation hotkey is only available on macOS.".into(),
+        message:
+            "Native dictation hotkey is currently available on macOS only. Use the CLI or MCP dictation flow on this platform for now."
+                .into(),
     }
 }
 
@@ -2600,12 +4435,11 @@ fn build_dictation_hotkey_status(runtime: &DictationHotkeyRuntime) -> DictationH
 
     let message = match runtime.lifecycle {
         DictationHotkeyLifecycle::Disabled => {
-            "Tap to start dictation, tap again to stop. Requires Input Monitoring permission."
-                .to_string()
+            "Hold the selected key to dictate, or tap to lock and tap again to stop. Requires Input Monitoring permission.".to_string()
         }
         DictationHotkeyLifecycle::Starting => "Starting native dictation hotkey...".to_string(),
         DictationHotkeyLifecycle::Active => {
-            "Active - tap the selected key to start or stop dictation.".to_string()
+            "Active - hold the selected key to dictate, or tap to lock and tap again to stop.".to_string()
         }
         DictationHotkeyLifecycle::Failed => runtime
             .last_error
@@ -2634,6 +4468,139 @@ fn emit_dictation_hotkey_status(app: &tauri::AppHandle) {
     app.emit("dictation-hotkey:status", &status).ok();
 }
 
+pub(crate) fn dictation_pid_active() -> bool {
+    minutes_core::pid::check_pid_file(&minutes_core::pid::dictation_pid_path())
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn clear_dictation_hotkey_capture_state(runtime: &mut DictationHotkeyRuntime) {
+    runtime.key_down = false;
+    runtime.key_down_started_at = None;
+    runtime.active_capture = None;
+}
+
+/// Public entry point for the shortcut manager to start a dictation session.
+pub fn start_dictation_session_public(
+    app: &tauri::AppHandle,
+    capture_style: Option<HotkeyCaptureStyle>,
+) -> Result<(), String> {
+    start_dictation_session(app, capture_style).map(|_| ())
+}
+
+fn start_dictation_session(
+    app: &tauri::AppHandle,
+    capture_style: Option<HotkeyCaptureStyle>,
+) -> Result<String, String> {
+    let state = app.state::<AppState>();
+
+    if state.recording.load(Ordering::Relaxed) {
+        return Err("Recording in progress — stop recording before dictating".into());
+    }
+
+    if state.dictation_active.load(Ordering::Relaxed) || dictation_pid_active() {
+        return Err("Dictation is already in progress.".into());
+    }
+
+    show_dictation_overlay(app);
+    app.emit("dictation:state", "loading").ok();
+
+    state.dictation_stop_flag.store(false, Ordering::Relaxed);
+    state.dictation_active.store(true, Ordering::Relaxed);
+
+    #[cfg(target_os = "macos")]
+    if let Some(style) = capture_style {
+        let mut runtime = lock_dictation_hotkey_runtime();
+        runtime.active_capture = Some(style);
+    }
+
+    let app_clone = app.clone();
+    let stop_flag = Arc::clone(&state.dictation_stop_flag);
+    let dictation_active = Arc::clone(&state.dictation_active);
+
+    std::thread::spawn(move || {
+        let config = Config::load();
+        let app_for_events = app_clone.clone();
+        let app_for_results = app_clone.clone();
+
+        let result = minutes_core::dictation::run(
+            stop_flag,
+            &config,
+            move |event| {
+                use minutes_core::dictation::DictationEvent;
+                let state_str = match &event {
+                    DictationEvent::Listening => "listening",
+                    DictationEvent::Accumulating => "accumulating",
+                    DictationEvent::Processing => "processing",
+                    DictationEvent::PartialText(_) => "partial",
+                    DictationEvent::SilenceCountdown { .. } => "",
+                    DictationEvent::Success => "success",
+                    DictationEvent::Error => "error",
+                    DictationEvent::Cancelled => "cancelled",
+                    DictationEvent::Yielded => "yielded",
+                };
+                if !state_str.is_empty() {
+                    app_for_events.emit("dictation:state", state_str).ok();
+                }
+
+                if let DictationEvent::PartialText(text) = &event {
+                    app_for_events.emit("dictation:partial", text.as_str()).ok();
+                }
+
+                if let DictationEvent::SilenceCountdown {
+                    total_ms,
+                    remaining_ms,
+                } = &event
+                {
+                    app_for_events
+                        .emit(
+                            "dictation:silence",
+                            serde_json::json!({
+                                "total_ms": total_ms,
+                                "remaining_ms": remaining_ms,
+                            }),
+                        )
+                        .ok();
+                }
+
+                if matches!(
+                    &event,
+                    DictationEvent::Accumulating | DictationEvent::PartialText(_)
+                ) {
+                    let level = minutes_core::streaming::stream_audio_level();
+                    app_for_events.emit("dictation:level", level).ok();
+                }
+            },
+            move |result| {
+                app_for_results.emit("dictation:result", &result.text).ok();
+            },
+        );
+
+        dictation_active.store(false, Ordering::Relaxed);
+        #[cfg(target_os = "macos")]
+        {
+            let mut runtime = lock_dictation_hotkey_runtime();
+            clear_dictation_hotkey_capture_state(&mut runtime);
+        }
+
+        match result {
+            Ok(()) => {
+                // Session ended normally (silence timeout or yield).
+                // Dismiss overlay if it wasn't already dismissed by a terminal event.
+                app_clone.emit("dictation:state", "cancelled").ok();
+            }
+            Err(e) => {
+                eprintln!("[dictation] error: {}", e);
+                app_clone.emit("dictation:state", "error").ok();
+            }
+        }
+    });
+
+    Ok("Dictation started".into())
+}
+
 #[cfg(target_os = "macos")]
 pub fn start_dictation_hotkey_with_keycode(
     app: tauri::AppHandle,
@@ -2641,15 +4608,13 @@ pub fn start_dictation_hotkey_with_keycode(
 ) -> Result<DictationHotkeyStatus, String> {
     use minutes_core::hotkey_macos::{HotkeyEvent, HotkeyMonitor, HotkeyMonitorStatus};
 
-    let app_clone = app.clone();
-    let is_dictating = Arc::new(AtomicBool::new(false));
-
     let previous_monitor = {
         let mut runtime = lock_dictation_hotkey_runtime();
         runtime.generation = runtime.generation.wrapping_add(1);
         runtime.keycode = keycode;
         runtime.lifecycle = DictationHotkeyLifecycle::Starting;
         runtime.last_error = None;
+        clear_dictation_hotkey_capture_state(&mut runtime);
         runtime.monitor.take()
     };
     if let Some(monitor) = previous_monitor {
@@ -2663,73 +4628,188 @@ pub fn start_dictation_hotkey_with_keycode(
     };
 
     let app_for_status = app.clone();
+    let app_for_events = app.clone();
     let monitor = match HotkeyMonitor::start(
         keycode,
-        move |event| {
-            if event != HotkeyEvent::Press {
-                return; // Only act on press (tap-to-toggle)
-            }
-
-            let currently_dictating = is_dictating.load(Ordering::Relaxed);
-
-            if currently_dictating {
-                // Stop dictation
-                if let Some(state) = app_clone.try_state::<AppState>() {
-                    state.dictation_stop_flag.store(true, Ordering::Relaxed);
-                }
-                is_dictating.store(false, Ordering::Relaxed);
-            } else {
-                // Start dictation (via Tauri command invocation)
-                is_dictating.store(true, Ordering::Relaxed);
-                let app_for_start = app_clone.clone();
-                let is_dict_clone = is_dictating.clone();
-                std::thread::spawn(move || {
-                    if let Some(state) = app_for_start.try_state::<AppState>() {
-                        if state.recording.load(Ordering::Relaxed) {
-                            eprintln!("[hotkey] recording active — skipping dictation");
-                            is_dict_clone.store(false, Ordering::Relaxed);
-                            return;
-                        }
-                        state.dictation_stop_flag.store(false, Ordering::Relaxed);
+        move |event| match event {
+            HotkeyEvent::Press => {
+                minutes_core::logging::append_log(&serde_json::json!({
+                    "ts": chrono::Local::now().to_rfc3339(),
+                    "level": "info",
+                    "step": "dictation_hotkey_event",
+                    "file": "",
+                    "extra": {
+                        "event": "press",
+                        "keycode": keycode,
                     }
-                    show_dictation_overlay(&app_for_start);
+                }))
+                .ok();
+                let generation = {
+                    let mut runtime = lock_dictation_hotkey_runtime();
+                    if runtime.key_down {
+                        minutes_core::logging::append_log(&serde_json::json!({
+                            "ts": chrono::Local::now().to_rfc3339(),
+                            "level": "info",
+                            "step": "dictation_hotkey_skip",
+                            "file": "",
+                            "extra": {
+                                "reason": "key_already_down",
+                                "keycode": keycode,
+                            }
+                        }))
+                        .ok();
+                        return;
+                    }
+                    runtime.key_down = true;
+                    runtime.key_down_started_at = Some(Instant::now());
+                    runtime.hold_generation = runtime.hold_generation.wrapping_add(1);
+                    runtime.hold_generation
+                };
 
-                    let stop_flag = app_for_start
-                        .try_state::<AppState>()
-                        .map(|s| Arc::clone(&s.dictation_stop_flag))
-                        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-
-                    let config = Config::load();
-                    let app_ev = app_for_start.clone();
-                    let app_res = app_for_start.clone();
-
-                    let result = minutes_core::dictation::run(
-                        stop_flag,
-                        &config,
-                        move |event| {
-                            use minutes_core::dictation::DictationEvent;
-                            let s = match event {
-                                DictationEvent::Listening => "listening",
-                                DictationEvent::Accumulating => "accumulating",
-                                DictationEvent::Processing => "processing",
-                                DictationEvent::Success => "success",
-                                DictationEvent::Error => "error",
-                                DictationEvent::Cancelled => "cancelled",
-                                DictationEvent::Yielded => "yielded",
-                            };
-                            app_ev.emit("dictation:state", s).ok();
-                        },
-                        move |result| {
-                            app_res.emit("dictation:result", &result.text).ok();
-                        },
-                    );
-
-                    is_dict_clone.store(false, Ordering::Relaxed);
-                    if let Err(e) = result {
-                        eprintln!("[hotkey] dictation error: {}", e);
-                        app_for_start.emit("dictation:state", "error").ok();
+                let app_for_hold = app_for_events.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(HOTKEY_HOLD_THRESHOLD_MS));
+                    let should_start_hold = {
+                        let runtime = lock_dictation_hotkey_runtime();
+                        runtime.key_down
+                            && runtime.hold_generation == generation
+                            && runtime.active_capture.is_none()
+                    };
+                    if !should_start_hold {
+                        minutes_core::logging::append_log(&serde_json::json!({
+                            "ts": chrono::Local::now().to_rfc3339(),
+                            "level": "info",
+                            "step": "dictation_hotkey_skip",
+                            "file": "",
+                            "extra": {
+                                "reason": "hold_threshold_not_met",
+                                "keycode": keycode,
+                            }
+                        }))
+                        .ok();
+                        return;
+                    }
+                    minutes_core::logging::append_log(&serde_json::json!({
+                        "ts": chrono::Local::now().to_rfc3339(),
+                        "level": "info",
+                        "step": "dictation_hotkey_action",
+                        "file": "",
+                        "extra": {
+                            "action": "start_hold",
+                            "keycode": keycode,
+                        }
+                    }))
+                    .ok();
+                    if let Err(error) =
+                        start_dictation_session(&app_for_hold, Some(HotkeyCaptureStyle::Hold))
+                    {
+                        show_user_notification(&app_for_hold, "Dictation", &error);
                     }
                 });
+            }
+            HotkeyEvent::Release => {
+                minutes_core::logging::append_log(&serde_json::json!({
+                    "ts": chrono::Local::now().to_rfc3339(),
+                    "level": "info",
+                    "step": "dictation_hotkey_event",
+                    "file": "",
+                    "extra": {
+                        "event": "release",
+                        "keycode": keycode,
+                    }
+                }))
+                .ok();
+                let now = Instant::now();
+                let (active_capture, was_short_tap) = {
+                    let mut runtime = lock_dictation_hotkey_runtime();
+                    let pressed_at = runtime.key_down_started_at;
+                    runtime.key_down = false;
+                    runtime.key_down_started_at = None;
+                    (runtime.active_capture, is_short_hotkey_tap(pressed_at, now))
+                };
+
+                if matches!(active_capture, Some(HotkeyCaptureStyle::Hold)) {
+                    minutes_core::logging::append_log(&serde_json::json!({
+                        "ts": chrono::Local::now().to_rfc3339(),
+                        "level": "info",
+                        "step": "dictation_hotkey_action",
+                        "file": "",
+                        "extra": {
+                            "action": "stop_hold",
+                            "keycode": keycode,
+                        }
+                    }))
+                    .ok();
+                    if let Some(state) = app_for_events.try_state::<AppState>() {
+                        state.dictation_stop_flag.store(true, Ordering::Relaxed);
+                    }
+                    return;
+                }
+
+                if !was_short_tap {
+                    minutes_core::logging::append_log(&serde_json::json!({
+                        "ts": chrono::Local::now().to_rfc3339(),
+                        "level": "info",
+                        "step": "dictation_hotkey_skip",
+                        "file": "",
+                        "extra": {
+                            "reason": "release_without_short_tap",
+                            "keycode": keycode,
+                        }
+                    }))
+                    .ok();
+                    return;
+                }
+
+                if let Some(state) = app_for_events.try_state::<AppState>() {
+                    if state.dictation_active.load(Ordering::Relaxed) {
+                        minutes_core::logging::append_log(&serde_json::json!({
+                            "ts": chrono::Local::now().to_rfc3339(),
+                            "level": "info",
+                            "step": "dictation_hotkey_action",
+                            "file": "",
+                            "extra": {
+                                "action": "stop_locked",
+                                "keycode": keycode,
+                            }
+                        }))
+                        .ok();
+                        state.dictation_stop_flag.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+
+                if dictation_pid_active() {
+                    minutes_core::logging::append_log(&serde_json::json!({
+                        "ts": chrono::Local::now().to_rfc3339(),
+                        "level": "info",
+                        "step": "dictation_hotkey_skip",
+                        "file": "",
+                        "extra": {
+                            "reason": "dictation_pid_active",
+                            "keycode": keycode,
+                        }
+                    }))
+                    .ok();
+                    return;
+                }
+
+                minutes_core::logging::append_log(&serde_json::json!({
+                    "ts": chrono::Local::now().to_rfc3339(),
+                    "level": "info",
+                    "step": "dictation_hotkey_action",
+                    "file": "",
+                    "extra": {
+                        "action": "start_locked",
+                        "keycode": keycode,
+                    }
+                }))
+                .ok();
+                if let Err(error) =
+                    start_dictation_session(&app_for_events, Some(HotkeyCaptureStyle::Locked))
+                {
+                    show_user_notification(&app_for_events, "Dictation", &error);
+                }
             }
         },
         move |status| {
@@ -2743,23 +4823,69 @@ pub fn start_dictation_hotkey_with_keycode(
                     HotkeyMonitorStatus::Starting => {
                         runtime.lifecycle = DictationHotkeyLifecycle::Starting;
                         runtime.last_error = None;
+                        minutes_core::logging::append_log(&serde_json::json!({
+                            "ts": chrono::Local::now().to_rfc3339(),
+                            "level": "info",
+                            "step": "dictation_hotkey_status",
+                            "file": "",
+                            "extra": {
+                                "state": "starting",
+                                "keycode": keycode,
+                            }
+                        }))
+                        .ok();
                         (false, true)
                     }
                     HotkeyMonitorStatus::Active => {
                         runtime.lifecycle = DictationHotkeyLifecycle::Active;
                         runtime.last_error = None;
+                        minutes_core::logging::append_log(&serde_json::json!({
+                            "ts": chrono::Local::now().to_rfc3339(),
+                            "level": "info",
+                            "step": "dictation_hotkey_status",
+                            "file": "",
+                            "extra": {
+                                "state": "active",
+                                "keycode": keycode,
+                            }
+                        }))
+                        .ok();
                         (false, true)
                     }
                     HotkeyMonitorStatus::Failed(message) => {
                         runtime.lifecycle = DictationHotkeyLifecycle::Failed;
                         runtime.last_error = Some(message);
                         runtime.monitor = None;
+                        minutes_core::logging::append_log(&serde_json::json!({
+                            "ts": chrono::Local::now().to_rfc3339(),
+                            "level": "error",
+                            "step": "dictation_hotkey_status",
+                            "file": "",
+                            "error": runtime.last_error,
+                            "extra": {
+                                "state": "failed",
+                                "keycode": keycode,
+                            }
+                        }))
+                        .ok();
                         (true, true)
                     }
                     HotkeyMonitorStatus::Stopped => {
                         runtime.lifecycle = DictationHotkeyLifecycle::Disabled;
                         runtime.last_error = None;
+                        clear_dictation_hotkey_capture_state(&mut runtime);
                         runtime.monitor = None;
+                        minutes_core::logging::append_log(&serde_json::json!({
+                            "ts": chrono::Local::now().to_rfc3339(),
+                            "level": "info",
+                            "step": "dictation_hotkey_status",
+                            "file": "",
+                            "extra": {
+                                "state": "stopped",
+                                "keycode": keycode,
+                            }
+                        }))
+                        .ok();
                         (false, true)
                     }
                 }
@@ -2811,6 +4937,7 @@ pub fn stop_dictation_hotkey() {
         runtime.generation = runtime.generation.wrapping_add(1);
         runtime.lifecycle = DictationHotkeyLifecycle::Disabled;
         runtime.last_error = None;
+        clear_dictation_hotkey_capture_state(&mut runtime);
         runtime.monitor.take()
     };
     if let Some(monitor) = monitor {
@@ -2867,7 +4994,11 @@ pub fn cmd_check_accessibility() -> serde_json::Value {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        serde_json::json!({ "trusted": true, "platform": "other", "note": "native hotkey not available" })
+        serde_json::json!({
+            "trusted": true,
+            "platform": current_platform(),
+            "note": "Accessibility checks are only relevant to the macOS dictation hotkey."
+        })
     }
 }
 
@@ -2880,6 +5011,216 @@ pub fn cmd_request_accessibility() -> String {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        "Native hotkey not available on this platform".into()
+        "Accessibility settings are only used for the macOS dictation hotkey.".into()
     }
+}
+
+// ── Unified Shortcut Commands ────────────────────────────────
+
+#[tauri::command]
+pub fn cmd_set_shortcut(
+    app: tauri::AppHandle,
+    slot: String,
+    enabled: bool,
+    shortcut: String,
+    keycode: i64,
+) -> Result<crate::shortcut_manager::ShortcutStatus, String> {
+    use crate::shortcut_manager::{ShortcutManager, ShortcutSlot};
+
+    let slot = ShortcutSlot::from_str(&slot)?;
+
+    // Validate shortcut string
+    if shortcut.len() > 50 {
+        return Err("Shortcut string too long (max 50 characters)".into());
+    }
+    if !shortcut.is_empty()
+        && !shortcut
+            .chars()
+            .all(|c| c.is_alphanumeric() || "+_ ".contains(c))
+    {
+        return Err(format!("Invalid characters in shortcut: {}", shortcut));
+    }
+
+    // Validate keycode range
+    if !(-1..=255).contains(&keycode) {
+        return Err(format!("Invalid keycode: {}", keycode));
+    }
+
+    // Acquire lock, perform registration/unregistration, then DROP before file I/O.
+    let status = {
+        let mgr_state = app.state::<std::sync::Arc<std::sync::Mutex<ShortcutManager>>>();
+        let mut mgr = mgr_state
+            .lock()
+            .map_err(|_| "Shortcut manager lock poisoned".to_string())?;
+
+        if enabled {
+            mgr.register(slot, shortcut.clone(), keycode, &app)?
+        } else {
+            mgr.unregister(slot, &app)?;
+            let mut s = mgr.build_status(slot);
+            // Preserve the shortcut choice in status even when disabling
+            if !shortcut.is_empty() {
+                s.shortcut = shortcut.clone();
+                s.keycode = keycode;
+            }
+            s
+        }
+    }; // lock dropped here
+
+    if enabled {
+        // Persist to config (no lock held)
+        let mut config = Config::load();
+        match slot {
+            ShortcutSlot::Dictation => {
+                config.dictation.shortcut_enabled = true;
+                config.dictation.shortcut = status.shortcut.clone();
+                let backend = crate::shortcut_manager::classify_shortcut(keycode);
+                if backend == crate::shortcut_manager::ShortcutBackend::Native {
+                    config.dictation.hotkey_enabled = true;
+                    config.dictation.hotkey_keycode = keycode;
+                } else {
+                    config.dictation.hotkey_enabled = false;
+                }
+            }
+            ShortcutSlot::QuickThought => {}
+        }
+        config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))?;
+
+        // Preload model when dictation is first enabled
+        if matches!(slot, ShortcutSlot::Dictation) {
+            let config = Config::load();
+            std::thread::spawn(move || {
+                minutes_core::dictation::preload_model(&config).ok();
+            });
+        }
+
+        Ok(status)
+    } else {
+        // Persist disabled state but keep the shortcut/keycode for later re-enable
+        let mut config = Config::load();
+        match slot {
+            ShortcutSlot::Dictation => {
+                config.dictation.shortcut_enabled = false;
+                config.dictation.hotkey_enabled = false;
+                if !shortcut.is_empty() {
+                    let backend = crate::shortcut_manager::classify_shortcut(keycode);
+                    if backend == crate::shortcut_manager::ShortcutBackend::Native {
+                        config.dictation.hotkey_keycode = keycode;
+                    } else {
+                        config.dictation.shortcut = shortcut;
+                    }
+                }
+            }
+            ShortcutSlot::QuickThought => {}
+        }
+        config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))?;
+
+        Ok(status)
+    }
+}
+
+#[tauri::command]
+pub fn cmd_shortcut_status(
+    app: tauri::AppHandle,
+    slot: String,
+) -> Result<crate::shortcut_manager::ShortcutStatus, String> {
+    use crate::shortcut_manager::{ShortcutManager, ShortcutSlot};
+
+    let slot = ShortcutSlot::from_str(&slot)?;
+    let mgr_state = app.state::<std::sync::Arc<std::sync::Mutex<ShortcutManager>>>();
+    let mgr = mgr_state
+        .lock()
+        .map_err(|_| "Shortcut manager lock poisoned".to_string())?;
+    Ok(mgr.build_status(slot))
+}
+
+#[tauri::command]
+pub fn cmd_suspend_shortcut(app: tauri::AppHandle, slot: String) -> Result<(), String> {
+    use crate::shortcut_manager::{ShortcutManager, ShortcutSlot};
+    let slot = ShortcutSlot::from_str(&slot)?;
+    let mgr_state = app.state::<std::sync::Arc<std::sync::Mutex<ShortcutManager>>>();
+    let mut mgr = mgr_state
+        .lock()
+        .map_err(|_| "Shortcut manager lock poisoned".to_string())?;
+    mgr.unregister(slot, &app)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cmd_probe_shortcut(keycode: i64) -> serde_json::Value {
+    let backend = crate::shortcut_manager::classify_shortcut(keycode);
+    let needs_native = backend == crate::shortcut_manager::ShortcutBackend::Native;
+
+    let permission_granted = if needs_native {
+        #[cfg(target_os = "macos")]
+        {
+            minutes_core::hotkey_macos::is_input_monitoring_granted()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    } else {
+        true // Standard backend needs no permission
+    };
+
+    serde_json::json!({
+        "keycode": keycode,
+        "backend": if needs_native { "native" } else { "standard" },
+        "needs_permission": needs_native && !permission_granted,
+        "permission_granted": permission_granted,
+        "supported": !needs_native || cfg!(target_os = "macos"),
+    })
+}
+
+#[tauri::command]
+pub async fn cmd_install_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    // Block restart if any recording/processing activity is in progress
+    let state = app.state::<AppState>();
+    if state.recording.load(Ordering::Relaxed) {
+        return Err("Cannot update while recording. Stop the recording first.".into());
+    }
+    if state.starting.load(Ordering::Relaxed) {
+        return Err("Recording is starting. Wait a moment and try again.".into());
+    }
+    if state.processing.load(Ordering::Relaxed) {
+        return Err("Processing a recording. Wait until it finishes.".into());
+    }
+    if state.live_transcript_active.load(Ordering::Relaxed) {
+        return Err("Cannot update during live transcription. Stop it first.".into());
+    }
+    if state.dictation_active.load(Ordering::Relaxed) {
+        return Err("Cannot update during dictation. Stop it first.".into());
+    }
+
+    // Download and install (the background checker only checked, not downloaded)
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No update available.".to_string())?;
+
+    let version = update.version.clone();
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("Update failed: {}", e))?;
+
+    // Clear pending update state
+    if let Ok(mut pending) = state.pending_update.lock() {
+        *pending = None;
+    }
+
+    eprintln!("[updater] v{} installed, restarting", version);
+    app.restart();
+
+    #[allow(unreachable_code)]
+    Ok(serde_json::json!({"restarting": true}))
 }

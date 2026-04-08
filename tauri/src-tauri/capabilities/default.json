@@ -21,6 +21,9 @@
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "dialog:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "autostart:default",
+    "notification:default",
+    "updater:default"
   ]
 }

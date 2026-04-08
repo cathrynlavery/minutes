@@ -41,7 +41,7 @@ The pipeline is the product, not the meeting. The same transcribe → summarize 
 | | Granola | Meetily | Otter.ai | **This Project** |
 |--|---------|---------|----------|-------------------|
 | Local transcription | No (cloud) | Yes | No | **Yes** |
-| Speaker diarization | Yes | **No** | Yes | **Yes** (pyannote / sherpa-onnx) |
+| Speaker diarization | Yes | **No** | Yes | **Yes** (pyannote-rs native, no Python) |
 | Knowledge graph | No | No | No | **Yes** (QMD/Obsidian/PARA) |
 | AI agent integration | No | No | No | **Yes** (MCPB → Claude Desktop) |
 | Mobile trigger | No | No | Yes (app) | **Yes** (Dispatch) |
@@ -74,10 +74,10 @@ The pipeline is the product, not the meeting. The same transcribe → summarize 
 │  ┌──────────┐  ├─▶│Transcribe │──▶│ Diarize   │──▶│ Summarize    │ │
 │  │ Watch     │  │  │           │   │ (optional)│   │              │ │
 │  │ Folder    │──┘  │whisper.cpp│   │ pyannote /│   │ Claude /     │ │
-│  │           │     │(local,    │   │ sherpa-   │   │ Ollama /     │ │
-│  │ Voice     │     │ Apple Si  │   │ onnx      │   │ OpenAI /     │ │
-│  │ Memos,    │     │ optimized)│   │ (skip for │   │ any LLM      │ │
-│  │ any .m4a/ │     │           │   │  memos)   │   │ (pluggable)  │ │
+│  │           │     │/ parakeet │   │ sherpa-   │   │ Ollama /     │ │
+│  │ Voice     │     │(local,    │   │ onnx      │   │ OpenAI /     │ │
+│  │ Memos,    │     │ Apple Si  │   │ (skip for │   │ any LLM      │ │
+│  │ any .m4a/ │     │ optimized)│   │  memos)   │   │ (pluggable)  │ │
 │  │ .wav file │     │           │   │           │   │              │ │
 │  └──────────┘     └───────────┘   └───────────┘   └──────┬───────┘ │
 │                                                          │           │
@@ -162,7 +162,7 @@ The pipeline is the product, not the meeting. The same transcribe → summarize 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | **Audio engine** | Rust | Cross-platform, fast, memory-safe. Single binary. |
-| **Transcription** | whisper.cpp (via Rust bindings) | Local, Apple Silicon optimized, best open-source STT |
+| **Transcription** | whisper.cpp (default) or parakeet.cpp (opt-in) | Local, Apple Silicon optimized. Parakeet: lower WER, multilingual. |
 | **Diarization** | pyannote (subprocess) or sherpa-onnx (native) | Pluggable: pyannote for best quality, sherpa-onnx for no-Python mode |
 | **Menu bar app** | Tauri v2 | Rust backend + web frontend, ~10MB vs Electron's 150MB |
 | **CLI** | Rust (clap) | Same binary as engine, zero extra deps |
@@ -212,7 +212,7 @@ crates/cli/src/
 - **Simple pipeline function** — `pipeline::process()` calls each step with if-guards for optional steps (diarize, summarize). No trait-based step abstraction. Explicit > clever.
 - **Per-module error enums** — `CaptureError`, `TranscribeError`, `WatchError`, etc. unified at crate level via `MinutesError` with `#[from]` conversions. CLI matches for user-facing messages.
 - **Config::default()** — compiled-in defaults, config file optional. `minutes record` works without a config file if BlackHole is installed and model is downloaded.
-- **Audio format conversion** — `symphonia` crate decodes m4a/mp3/ogg to WAV in-process before transcription. No ffmpeg dependency.
+- **Audio format conversion** — prefers `ffmpeg` when available (matches whisper-cli's pipeline, critical for non-English audio). Falls back to `symphonia` (pure Rust, in-process) when ffmpeg isn't installed. Silero VAD + post-transcription dedup provide additional protection against hallucination loops.
 
 ---
 
@@ -1058,7 +1058,7 @@ minutes record (PID file exists but process dead)
 
 | Task | Description | Beads ID |
 |------|-------------|----------|
-| P1b.1 | Speaker diarization integration (see Diarization Decision below) | **DONE** (pyannote subprocess) |
+| P1b.1 | Speaker diarization integration (see Diarization Decision below) | **DONE** (pyannote-rs native + pyannote subprocess legacy) |
 | P1b.2 | Speaker-to-name mapping (calendar attendees → speaker labels) | **DONE** (calendar + LLM extraction) |
 | P1b.3 | LLM summarization module — pluggable: Claude API, Ollama, OpenAI. **Map-reduce chunking** for transcripts exceeding context window: chunk by time/speaker turn, summarize each chunk, produce final summary from chunk summaries. If no LLM configured → skip gracefully, save transcript-only markdown. | **DONE** (agent/ollama/ureq) |
 | P1b.4 | Summary template system (configurable output: decisions, action items, key points) | **DONE** (structured extraction) |
@@ -1081,7 +1081,7 @@ minutes record (PID file exists but process dead)
 | **speechbrain** | Apache 2.0 | Python | Decent | Medium | Subprocess — fully MIT-compatible |
 | **sherpa-onnx** | Apache 2.0 | C++/Rust | Good | Fast | Native Rust FFI — no Python dependency |
 
-**Recommended path**: Start with **pyannote via subprocess** (best quality, AGPL-safe as subprocess). If users don't want Python, offer **sherpa-onnx** as a pure-native alternative. Document both paths in config.
+**Resolved**: Native diarization via **pyannote-rs** (MIT, uses pyannote segmentation-3.0 + WeSpeaker ONNX models, no Python). Legacy pyannote subprocess kept for users who already have the Python setup. Setup: `minutes setup --diarization` downloads ~34 MB of models.
 
 ```toml
 # ~/.config/minutes/config.toml
@@ -1092,8 +1092,9 @@ model_path = "~/.minutes/models" # Where whisper models are stored
 min_words = 10                   # Below this threshold, mark as "no-speech"
 
 [diarization]
-engine = "pyannote"  # or "sherpa-onnx" for no-Python mode
-# engine = "none"    # skip diarization entirely
+engine = "pyannote-rs"  # Recommended: native Rust, no Python (~34MB models)
+# engine = "pyannote"   # Legacy: Python subprocess (requires pip install pyannote.audio)
+# engine = "none"       # Skip diarization entirely (default)
 
 [summarization]
 # engine = "claude"             # Claude API (requires ANTHROPIC_API_KEY env var)
@@ -1623,7 +1624,7 @@ Issues identified and mitigations:
 | 4 | QMD dependency limits adoption | Low | QMD strictly optional. Core output is markdown files | Accepted |
 | 5 | Meetily has 10K stars — why compete? | Medium | Different positioning: "conversation memory for AI" vs "open source Granola" | Accepted |
 | 6 | BYO-LLM dilutes Claude advantage | Low | MCPB integration IS the moat. BYO-LLM is summarization only | Accepted |
-| 7 | Speaker diarization quality varies | Medium | pyannote subprocess + calendar attendee mapping compensates | Planned |
+| 7 | Speaker diarization quality varies | Medium | pyannote-rs native engine (DER ~11-19%) + calendar attendee mapping | **RESOLVED** |
 | 8 | Scope creep (CLI + MCPB + menu bar + intelligence) | High | **Phase 1 split into 1a/1b. 2 weeks, not 1. MVP = capture + transcribe only.** | **RESOLVED** |
 | 9 | Name availability | Low | **RESOLVED: `minutes` — crates.io + PyPI available** | **RESOLVED** |
 | 10 | Maintenance sustainability | Medium | Keep core tiny: ~1000 lines Rust + ~300 lines Node.js | Active |

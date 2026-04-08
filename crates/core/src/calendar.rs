@@ -12,13 +12,31 @@ use std::time::Duration;
 // ──────────────────────────────────────────────────────────────
 
 /// Maximum time to wait for a calendar subprocess before giving up.
-const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(10);
+/// Calendar queries should complete in <1s when Calendar.app is healthy.
+/// 3s is generous enough for slow CalDAV syncs but doesn't freeze the app.
+const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Run a Command with a timeout. Returns None if the process hangs or fails to start.
+///
+/// On Unix, the child is placed in its own process group so that the entire
+/// group (including any grandchild processes) can be killed on timeout.
 pub(crate) fn output_with_timeout(
     mut cmd: Command,
     timeout: Duration,
 ) -> Option<std::process::Output> {
+    // Put the child in its own process group so we can kill the whole group.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setpgid is async-signal-safe and called between fork/exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setpgid(0, 0);
+                Ok(())
+            });
+        }
+    }
+
     let child = cmd.spawn().ok()?;
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -34,7 +52,7 @@ pub(crate) fn output_with_timeout(
             result.ok()
         }
         Err(_) => {
-            // Timed out — kill the subprocess
+            // Timed out — kill the entire process group
             eprintln!(
                 "[calendar] subprocess {} timed out after {:?}, killing",
                 child_id, timeout
@@ -42,10 +60,14 @@ pub(crate) fn output_with_timeout(
             #[cfg(unix)]
             {
                 unsafe {
+                    libc::kill(-(child_id as i32), libc::SIGKILL);
+                    // Also kill the PID directly in case setpgid raced
                     libc::kill(child_id as i32, libc::SIGKILL);
                 }
             }
-            drop(handle); // detach — thread exits on its own after kill
+            // Wait briefly for the waiter thread to notice the kill and exit,
+            // so we don't leak threads + zombie processes across retries.
+            let _ = handle.join().ok();
             None
         }
     }
@@ -125,13 +147,15 @@ pub fn upcoming_events(lookahead_minutes: u32) -> Vec<CalendarEvent> {
     }
     #[cfg(target_os = "macos")]
     {
-        // Try compiled EventKit helper first
+        // Try compiled EventKit helper first (fastest path, no Apple Events)
         if let Some(events) = query_via_eventkit(lookahead_minutes) {
-            if !events.is_empty() {
-                return events;
-            }
+            // EventKit helper responded — use its result even if empty
+            // (empty means no events, not a failure). Don't fall through
+            // to AppleScript, which would double the timeout if Calendar
+            // is hung since both paths talk to the same backend.
+            return events;
         }
-        // AppleScript: fetch today's events, filter by time range
+        // AppleScript fallback: only reached when EventKit helper is missing
         query_via_applescript(lookahead_minutes)
     }
 }
@@ -145,10 +169,15 @@ pub fn events_overlapping_now() -> Vec<CalendarEvent> {
         return Vec::new();
     }
     #[cfg(target_os = "macos")]
-    // Query events in a 2-hour window centered on now (covers most meetings)
-    // The AppleScript returns events starting within the window;
-    // we also look backward to catch events that started before recording began.
-    query_events_with_attendees()
+    {
+        // Try EventKit helper first (sub-second, no CalDAV round-trips).
+        // Pass lookahead=120, lookback=120 for a 4-hour window centered on now.
+        if let Some(events) = query_overlap_via_eventkit() {
+            return events;
+        }
+        // AppleScript fallback: only reached when EventKit helper is missing
+        query_events_with_attendees()
+    }
 }
 
 /// AppleScript query that fetches current/recent events WITH attendee names.
@@ -235,9 +264,31 @@ return output"#;
         })
         .collect();
 
-    events.sort_by_key(|e| (e.minutes_until.abs(), e.title.clone()));
-    events.dedup_by(|a, b| a.title == b.title);
+    dedup_events(&mut events);
     events
+}
+
+/// Parse EventKit helper JSON output, extracting meeting URLs from raw location strings.
+fn parse_eventkit_output(stdout: &str) -> Vec<CalendarEvent> {
+    stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let mut event: CalendarEvent = serde_json::from_str(line).ok()?;
+            // The helper outputs the raw location string as url —
+            // extract an actual meeting URL (Zoom, Meet, Teams, etc.) or set to None.
+            event.url = event.url.as_deref().and_then(extract_meeting_url);
+            Some(event)
+        })
+        .collect()
+}
+
+/// Deduplicate events by title, keeping the one closest to now.
+fn dedup_events(events: &mut Vec<CalendarEvent>) {
+    events.sort_by_key(|e| (e.title.clone(), e.minutes_until.abs()));
+    events.dedup_by(|a, b| a.title == b.title);
+    // Re-sort by proximity to now (most relevant first)
+    events.sort_by_key(|e| e.minutes_until.abs());
 }
 
 /// Query via compiled Swift EventKit helper (if available and permitted).
@@ -253,12 +304,25 @@ fn query_via_eventkit(lookahead_minutes: u32) -> Option<Vec<CalendarEvent>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let events: Vec<CalendarEvent> = stdout
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
+    Some(parse_eventkit_output(&stdout))
+}
 
+/// Query overlapping events via EventKit helper with a backward+forward window.
+/// Returns None if the helper is missing or fails (triggers AppleScript fallback).
+fn query_overlap_via_eventkit() -> Option<Vec<CalendarEvent>> {
+    let helper = find_calendar_helper()?;
+
+    let mut cmd = Command::new(&helper);
+    cmd.arg("120").arg("120"); // lookahead=120min, lookback=120min
+    let output = output_with_timeout(cmd, SUBPROCESS_TIMEOUT)?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut events = parse_eventkit_output(&stdout);
+    dedup_events(&mut events);
     Some(events)
 }
 

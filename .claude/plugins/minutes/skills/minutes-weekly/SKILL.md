@@ -105,6 +105,43 @@ Categorize:
 Flag overdue items prominently:
 "⚠️ 3 action items are overdue. The oldest is from Mar 10 (pricing doc for Alex)."
 
+### Phase 4b: Relationship intelligence (from conversation graph)
+
+If the `minutes` CLI is available, pull relationship data:
+
+```bash
+minutes people --json --limit 20
+minutes commitments --json
+```
+
+From the people data, produce:
+
+**Relationship changes this week:**
+- Who you met with most this week (compare to their usual frequency)
+- Anyone new you met for the first time
+- Anyone on your "losing touch" list
+
+**Stale commitments by person:**
+- Group overdue/stale commitments by person name
+- Include the meeting they came from and the original due date
+- Prioritize by age (oldest first)
+
+Present as:
+
+```
+## Relationship Pulse
+
+**Most active:** Sarah Chen (3 meetings this week, usually 1/week)
+**New contact:** Jordan Mills (first meeting Thursday)
+**Losing touch:** Alex Kumar (5 meetings total, last seen 3 weeks ago)
+
+### Stale Commitments
+- **Alex Kumar:** Send tech spec (due Mar 20, from Q2 Planning)
+- **mat:** Pull March revenue numbers (due Mar 22, from Investor Update Prep)
+```
+
+If no graph data is available (minutes people returns empty), skip this phase silently. It's additive, not required.
+
 ### Phase 5: Unresolved preps
 
 Scan `~/.minutes/preps/` for prep files from this week that were never followed by a debrief:

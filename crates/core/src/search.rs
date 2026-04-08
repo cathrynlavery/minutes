@@ -750,6 +750,15 @@ fn process_file(
             return Ok(None);
         }
     }
+    if let Some(ref recorded_by) = filters.recorded_by {
+        let recorded = extract_field(frontmatter_str, "recorded_by").unwrap_or_default();
+        if !recorded
+            .to_lowercase()
+            .contains(&recorded_by.to_lowercase())
+        {
+            return Ok(None);
+        }
+    }
 
     // Text search (case-insensitive)
     let body_lower = body.to_lowercase();
@@ -807,6 +816,15 @@ fn process_intent_file(
             .iter()
             .any(|name| name.to_lowercase().contains(&attendee_lower));
         if !attendee_match {
+            return Ok(vec![]);
+        }
+    }
+    if let Some(ref recorded_by) = filters.recorded_by {
+        let matches = frontmatter
+            .recorded_by
+            .as_ref()
+            .is_some_and(|r| r.to_lowercase().contains(&recorded_by.to_lowercase()));
+        if !matches {
             return Ok(vec![]);
         }
     }
@@ -898,8 +916,10 @@ pub fn find_open_actions(
         }
 
         // Simple parse: find action_items section in frontmatter YAML
-        let full_fm = format!("---\n{}\n---", fm_str);
-        let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&full_fm);
+        // Note: fm_str is already stripped of --- markers by split_frontmatter,
+        // so pass it directly — wrapping with --- would create a multi-document
+        // YAML that serde_yaml rejects.
+        let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(fm_str);
         if let Ok(yaml) = parsed {
             if let Some(items) = yaml.get("action_items").and_then(|v| v.as_sequence()) {
                 for item in items {
@@ -921,7 +941,9 @@ pub fn find_open_actions(
                         continue;
                     }
                     if let Some(filter) = assignee {
-                        if !item_assignee.eq_ignore_ascii_case(filter) {
+                        let a = item_assignee.to_lowercase();
+                        let f = filter.to_lowercase();
+                        if a != f && !a.contains(&f) {
                             continue;
                         }
                     }
@@ -1106,6 +1128,44 @@ mod tests {
     }
 
     #[test]
+    fn search_filters_by_recorded_by() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "test.md",
+            "---\ntitle: Test\ndate: 2026-03-17\nrecorded_by: Mat Silver\ntype: meeting\n---\n\nPricing discussion",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let matching_filters = SearchFilters {
+            content_type: None,
+            since: None,
+            attendee: None,
+            intent_kind: None,
+            owner: None,
+            recorded_by: Some("mat".into()),
+        };
+        let non_matching_filters = SearchFilters {
+            content_type: None,
+            since: None,
+            attendee: None,
+            intent_kind: None,
+            owner: None,
+            recorded_by: Some("sarah".into()),
+        };
+
+        let matching_results = search("pricing", &config, &matching_filters).unwrap();
+        let non_matching_results = search("pricing", &config, &non_matching_filters).unwrap();
+
+        assert_eq!(matching_results.len(), 1);
+        assert!(non_matching_results.is_empty());
+    }
+
+    #[test]
     fn search_empty_directory() {
         let dir = TempDir::new().unwrap();
         let config = Config {
@@ -1150,10 +1210,6 @@ mod tests {
             "---\ntitle: Pricing Review\ntype: meeting\ndate: 2026-03-17T12:00:00-07:00\nduration: 42m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions: []\nintents:\n  - kind: action-item\n    what: Send pricing doc\n    who: mat\n    status: open\n    by_date: Friday\n  - kind: commitment\n    what: Share revised pricing model\n    who: sarah\n    status: open\n    by_date: Tuesday\n---\n\n## Transcript\n\nWe discussed pricing.\n",
         );
 
-        let config = Config {
-            output_dir: dir.path().to_path_buf(),
-            ..Config::default()
-        };
         let filters = SearchFilters {
             content_type: None,
             since: None,
@@ -1199,6 +1255,49 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, IntentKind::Commitment);
         assert_eq!(results[0].who.as_deref(), Some("sarah"));
+    }
+
+    #[test]
+    fn search_intents_filter_by_recorded_by() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-17-test.md",
+            "---\ntitle: Pricing Review\ntype: meeting\ndate: 2026-03-17T12:00:00-07:00\nduration: 42m\nstatus: complete\ntags: []\nattendees: []\npeople: []\nrecorded_by: Mat Silver\naction_items: []\ndecisions: []\nintents:\n  - kind: action-item\n    what: Send pricing doc\n    who: mat\n    status: open\n    by_date: Friday\n---\n\n## Transcript\n\nWe discussed pricing.\n",
+        );
+
+        let matching_filters = SearchFilters {
+            content_type: None,
+            since: None,
+            attendee: None,
+            intent_kind: None,
+            owner: None,
+            recorded_by: Some("mat".into()),
+        };
+        let non_matching_filters = SearchFilters {
+            content_type: None,
+            since: None,
+            attendee: None,
+            intent_kind: None,
+            owner: None,
+            recorded_by: Some("sarah".into()),
+        };
+
+        let matching_results = process_intent_file(
+            &dir.path().join("2026-03-17-test.md"),
+            "",
+            &matching_filters,
+        )
+        .unwrap();
+        let non_matching_results = process_intent_file(
+            &dir.path().join("2026-03-17-test.md"),
+            "",
+            &non_matching_filters,
+        )
+        .unwrap();
+
+        assert_eq!(matching_results.len(), 1);
+        assert!(non_matching_results.is_empty());
     }
 
     #[test]
@@ -1370,5 +1469,29 @@ mod tests {
             .related_topics
             .iter()
             .any(|topic| topic.topic == "pricing"));
+    }
+
+    #[test]
+    fn find_open_actions_parses_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-17-test.md",
+            "---\ntitle: Test\ntype: meeting\ndate: 2026-03-17T12:00:00-07:00\nduration: 5m\nstatus: complete\naction_items:\n  - assignee: mat\n    task: Send doc\n    status: open\n  - assignee: alex\n    task: Review PR\n    status: done\ndecisions: []\nintents: []\n---\n\nTranscript\n",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let results = find_open_actions(&config, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].assignee, "mat");
+        assert_eq!(results[0].task, "Send doc");
+
+        // Filter by assignee
+        let filtered = find_open_actions(&config, Some("nobody")).unwrap();
+        assert!(filtered.is_empty());
     }
 }

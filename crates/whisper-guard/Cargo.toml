@@ -1,0 +1,22 @@
+[package]
+name = "whisper-guard"
+version = "0.1.2"
+edition = "2021"
+license = "MIT"
+authors = ["Mat Silverstein"]
+description = "Anti-hallucination toolkit for whisper-rs — segment dedup, silence stripping, parameter presets"
+keywords = ["whisper", "transcription", "audio", "speech", "hallucination"]
+categories = ["multimedia::audio", "text-processing"]
+repository = "https://github.com/silverstein/minutes"
+homepage = "https://useminutes.app"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = []
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+tracing = "0.1"
+whisper-rs = { version = "0.16", optional = true }

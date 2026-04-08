@@ -54,6 +54,10 @@ pub struct Frontmatter {
     #[serde(default, skip_serializing_if = "EntityLinks::is_empty")]
     pub entities: EntityLinks,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<DateTime<Local>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_items: Vec<ActionItem>,
@@ -65,6 +69,12 @@ pub struct Frontmatter {
     pub recorded_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<Visibility>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speaker_map: Vec<crate::diarize::SpeakerAttribution>,
+    /// Diagnostic string from the transcription filter pipeline.
+    /// Not serialized to YAML — only used for the NoSpeech hint in rendered markdown.
+    #[serde(skip)]
+    pub filter_diagnosis: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -145,12 +155,75 @@ pub struct WriteResult {
     pub content_type: ContentType,
 }
 
+fn render_markdown(
+    frontmatter: &Frontmatter,
+    transcript: &str,
+    summary: Option<&str>,
+    user_notes: Option<&str>,
+    retry_audio_path: &Path,
+) -> Result<String, MarkdownError> {
+    let yaml = serde_yaml::to_string(frontmatter)
+        .map_err(|e| MarkdownError::SerializationError(e.to_string()))?;
+
+    let mut content = format!("---\n{}---\n\n", yaml);
+
+    if let Some(summary_text) = summary {
+        content.push_str("## Summary\n\n");
+        content.push_str(summary_text);
+        content.push_str("\n\n");
+    }
+
+    if frontmatter.status == Some(OutputStatus::NoSpeech) {
+        content.push_str("*No speech detected in this recording.*\n\n");
+        if let Some(diagnosis) = &frontmatter.filter_diagnosis {
+            content.push_str(&format!("**Diagnosis**: {}\n\n", diagnosis));
+        }
+        content.push_str(&format!(
+            "**Retry audio**: `{}`\n\n",
+            retry_audio_path.display()
+        ));
+        content.push_str(&format!(
+            "To retry after adjusting your transcription settings:\n`minutes process {}`\n\n",
+            retry_audio_path.display()
+        ));
+    }
+
+    if let Some(notes) = user_notes {
+        content.push_str("## Notes\n\n");
+        for line in notes.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                content.push_str(&format!("- {}\n", trimmed));
+            }
+        }
+        content.push('\n');
+    }
+
+    content.push_str("## Transcript\n\n");
+    content.push_str(transcript);
+    content.push('\n');
+
+    Ok(content)
+}
+
 /// Write a meeting/memo to markdown with YAML frontmatter.
 pub fn write(
     frontmatter: &Frontmatter,
     transcript: &str,
     summary: Option<&str>,
     user_notes: Option<&str>,
+    config: &Config,
+) -> Result<WriteResult, MarkdownError> {
+    write_with_retry_path(frontmatter, transcript, summary, user_notes, None, config)
+}
+
+/// Write markdown while pointing no-speech retry guidance at the original audio path.
+pub fn write_with_retry_path(
+    frontmatter: &Frontmatter,
+    transcript: &str,
+    summary: Option<&str>,
+    user_notes: Option<&str>,
+    retry_audio_path: Option<&Path>,
     config: &Config,
 ) -> Result<WriteResult, MarkdownError> {
     let output_dir = match frontmatter.r#type {
@@ -170,41 +243,13 @@ pub fn write(
         frontmatter.recorded_by.as_deref(),
     );
     let path = resolve_collision(&output_dir, &slug);
-
-    // Build markdown content
-    let yaml = serde_yaml::to_string(frontmatter)
-        .map_err(|e| MarkdownError::SerializationError(e.to_string()))?;
-
-    let mut content = format!("---\n{}---\n\n", yaml);
-
-    if let Some(summary_text) = summary {
-        content.push_str("## Summary\n\n");
-        content.push_str(summary_text);
-        content.push_str("\n\n");
-    }
-
-    if frontmatter.status == Some(OutputStatus::NoSpeech) {
-        content.push_str("*No speech detected in this recording.*\n\n");
-        content.push_str(&format!(
-            "To retry with a different model:\n`minutes process {} --model large-v3`\n\n",
-            path.display()
-        ));
-    }
-
-    if let Some(notes) = user_notes {
-        content.push_str("## Notes\n\n");
-        for line in notes.lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                content.push_str(&format!("- {}\n", trimmed));
-            }
-        }
-        content.push('\n');
-    }
-
-    content.push_str("## Transcript\n\n");
-    content.push_str(transcript);
-    content.push('\n');
+    let content = render_markdown(
+        frontmatter,
+        transcript,
+        summary,
+        user_notes,
+        retry_audio_path.unwrap_or(&path),
+    )?;
 
     // Write file with appropriate permissions
     fs::write(&path, &content)?;
@@ -224,6 +269,49 @@ pub fn write(
 
     Ok(WriteResult {
         path,
+        title: frontmatter.title.clone(),
+        word_count,
+        content_type: frontmatter.r#type,
+    })
+}
+
+pub fn rewrite(
+    path: &Path,
+    frontmatter: &Frontmatter,
+    transcript: &str,
+    summary: Option<&str>,
+    user_notes: Option<&str>,
+) -> Result<WriteResult, MarkdownError> {
+    rewrite_with_retry_path(path, frontmatter, transcript, summary, user_notes, None)
+}
+
+pub fn rewrite_with_retry_path(
+    path: &Path,
+    frontmatter: &Frontmatter,
+    transcript: &str,
+    summary: Option<&str>,
+    user_notes: Option<&str>,
+    retry_audio_path: Option<&Path>,
+) -> Result<WriteResult, MarkdownError> {
+    let content = render_markdown(
+        frontmatter,
+        transcript,
+        summary,
+        user_notes,
+        retry_audio_path.unwrap_or(path),
+    )?;
+    let tmp = path.with_extension("md.tmp");
+    fs::write(&tmp, content)?;
+    let mode = match frontmatter.visibility {
+        Some(Visibility::Team) => 0o640,
+        _ => 0o600,
+    };
+    set_permissions(&tmp, mode)?;
+    fs::rename(&tmp, path)?;
+
+    let word_count = transcript.split_whitespace().count();
+    Ok(WriteResult {
+        path: path.to_path_buf(),
         title: frontmatter.title.clone(),
         word_count,
         content_type: frontmatter.r#type,
@@ -362,12 +450,16 @@ mod tests {
             calendar_event: None,
             people: vec![],
             entities: EntityLinks::default(),
+            device: None,
+            captured_at: None,
             context: None,
             action_items: vec![],
             decisions: vec![],
             intents: vec![],
             recorded_by: None,
             visibility: None,
+            speaker_map: vec![],
+            filter_diagnosis: None,
         }
     }
 
@@ -436,6 +528,50 @@ mod tests {
         assert!(json.contains("Frontmatter"));
         assert!(json.contains("recorded_by"));
         assert!(json.contains("visibility"));
+    }
+
+    #[test]
+    fn frontmatter_with_speaker_map_roundtrips() {
+        let dir = TempDir::new().unwrap();
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let mut fm = test_frontmatter();
+        fm.speaker_map = vec![crate::diarize::SpeakerAttribution {
+            speaker_label: "SPEAKER_1".into(),
+            name: "Mat".into(),
+            confidence: crate::diarize::Confidence::Medium,
+            source: crate::diarize::AttributionSource::Deterministic,
+        }];
+        let result = write(&fm, "transcript", None, None, &config).unwrap();
+        let content = std::fs::read_to_string(&result.path).unwrap();
+        assert!(
+            content.contains("speaker_map:"),
+            "speaker_map should appear in YAML"
+        );
+        assert!(content.contains("SPEAKER_1"), "speaker label should appear");
+        assert!(content.contains("medium"), "confidence should be lowercase");
+        assert!(
+            content.contains("deterministic"),
+            "source should be lowercase"
+        );
+    }
+
+    #[test]
+    fn frontmatter_without_speaker_map_omits_field() {
+        let dir = TempDir::new().unwrap();
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let fm = test_frontmatter(); // speaker_map: vec![]
+        let result = write(&fm, "transcript", None, None, &config).unwrap();
+        let content = std::fs::read_to_string(&result.path).unwrap();
+        assert!(
+            !content.contains("speaker_map"),
+            "empty speaker_map should be omitted"
+        );
     }
 
     #[test]
@@ -558,15 +694,20 @@ mod tests {
             output_dir: dir.path().to_path_buf(),
             ..Config::default()
         };
+        let audio = dir.path().join("capture.wav");
 
         let fm = Frontmatter {
             status: Some(OutputStatus::NoSpeech),
+            filter_diagnosis: Some("audio: 5.0s, whisper produced 3 segments, no_speech filter: -3 → 0, final: 0 words".into()),
             ..test_frontmatter()
         };
 
-        let result = write(&fm, "", None, None, &config).unwrap();
+        let result = write_with_retry_path(&fm, "", None, None, Some(&audio), &config).unwrap();
         let content = fs::read_to_string(&result.path).unwrap();
         assert!(content.contains("No speech detected"));
+        assert!(content.contains("**Diagnosis**:"));
+        assert!(content.contains("no_speech filter"));
+        assert!(content.contains(audio.display().to_string().as_str()));
         assert!(content.contains("minutes process"));
     }
 }

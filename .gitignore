@@ -1,7 +1,8 @@
-# Private strategy docs (not for open-source repo)
+# Private strategy docs and local tracking (not for open-source repo)
 .claude/x1-strategy.md
 .claude/growth-strategy.md
 .claude/x-threads.md
+.claude/extension-stats/
 docs/marketing/
 docs/demo/node_modules/
 docs/demo/.remotion/
@@ -32,3 +33,8 @@ models/
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+Minutes.app
+minutes.mcpb
+.gstack/
+tauri/src-tauri/bin/system_audio_record
+tauri/src-tauri/bin/system_audio_record-*

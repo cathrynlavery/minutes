@@ -31,6 +31,18 @@ This sends a signal to the recording process, which then:
 3. Saves the transcript as a markdown file in `~/meetings/`
 4. Prints the output path and word count as JSON
 
+**Live transcript during recording:**
+
+While recording, Minutes streams a real-time transcript to `~/.minutes/live-transcript.jsonl`. You can read it with:
+```bash
+minutes transcript                    # all lines
+minutes transcript --since 42         # lines after cursor
+minutes transcript --since 5m         # last 5 minutes
+minutes transcript --status           # check if active
+```
+
+This lets you follow what's being discussed mid-meeting. The live output is rougher than the final transcript produced after stop -- it prioritizes speed over accuracy.
+
 **Check status:**
 ```bash
 minutes status

@@ -55,6 +55,33 @@ pub struct Frontmatter {
     pub recorded_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<Visibility>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speaker_map: Vec<SpeakerAttribution>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AttributionSource {
+    Deterministic,
+    Llm,
+    Enrollment,
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SpeakerAttribution {
+    pub speaker_label: String,
+    pub name: String,
+    pub confidence: Confidence,
+    pub source: AttributionSource,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

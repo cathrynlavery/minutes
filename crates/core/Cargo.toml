@@ -11,8 +11,14 @@ categories = ["multimedia::audio", "command-line-utilities"]
 
 [features]
 default = ["whisper"]
-whisper = ["dep:whisper-rs"]
+whisper = ["dep:whisper-rs", "whisper-guard/whisper"]
+parakeet = ["dep:tempfile"]  # subprocess-based, uses tempfile for concurrent safety
+diarize = ["dep:pyannote-rs", "dep:ort", "dep:ndarray"]
+cuda = ["whisper-rs/cuda"]
+metal = ["whisper-rs/metal"]
+coreml = ["whisper-rs/coreml"]
 streaming = ["dep:crossbeam-channel"]
+denoise = ["dep:nnnoiseless"]
 
 [dependencies]
 serde = { workspace = true }
@@ -23,6 +29,7 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 dirs = { workspace = true }
 walkdir = { workspace = true }
+which = { workspace = true }
 tracing = { workspace = true }
 cpal = { workspace = true }
 hound = { workspace = true }
@@ -33,7 +40,14 @@ ureq = { workspace = true }
 fs2 = { workspace = true }
 schemars = { workspace = true }
 crossbeam-channel = { workspace = true, optional = true }
+pyannote-rs = { workspace = true, optional = true }
+ort = { workspace = true, optional = true }
+ndarray = { workspace = true, optional = true }
+whisper-guard = { path = "../whisper-guard", version = "0.1.2" }
+nnnoiseless = { workspace = true, optional = true }
 base64 = "0.22"
+rusqlite = { workspace = true }
+tempfile = { version = "3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -42,7 +56,7 @@ libc = "0.2"
 # The macOS frameworks are linked automatically via #[link(name = "...")]
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3"

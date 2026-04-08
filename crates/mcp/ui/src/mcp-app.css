@@ -17,15 +17,17 @@
   --text-secondary: #a0a0a0;
   --text-muted: #6b6b6b;
   --border-color: #333;
-  --accent: #6b9fff;
-  --accent-dim: #4a7fe0;
-  --badge-meeting: #3b82f6;
-  --badge-memo: #8b5cf6;
-  --action-color: #f59e0b;
-  --action-overdue: #ef4444;
-  --decision-color: #10b981;
-  --conflict-color: #ef4444;
-  --stale-color: #f59e0b;
+  --accent: #4da8d9;
+  --accent-dim: #3890b8;
+  --badge-meeting: #4da8d9;
+  --badge-memo: #9b85c4;
+  --action-color: #d4a03c;
+  --action-overdue: #e5534b;
+  --decision-color: #46c072;
+  --conflict-color: #e5534b;
+  --stale-color: #d4a03c;
+  --commit-color: #8b7cf6;
+  --clear-color: #46c072;
   --radius: 6px;
   --radius-lg: 10px;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -41,6 +43,17 @@
   --text-secondary: #555;
   --text-muted: #999;
   --border-color: #ddd;
+  --accent: #3a8bb8;
+  --accent-dim: #2f7da8;
+  --badge-meeting: #3a8bb8;
+  --badge-memo: #7e6ba8;
+  --action-color: #b88a28;
+  --action-overdue: #d04440;
+  --decision-color: #2ea35c;
+  --conflict-color: #d04440;
+  --stale-color: #b88a28;
+  --commit-color: #5f4ec0;
+  --clear-color: #2ea35c;
 }
 
 html, body {
@@ -810,4 +823,77 @@ html, body {
     border-left: none;
     border-top: 1px solid var(--border-color);
   }
+}
+
+/* ── People Map ─────────────────────────────────────────────── */
+
+.people-header {
+  padding: 16px 20px 8px;
+}
+.people-header h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.people-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 8px 20px 20px;
+}
+.person-card {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.person-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.person-card.losing-touch {
+  border-left: 3px solid var(--stale-color);
+}
+.person-card.has-commitments {
+  border-left: 3px solid var(--commit-color);
+}
+.person-card-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.person-card-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.person-card-topics {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  font-style: italic;
+}
+.person-card-status {
+  font-size: 12px;
+  font-weight: 500;
+}
+.person-card-status.losing-touch {
+  color: var(--stale-color);
+}
+.person-card-status.has-commitments {
+  color: var(--commit-color);
+}
+.person-card-status.clear {
+  color: var(--clear-color);
+}
+.person-card-score {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.stat-warn .stat-value {
+  color: var(--stale-color);
 }

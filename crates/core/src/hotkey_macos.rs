@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 // ──────────────────────────────────────────────────────────────
 // Native macOS hotkey via CGEventTap.
@@ -85,6 +86,7 @@ mod ffi {
         ) -> CFMachPortRef;
 
         pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+        pub fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
 
         pub fn CFMachPortCreateRunLoopSource(
             allocator: CFAllocatorRef,
@@ -109,23 +111,42 @@ mod ffi {
 
         pub fn CFRelease(cf: *const c_void);
 
+        // Input Monitoring permission (correct API for CGEventTap)
+        pub fn CGPreflightListenEventAccess() -> bool;
+        pub fn CGRequestListenEventAccess() -> bool;
+
+        // Accessibility permission (for reference, NOT what CGEventTap needs)
         pub fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
     }
 }
 
-/// Check if the app has Accessibility / Input Monitoring permission.
-pub fn is_accessibility_trusted() -> bool {
-    // Check without prompting — pass NULL options (no prompt)
-    unsafe { ffi::AXIsProcessTrustedWithOptions(std::ptr::null()) }
+/// Check if Input Monitoring permission is granted (what CGEventTap actually needs).
+pub fn is_input_monitoring_granted() -> bool {
+    unsafe { ffi::CGPreflightListenEventAccess() }
 }
 
-/// Prompt the user for Accessibility permission.
-/// Opens Input Monitoring in System Settings (CGEventTap needs this, not just Accessibility).
-pub fn prompt_accessibility_permission() {
-    // Open Input Monitoring pane — CGEventTap requires this permission
+/// Request Input Monitoring permission. Shows the system prompt if not yet decided.
+pub fn request_input_monitoring() -> bool {
+    unsafe { ffi::CGRequestListenEventAccess() }
+}
+
+/// Open System Settings to the Input Monitoring pane.
+pub fn open_input_monitoring_settings() {
     let _ = std::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
         .spawn();
+}
+
+/// Check if Accessibility permission is granted (NOT needed for CGEventTap,
+/// but kept for other uses like AppleScript automation).
+pub fn is_accessibility_trusted() -> bool {
+    unsafe { ffi::AXIsProcessTrustedWithOptions(std::ptr::null()) }
+}
+
+/// Prompt the user for Accessibility permission (legacy, prefer open_input_monitoring_settings
+/// for hotkey-related flows).
+pub fn prompt_accessibility_permission() {
+    open_input_monitoring_settings();
 }
 
 /// Events emitted by the native hotkey monitor.
@@ -148,6 +169,15 @@ pub enum HotkeyMonitorStatus {
 pub struct HotkeyMonitor {
     stop: Arc<AtomicBool>,
     _thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HotkeyProbeResult {
+    pub keycode: i64,
+    pub accessibility_trusted: bool,
+    pub status: String,
+    pub message: String,
+    pub elapsed_ms: u128,
 }
 
 impl HotkeyMonitor {
@@ -195,6 +225,113 @@ impl Drop for HotkeyMonitor {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Attempt to start the native macOS hotkey monitor and report whether the
+/// current process identity can create the CGEventTap successfully.
+pub fn probe_hotkey_monitor(keycode: i64, timeout: Duration) -> HotkeyProbeResult {
+    let accessibility_trusted = is_input_monitoring_granted();
+    let started_at = Instant::now();
+    let (tx, rx) = std::sync::mpsc::channel::<HotkeyMonitorStatus>();
+
+    let monitor = match HotkeyMonitor::start(
+        keycode,
+        |_| {},
+        move |status| {
+            let _ = tx.send(status);
+        },
+    ) {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            return HotkeyProbeResult {
+                keycode,
+                accessibility_trusted,
+                status: "spawn-failed".into(),
+                message: error,
+                elapsed_ms: started_at.elapsed().as_millis(),
+            };
+        }
+    };
+
+    let deadline = started_at + timeout;
+    let mut result = HotkeyProbeResult {
+        keycode,
+        accessibility_trusted,
+        status: "timeout".into(),
+        message: format!(
+            "Timed out after {}ms waiting for the native hotkey monitor to report status.",
+            timeout.as_millis()
+        ),
+        elapsed_ms: timeout.as_millis(),
+    };
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        match rx.recv_timeout(remaining) {
+            Ok(HotkeyMonitorStatus::Starting) => {
+                result = HotkeyProbeResult {
+                    keycode,
+                    accessibility_trusted,
+                    status: "starting".into(),
+                    message: "Native hotkey monitor thread started and is waiting for CGEventTap activation.".into(),
+                    elapsed_ms: started_at.elapsed().as_millis(),
+                };
+            }
+            Ok(HotkeyMonitorStatus::Active) => {
+                result = HotkeyProbeResult {
+                    keycode,
+                    accessibility_trusted,
+                    status: "active".into(),
+                    message: "CGEventTap started successfully for this process identity.".into(),
+                    elapsed_ms: started_at.elapsed().as_millis(),
+                };
+                break;
+            }
+            Ok(HotkeyMonitorStatus::Failed(message)) => {
+                result = HotkeyProbeResult {
+                    keycode,
+                    accessibility_trusted,
+                    status: "failed".into(),
+                    message,
+                    elapsed_ms: started_at.elapsed().as_millis(),
+                };
+                break;
+            }
+            Ok(HotkeyMonitorStatus::Stopped) => {
+                result = HotkeyProbeResult {
+                    keycode,
+                    accessibility_trusted,
+                    status: "stopped".into(),
+                    message: "Native hotkey monitor stopped before it reported active status."
+                        .into(),
+                    elapsed_ms: started_at.elapsed().as_millis(),
+                };
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                result = HotkeyProbeResult {
+                    keycode,
+                    accessibility_trusted,
+                    status: "disconnected".into(),
+                    message: "Native hotkey monitor status channel disconnected unexpectedly."
+                        .into(),
+                    elapsed_ms: started_at.elapsed().as_millis(),
+                };
+                break;
+            }
+        }
+    }
+
+    monitor.stop();
+    result.elapsed_ms = started_at.elapsed().as_millis();
+    result
 }
 
 /// Context passed through the CGEventTap C callback via void* user_info.
@@ -262,8 +399,18 @@ fn run_event_tap(
         ffi::CGEventTapEnable(tap, true);
         status_callback(HotkeyMonitorStatus::Active);
 
-        // Run in 0.5s intervals so we can check the stop flag
+        // Run in 0.5s intervals so we can check the stop flag and tap health
         while !stop.load(Ordering::Relaxed) {
+            // Health check: macOS can silently disable the tap after code re-signing
+            // or secure input activation. Re-enable if needed.
+            if !ffi::CGEventTapIsEnabled(tap) {
+                tracing::warn!(
+                    keycode = target_keycode,
+                    "CGEventTap was silently disabled, re-enabling"
+                );
+                ffi::CGEventTapEnable(tap, true);
+            }
+
             let result = ffi::CFRunLoopRunInMode(ffi::kCFRunLoopDefaultMode, 0.5, false);
             if result == ffi::kCFRunLoopRunFinished {
                 break;
@@ -333,6 +480,11 @@ unsafe extern "C" fn event_tap_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_monitoring_check_returns_bool() {
+        let _ = is_input_monitoring_granted();
+    }
 
     #[test]
     fn accessibility_check_returns_bool() {

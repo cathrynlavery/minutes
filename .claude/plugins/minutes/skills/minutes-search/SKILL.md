@@ -58,6 +58,7 @@ qmd_collection = "meetings"
 
 When the user's search query is vague or too broad, push back before running it:
 
+- **"who said X"** or **"what did Alex say"** → If the meeting has `speaker_map` in frontmatter, use it to identify who said what. `speaker_map` maps SPEAKER_X labels to real names. High confidence = reliable, Medium = "likely" (suggest `minutes confirm` to lock it in).
 - **"everything"** or **"all meetings"** → "That'll return hundreds of results. What specifically are you looking for? A person, a topic, or a decision?"
 - **Single common word** like "meeting" or "project" → "That's too broad. Can you narrow it — a person's name, a specific topic, or a date range?"
 - **"that meeting"** or **"the one where"** → "Help me narrow it down. Do you remember who was in the meeting, roughly when it was, or a specific thing that was said?"

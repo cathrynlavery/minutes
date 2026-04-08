@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "externalBin": [
+      "bin/mic_check",
+      "bin/system_audio_record"
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

@@ -13,10 +13,15 @@
  *   - process_audio: Process an audio file through the pipeline
  *   - add_note: Add a timestamped note to a recording or meeting
  *   - consistency_report: Flag conflicting decisions and stale commitments
- *   - get_person_profile: Build a profile for a person across meetings
+ *   - get_person_profile: Rich relationship profile for a person (graph index)
+ *   - track_commitments: List open/stale commitments, filter by person
+ *   - relationship_map: All contacts with scores and losing-touch alerts
  *   - research_topic: Cross-meeting topic research
  *   - qmd_collection_status: Check QMD collection registration
  *   - register_qmd_collection: Register Minutes output as QMD collection
+ *   - list_voices: List enrolled voice profiles for speaker identification
+ *   - confirm_speaker: Confirm/correct speaker attribution in a meeting
+ *   - get_meeting_insights: Query structured insights (decisions, commitments, etc.) with confidence filtering
  *
  * All tools use execFile (not exec) to shell out to the `minutes` CLI binary.
  * No shell interpolation — safe from injection.
@@ -28,19 +33,33 @@ import {
   registerAppTool,
   registerAppResource,
   RESOURCE_MIME_TYPE,
+  EXTENSION_ID,
 } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
-import { existsSync, realpathSync } from "fs";
-import { readFile } from "fs/promises";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "path";
+import { existsSync } from "fs";
+import { mkdir, readFile, rm, writeFile } from "fs/promises";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 
 import * as reader from "minutes-sdk";
+import {
+  canonicalizeRoot,
+  expandHomeLikePath,
+  validatePathInDirectories,
+  validatePathInDirectory,
+} from "./paths.js";
 
 const UI_RESOURCE_URI = "ui://minutes/dashboard";
+export const MEETING_INSIGHT_KINDS = ["decision", "commitment", "question"] as const;
+export type KnowledgeConfigStatus = {
+  enabled: boolean;
+  path?: string;
+  adapter: string;
+  engine: string;
+};
 
 const execFileAsync = promisify(execFile);
 
@@ -139,6 +158,39 @@ async function triggerQmdIndex(): Promise<void> {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ── Extension runtime detection ───────────────────────────────
+// When running as a Claude Desktop extension (.mcpb), Claude uses its built-in
+// Node.js runtime.  Child processes spawned from that runtime land in a
+// different macOS audit session and do NOT inherit the host app's TCC
+// microphone grant — CoreAudio delivers all-zero samples (silence).
+//
+// Manual MCP configs (`claude_desktop_config.json`) spawn the user's own
+// `node` binary, which typically has an independent TCC mic entry, so child
+// processes work fine.
+//
+// Detection: the .mcpb unpacks into "Claude Extensions" inside Application
+// Support, and Claude Desktop sets MCP_EXTENSION_ID for extension servers.
+// This is macOS-specific — Windows/Linux don't have TCC, so their extension
+// runtimes can spawn child processes with mic access normally.
+const isExtensionRuntime: boolean =
+  process.platform === "darwin" &&
+  (!!process.env.MCP_EXTENSION_ID ||
+   __dirname.includes("Claude Extensions") ||
+   __dirname.includes("claude-extensions"));
+
+if (isExtensionRuntime) {
+  console.error(
+    "[Minutes] Running as Claude Desktop extension — audio capture will " +
+    "delegate to the Minutes desktop app (TCC mic grants don't propagate " +
+    "through the extension runtime). Launch Minutes.app for recording."
+  );
+} else {
+  console.error(
+    `[Minutes] Extension runtime detection: false ` +
+    `(MCP_EXTENSION_ID=${!!process.env.MCP_EXTENSION_ID}, dirname=${__dirname})`
+  );
+}
+
 // ── Find the minutes binary ─────────────────────────────────
 
 function findMinutesBinary(): string {
@@ -167,7 +219,189 @@ function findMinutesBinary(): string {
   return "minutes";
 }
 
-const MINUTES_BIN = findMinutesBinary();
+let MINUTES_BIN = findMinutesBinary();
+
+// ── Expected CLI version (must match this MCP server release) ──
+const MCP_SERVER_VERSION = "0.10.4";
+const EXPECTED_CLI_VERSION = MCP_SERVER_VERSION;
+
+export function parseKnowledgeConfig(configContent: string): KnowledgeConfigStatus | null {
+  const knowledgeMatch = configContent.match(/\[knowledge\][\s\S]*?(?=\n\[|$)/);
+  if (!knowledgeMatch) {
+    return null;
+  }
+
+  const section = knowledgeMatch[0];
+  const enabled = /^\s*enabled\s*=\s*true(?:\s*#.*)?$/m.test(section);
+  const pathMatch = section.match(/^\s*path\s*=\s*"([^"]+)"/m);
+  const adapterMatch = section.match(/^\s*adapter\s*=\s*"([^"]+)"/m);
+  const engineMatch = section.match(/^\s*engine\s*=\s*"([^"]+)"/m);
+
+  return {
+    enabled,
+    path: pathMatch?.[1],
+    adapter: adapterMatch?.[1] || "wiki",
+    engine: engineMatch?.[1] || "none",
+  };
+}
+const RELEASE_TAG = `v${EXPECTED_CLI_VERSION}`;
+
+// ── CLI auto-install ────────────────────────────────────────
+// When installed via MCPB or `npx minutes-mcp`, the Rust CLI binary
+// may not be present. We attempt to install it automatically so
+// non-technical users don't hit a "binary not found" dead end.
+
+let installAttempted = false;
+
+function getReleaseBinaryName(): string | null {
+  const platform = process.platform;
+  const arch = process.arch;
+  if (platform === "darwin" && arch === "arm64") return "minutes-macos-arm64";
+  if (platform === "darwin" && arch === "x64") return "minutes-macos-arm64"; // Rosetta handles it
+  if (platform === "linux" && arch === "x64") return "minutes-linux-x64";
+  if (platform === "win32" && arch === "x64") return "minutes-windows-x64.exe";
+  return null;
+}
+
+function getInstallDir(): string {
+  const localBin = join(homedir(), ".local", "bin");
+  if (process.platform === "win32") {
+    return join(homedir(), ".cargo", "bin"); // common writable dir on Windows
+  }
+  return localBin;
+}
+
+async function tryAutoInstall(): Promise<boolean> {
+  if (installAttempted) return false;
+  installAttempted = true;
+
+  console.error("[Minutes] CLI not found — attempting automatic install...");
+
+  // Strategy 1: Download pre-built binary from GitHub release (fastest, no deps)
+  const binaryName = getReleaseBinaryName();
+  if (binaryName) {
+    try {
+      const url = `https://github.com/silverstein/minutes/releases/download/${RELEASE_TAG}/${binaryName}`;
+      const installDir = getInstallDir();
+      const isWindows = process.platform === "win32";
+      const targetName = isWindows ? "minutes.exe" : "minutes";
+      const targetPath = join(installDir, targetName);
+
+      console.error(`[Minutes] Downloading ${binaryName} from ${RELEASE_TAG} release...`);
+
+      // Ensure install directory exists
+      await execFileAsync("mkdir", ["-p", installDir], { timeout: 5000 }).catch(() => {});
+
+      // Download with curl (available on macOS, Linux, and modern Windows)
+      await execFileAsync("curl", ["-fSL", "-o", targetPath, url], { timeout: 120000 });
+
+      // Make executable (not needed on Windows)
+      if (!isWindows) {
+        await execFileAsync("chmod", ["+x", targetPath], { timeout: 5000 });
+      }
+
+      console.error(`[Minutes] ✓ Installed to ${targetPath}`);
+      MINUTES_BIN = targetPath;
+      return true;
+    } catch (e: any) {
+      console.error(`[Minutes] Binary download failed: ${e.message || e}`);
+    }
+  }
+
+  // Strategy 2: Homebrew (macOS only)
+  if (process.platform === "darwin") {
+    try {
+      console.error("[Minutes] Trying: brew tap silverstein/tap && brew install minutes");
+      await execFileAsync("brew", ["tap", "silverstein/tap"], { timeout: 120000 });
+      await execFileAsync("brew", ["install", "minutes"], { timeout: 300000 });
+      console.error("[Minutes] ✓ Installed via Homebrew");
+      MINUTES_BIN = findMinutesBinary();
+      return true;
+    } catch (e: any) {
+      console.error(`[Minutes] Homebrew install failed: ${e.message || e}`);
+    }
+  }
+
+  // Strategy 3: Cargo (if Rust is installed)
+  try {
+    console.error("[Minutes] Trying: cargo install minutes-cli");
+    await execFileAsync("cargo", ["install", "minutes-cli"], { timeout: 600000 });
+    console.error("[Minutes] ✓ Installed via cargo");
+    MINUTES_BIN = findMinutesBinary();
+    return true;
+  } catch (e: any) {
+    console.error(`[Minutes] cargo install failed: ${e.message || e}`);
+  }
+
+  console.error(
+    "[Minutes] Auto-install failed. Install manually:\n" +
+    "  macOS:   brew tap silverstein/tap && brew install minutes\n" +
+    "  Any:     cargo install minutes-cli\n" +
+    "  Source:  https://github.com/silverstein/minutes"
+  );
+  return false;
+}
+
+// ── CLI version check ───────────────────────────────────────
+
+async function checkCliVersion(): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
+    // Output is like "minutes 0.8.0" or just "0.8.0"
+    const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
+    if (match) {
+      const installedVersion = match[1];
+      if (installedVersion !== EXPECTED_CLI_VERSION) {
+        console.error(
+          `[Minutes] ⚠ CLI version mismatch: installed ${installedVersion}, server expects ${EXPECTED_CLI_VERSION}. ` +
+          `Update with: brew upgrade minutes (or cargo install minutes-cli)`
+        );
+      } else {
+        console.error(`[Minutes] CLI v${installedVersion} — up to date`);
+      }
+    }
+  } catch {
+    // Version check is best-effort — don't block on failure
+  }
+}
+
+// ── Auto-setup: download whisper model if missing ───────────
+// Recording needs a whisper model (~75MB for tiny). If the CLI is
+// available but the model isn't downloaded, trigger setup automatically
+// in the background so the first "start recording" just works.
+
+let modelCheckDone = false;
+
+async function ensureWhisperModel(): Promise<void> {
+  if (modelCheckDone) return;
+  modelCheckDone = true;
+
+  try {
+    // health --json returns an array of { label, state, detail, optional } items.
+    // The "Speech model" item has state "ready" when downloaded.
+    const { stdout } = await execFileAsync(MINUTES_BIN, ["health", "--json"], { timeout: 10000, env: augmentedEnv() });
+    const items = JSON.parse(stdout);
+    const modelItem = Array.isArray(items) && items.find((i: any) => i.label === "Speech model");
+    if (modelItem && modelItem.state === "ready") {
+      console.error("[Minutes] Whisper model ready");
+      return;
+    }
+  } catch {
+    // health command may not exist in older CLI versions — fall through to setup
+  }
+
+  // Model not found — download tiny model in background
+  console.error("[Minutes] Whisper model not found — downloading tiny model (~75MB)...");
+  try {
+    await execFileAsync(MINUTES_BIN, ["setup", "--model", "tiny"], { timeout: 300000, env: augmentedEnv() });
+    console.error("[Minutes] ✓ Whisper tiny model downloaded — recording is ready");
+  } catch (e: any) {
+    console.error(
+      `[Minutes] Model download failed: ${e.message || e}. ` +
+      `Run manually: minutes setup --model tiny`
+    );
+  }
+}
 
 // ── CLI availability detection ──────────────────────────────
 // When installed via `npx minutes-mcp`, the Rust CLI may not be present.
@@ -184,25 +418,193 @@ async function isCliAvailable(): Promise<boolean> {
   if (cliAvailable === false && Date.now() - cliCheckedAt < CLI_CACHE_TTL_MS) return false;
 
   try {
-    await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000 });
+    await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
     cliAvailable = true;
     cliCheckedAt = Date.now();
     console.error("[Minutes] CLI found — full mode (all tools enabled)");
+    // Check version and ensure whisper model in background (non-blocking)
+    checkCliVersion();
+    ensureWhisperModel();
   } catch {
+    // CLI not found — try to install it automatically
+    if (!installAttempted) {
+      const installed = await tryAutoInstall();
+      if (installed) {
+        try {
+          await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
+          cliAvailable = true;
+          cliCheckedAt = Date.now();
+          console.error("[Minutes] CLI now available after auto-install — full mode");
+          checkCliVersion();
+          ensureWhisperModel();
+          return true;
+        } catch {
+          // Install succeeded but binary still not found — path issue
+        }
+      }
+    }
     cliAvailable = false;
     cliCheckedAt = Date.now();
     console.error(
-      "[Minutes] CLI not found — read-only mode. Install for recording: brew install minutes"
+      "[Minutes] CLI not available — read-only mode (search and browse only)"
     );
   }
   return cliAvailable;
 }
 
+type DesktopAppStatus = {
+  pid: number;
+  updated_at: string;
+  platform: string;
+};
+
+type DesktopControlResponse = {
+  id: string;
+  handled_at: string;
+  accepted: boolean;
+  detail: string;
+};
+
+function desktopControlDir(): string {
+  return join(homedir(), ".minutes", "desktop-control");
+}
+
+function desktopAppStatusPath(): string {
+  return join(desktopControlDir(), "desktop-app.json");
+}
+
+function desktopRequestPath(id: string): string {
+  return join(desktopControlDir(), "requests", `${id}.json`);
+}
+
+function desktopResponsePath(id: string): string {
+  return join(desktopControlDir(), "responses", `${id}.json`);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    // EPERM means the process exists but is owned by a different user — still alive.
+    if (e.code === "EPERM") return true;
+    return false;
+  }
+}
+
+async function readRunningDesktopAppStatus(): Promise<DesktopAppStatus | null> {
+  let raw: string;
+  try {
+    raw = await readFile(desktopAppStatusPath(), "utf8");
+  } catch (e: any) {
+    if (e.code === "ENOENT") return null; // File doesn't exist — app not running
+    console.error(`[Minutes] Failed to read desktop status file: ${e.message}`);
+    return null;
+  }
+
+  try {
+    const status = JSON.parse(raw) as DesktopAppStatus;
+    const updatedAt = Date.parse(status.updated_at);
+    if (!Number.isFinite(updatedAt)) {
+      console.error(`[Minutes] Desktop status file has invalid updated_at: ${status.updated_at}`);
+      return null;
+    }
+    const ageMs = Date.now() - updatedAt;
+    if (ageMs > 10000) {
+      console.error(`[Minutes] Desktop app status stale (${Math.round(ageMs / 1000)}s old, pid=${status.pid})`);
+      return null;
+    }
+    if (!status.pid || !isProcessAlive(status.pid)) return null;
+    return status;
+  } catch (e: any) {
+    console.error(`[Minutes] Failed to parse desktop status file: ${e.message}`);
+    return null;
+  }
+}
+
+async function delegateRecordingToDesktop(args: {
+  title?: string;
+  mode: "meeting" | "quick-thought";
+  intent?: string;
+  allow_degraded: boolean;
+  language?: string;
+}): Promise<DesktopControlResponse | null> {
+  const status = await readRunningDesktopAppStatus();
+  if (!status) return null;
+
+  const id = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await mkdir(join(desktopControlDir(), "requests"), { recursive: true });
+    await mkdir(join(desktopControlDir(), "responses"), { recursive: true });
+  } catch (e: any) {
+    console.error(`[Minutes] Failed to create desktop control dirs: ${e.message}`);
+    return null;
+  }
+
+  const request = {
+    id,
+    created_at: new Date().toISOString(),
+    action: {
+      type: "start-recording",
+      mode: args.mode,
+      intent: args.intent,
+      allow_degraded: args.allow_degraded,
+      title: args.title,
+      language: args.language,
+    },
+  };
+
+  const requestPath = desktopRequestPath(id);
+  const responsePath = desktopResponsePath(id);
+  await writeFile(requestPath, JSON.stringify(request, null, 2), "utf8");
+
+  const timeoutAt = Date.now() + 10000;
+  try {
+    while (Date.now() < timeoutAt) {
+      if (existsSync(responsePath)) {
+        // The Tauri side writes via tmp → rename, so the file may briefly exist
+        // as an empty or partial write. Catch parse errors and keep polling.
+        try {
+          const response = JSON.parse(
+            await readFile(responsePath, "utf8")
+          ) as DesktopControlResponse;
+          await rm(responsePath, { force: true });
+          return response;
+        } catch {
+          // Partial write or rename in progress — retry on next poll cycle.
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Minutes desktop app did not respond to the recording request in time.");
+  } finally {
+    await rm(requestPath, { force: true }).catch(() => {});
+  }
+}
+
 const CLI_INSTALL_MSG =
-  "Recording requires the minutes CLI binary. Install it:\n" +
-  "  macOS:   brew tap silverstein/tap && brew install minutes\n" +
-  "  Any:     cargo install minutes-cli\n" +
-  "  Source:  https://github.com/silverstein/minutes";
+  `Recording requires the minutes CLI binary.\n` +
+  `Searched: ${MINUTES_BIN}\n\n` +
+  `Install it:\n` +
+  `  macOS:   brew tap silverstein/tap && brew install minutes\n` +
+  `  Any:     cargo install minutes-cli\n` +
+  `  Source:  https://github.com/silverstein/minutes\n\n` +
+  `If already installed via Homebrew, try:\n` +
+  `  sudo ln -s /opt/homebrew/bin/minutes /usr/local/bin/minutes`;
+
+// Common binary locations that may not be in Claude Desktop's restricted PATH.
+const EXTRA_PATH_DIRS = [
+  join(homedir(), ".local", "bin"),
+  join(homedir(), ".cargo", "bin"),
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+];
+
+function augmentedEnv(extra?: Record<string, string>): Record<string, string | undefined> {
+  const currentPath = process.env.PATH || "";
+  const augmentedPath = [...EXTRA_PATH_DIRS, currentPath].join(delimiter);
+  return { ...process.env, PATH: augmentedPath, ...extra };
+}
 
 // ── Helper: run minutes CLI command (uses execFile, not exec) ──
 
@@ -213,7 +615,7 @@ async function runMinutes(
   try {
     const { stdout, stderr } = await execFileAsync(MINUTES_BIN, args, {
       timeout: timeoutMs,
-      env: { ...process.env, RUST_LOG: "info" },
+      env: augmentedEnv({ RUST_LOG: "info" }),
     });
     return { stdout: stdout.trim(), stderr: stderr.trim() };
   } catch (error: any) {
@@ -234,75 +636,54 @@ function parseJsonOutput(stdout: string): any {
   }
 }
 
-function canonicalizeFilePath(path: string): string {
-  if (!existsSync(path)) {
-    throw new Error(`Path does not exist: ${path}`);
-  }
-  return realpathSync(path);
-}
-
-function canonicalizeRoot(root: string): string {
-  // Roots may not exist yet (e.g. ~/.minutes/inbox on first run).
-  // Use realpath if it exists, otherwise lexical resolve.
-  return existsSync(root) ? realpathSync(root) : resolve(root);
-}
-
-function isWithinDirectory(candidate: string, root: string): boolean {
-  // Ensure root ends with separator to prevent prefix attacks (e.g. ~/meetings-evil)
-  const rootWithSep = root.endsWith("/") ? root : root + "/";
-  return candidate === root || candidate.startsWith(rootWithSep);
-}
-
-function validatePathInDirectory(path: string, root: string, allowedExts: string[]): string {
-  const canonicalPath = canonicalizeFilePath(path);
-  const canonicalRoot = canonicalizeRoot(root);
-
-  if (!allowedExts.includes(extname(canonicalPath).toLowerCase())) {
-    throw new Error(
-      `Access denied: path must be within ${canonicalRoot} and end with ${allowedExts.join(", ")}`
-    );
-  }
-
-  if (!isWithinDirectory(canonicalPath, canonicalRoot)) {
-    throw new Error(`Access denied: path must be within ${canonicalRoot}`);
-  }
-
-  return canonicalPath;
-}
-
-function validatePathInDirectories(
-  path: string,
-  roots: string[],
-  allowedExts: string[]
-): string {
-  const canonicalPath = canonicalizeFilePath(path);
-
-  if (!allowedExts.includes(extname(canonicalPath).toLowerCase())) {
-    throw new Error(
-      `Access denied: path must end with one of ${allowedExts.join(", ")}`
-    );
-  }
-
-  const canonicalRoots = roots.map((root) => canonicalizeRoot(root));
-  if (!canonicalRoots.some((root) => isWithinDirectory(canonicalPath, root))) {
-    throw new Error(
-      `Access denied: file must be inside one of ${canonicalRoots.join(", ")}`
-    );
-  }
-
-  return canonicalPath;
-}
-
 // ── MCP Server ──────────────────────────────────────────────
 
 const server = new McpServer({
   name: "minutes",
-  version: "0.5.2",
+  version: MCP_SERVER_VERSION,
 });
 
+// Declare MCP Apps extension support so hosts classify this server as interactive.
+// The `extensions` field is part of the draft MCP spec (SEP-1724) — not yet in the
+// stable SDK types, so we cast through `any`.
+(server.server as any).registerCapabilities({
+  extensions: { [EXTENSION_ID]: {} },
+} as any);
+
 // Configurable directories — override via env vars in Claude Desktop extension settings
-const MEETINGS_DIR = process.env.MEETINGS_DIR || join(homedir(), "meetings");
-const MINUTES_HOME = process.env.MINUTES_HOME || join(homedir(), ".minutes");
+const MEETINGS_DIR = canonicalizeRoot(
+  expandHomeLikePath(process.env.MEETINGS_DIR || join(homedir(), "meetings"))
+);
+const MINUTES_HOME = canonicalizeRoot(
+  expandHomeLikePath(process.env.MINUTES_HOME || join(homedir(), ".minutes"))
+);
+let effectiveMeetingsDirPromise: Promise<string> | null = null;
+
+async function getEffectiveMeetingsDir(): Promise<string> {
+  if (effectiveMeetingsDirPromise) {
+    return effectiveMeetingsDirPromise;
+  }
+
+  effectiveMeetingsDirPromise = (async () => {
+    if (!(await isCliAvailable())) {
+      return MEETINGS_DIR;
+    }
+
+    try {
+      const { stdout } = await runMinutes(["paths", "--json"]);
+      const parsed = parseJsonOutput(stdout);
+      if (parsed && typeof parsed.output_dir === "string" && parsed.output_dir.length > 0) {
+        return canonicalizeRoot(parsed.output_dir);
+      }
+    } catch {
+      // Fall back to the MCP-configured default when the CLI cannot report paths.
+    }
+
+    return MEETINGS_DIR;
+  })();
+
+  return effectiveMeetingsDirPromise;
+}
 
 // ── UI Resource: MCP App dashboard ──────────────────────────
 
@@ -328,7 +709,7 @@ registerAppResource(
 
 server.tool(
  "start_recording",
-  "Start recording audio from the default input device. The recording runs until stop_recording is called.",
+  "Start recording audio with call-aware preflight. When a known call app is active, Minutes can infer call intent and block silent mic-only call captures unless explicitly allowed.",
   {
     title: z.string().optional().describe("Optional title for this recording"),
     mode: z
@@ -336,9 +717,19 @@ server.tool(
       .optional()
       .default("meeting")
       .describe("Live capture mode"),
+    intent: z
+      .enum(["memo", "room", "call"])
+      .optional()
+      .describe("Optional recording intent. If omitted and a known call app is active, Minutes may infer call intent."),
+    allow_degraded: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Allow a mic-only capture to continue even if Minutes detects a call but no system-audio route is configured."),
+    language: z.string().optional().describe("Transcription language code (e.g. 'en', 'ur', 'es', 'zh'). Overrides config.toml setting."),
   },
   { title: "Start Recording", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  async ({ title, mode }) => {
+  async ({ title, mode, intent, allow_degraded, language }) => {
     if (!(await isCliAvailable())) {
       return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
     }
@@ -355,13 +746,112 @@ server.tool(
       };
     }
 
-    // Spawn detached — recording is a foreground process that blocks,
-    // so we spawn it and let it run independently
+    const preflightArgs = ["preflight-record", "--json", "--mode", mode, "--intent", intent || "auto"];
+    if (allow_degraded) preflightArgs.push("--allow-degraded");
+    const { stdout: preflightOut } = await runMinutes(preflightArgs);
+    const preflight = parseJsonOutput(preflightOut);
+
+    // In extension mode, always delegate to the desktop app — the extension
+    // runtime's audit session severs TCC mic grants for child processes.
+    // For non-extension mode, still delegate call recordings to the desktop app
+    // (it has system audio capture that the CLI can't do).
+    if (isExtensionRuntime || preflight.intent === "call") {
+      let response: DesktopControlResponse | null;
+      try {
+        response = await delegateRecordingToDesktop({
+          title,
+          mode,
+          intent: intent || preflight.intent,
+          allow_degraded,
+          language,
+        });
+      } catch (e: any) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Failed to delegate recording to the Minutes desktop app: ${e.message}\n\n` +
+              "Check if Minutes.app is responding, or restart it and try again.",
+          }],
+          isError: true,
+        };
+      }
+      if (response) {
+        if (!response.accepted) {
+          return {
+            content: [{ type: "text" as const, text: response.detail }],
+            structuredContent: { preflight, desktop_response: response },
+          };
+        }
+
+        await new Promise((r) => setTimeout(r, 750));
+        const { stdout: newStatus } = await runMinutes(["status"]);
+        const result = parseJsonOutput(newStatus);
+        let desktopLiveMsg = "";
+        try {
+          const { stdout: ltOut } = await runMinutes(["transcript", "--status", "--format", "json"], 5000);
+          const ltStatus = parseJsonOutput(ltOut);
+          if (ltStatus?.active) {
+            desktopLiveMsg = " A live transcript is streaming — use read_live_transcript to follow along.";
+          }
+        } catch { /* sidecar may not have started yet */ }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: result.recording
+                ? `Recording started in the running Minutes desktop app (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${desktopLiveMsg} Say "stop recording" when done.`
+                : response.detail,
+            },
+          ],
+          structuredContent: { preflight, desktop_response: response },
+        };
+      }
+
+      // Desktop app not running — in extension mode this means audio capture won't work.
+      if (isExtensionRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "The Minutes desktop app is not running. The Claude Desktop extension " +
+                "cannot capture audio directly (macOS blocks microphone access for " +
+                "processes spawned from the extension runtime).\n\n" +
+                "To fix: launch Minutes.app and try again. The extension will " +
+                "delegate recording to the desktop app, which has its own " +
+                "microphone permission.\n\n" +
+                "Download: https://github.com/silverstein/minutes/releases/latest",
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    if (preflight.blocking_reason) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: preflight.blocking_reason,
+          },
+        ],
+        structuredContent: { preflight },
+      };
+    }
+
+    // Spawn recording as a child process (not detached).
+    // detached: true calls setsid() which creates a new macOS audit session,
+    // severing the TCC microphone grant inherited from the host app (Claude Desktop).
+    // CoreAudio then delivers all-zero samples — silent recordings.
+    // The MCP server is long-lived, and the recording process ignores SIGTERM,
+    // so child.unref() alone is sufficient.
     const args = ["record", "--mode", mode];
     if (title) args.push("--title", title);
+    if (intent) args.push("--intent", intent);
+    if (allow_degraded) args.push("--allow-degraded");
+    if (language) args.push("--language", language);
 
     const child = spawn(MINUTES_BIN, args, {
-      detached: true,
       stdio: "ignore",
       env: { ...process.env, RUST_LOG: "info" },
     });
@@ -373,12 +863,22 @@ server.tool(
     const { stdout: newStatus } = await runMinutes(["status"]);
     const result = parseJsonOutput(newStatus);
 
+    // Check if the live transcript sidecar started (may still be loading the whisper model)
+    let liveMsg = "";
+    try {
+      const { stdout: ltOut } = await runMinutes(["transcript", "--status", "--format", "json"], 5000);
+      const ltStatus = parseJsonOutput(ltOut);
+      if (ltStatus?.active) {
+        liveMsg = " A live transcript is streaming — use read_live_transcript to follow along.";
+      }
+    } catch { /* sidecar may not have started yet — omit the message */ }
+
     return {
       content: [
         {
           type: "text" as const,
           text: result.recording
-            ? `${result.recording_mode === "quick-thought" ? "Quick thought" : "Recording"} started (PID: ${result.pid}). Say "stop recording" when done.`
+            ? `${result.recording_mode === "quick-thought" ? "Quick thought" : "Recording"} started (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${liveMsg} Say "stop recording" when done.`
             : "Recording failed to start. Check `minutes logs` for details.",
         },
       ],
@@ -401,14 +901,61 @@ server.tool(
       const { stdout, stderr } = await runMinutes(["stop"], 180000);
       const result = parseJsonOutput(stdout);
 
-      const message = result.file
-        ? `Recording saved: ${result.file}\nTitle: ${result.title}\nWords: ${result.words}`
-        : stderr || "Recording stopped.";
+      if (result.status === "queued") {
+        const title = result.title ? ` for ${result.title}` : "";
+        const jobLine = result.job_id ? ` Job: ${result.job_id}.` : "";
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Recording stopped. Processing queued${title}.${jobLine}`,
+            },
+          ],
+        };
+      }
+
+      if (!result.file) {
+        return { content: [{ type: "text" as const, text: stderr || "Recording stopped." }] };
+      }
 
       // Trigger QMD re-index so new meeting is immediately searchable
-      if (result.file) triggerQmdIndex();
+      triggerQmdIndex();
 
-      return { content: [{ type: "text" as const, text: message }] };
+      // Build a rich summary by reading the meeting frontmatter
+      let summary = `## ${result.title ?? "Recording"}\n\n`;
+      summary += `**Saved:** ${result.file}\n`;
+      if (result.words != null) summary += `**Words:** ${result.words}\n`;
+
+      try {
+        const meeting = await reader.getMeeting(result.file);
+        if (meeting) {
+          const fm = meeting.frontmatter;
+          if (fm.duration) summary += `**Duration:** ${fm.duration}\n`;
+          if (fm.people?.length) summary += `**People:** ${fm.people.join(", ")}\n`;
+
+          const actions = fm.action_items?.filter((a: any) => a.status === "open") || [];
+          if (actions.length > 0) {
+            summary += `\n### Action Items\n`;
+            for (const item of actions) {
+              summary += `- [ ] ${item.task}`;
+              if (item.assignee) summary += ` (${item.assignee})`;
+              if (item.due) summary += ` — due ${item.due}`;
+              summary += `\n`;
+            }
+          }
+
+          if (fm.decisions?.length) {
+            summary += `\n### Decisions\n`;
+            for (const d of fm.decisions) {
+              summary += `- ${d.text}\n`;
+            }
+          }
+        }
+      } catch {
+        // Frontmatter read is best-effort — basic info is already in the summary
+      }
+
+      return { content: [{ type: "text" as const, text: summary }] };
     } catch (error: any) {
       return {
         content: [{ type: "text" as const, text: `Stop failed: ${error.message}` }],
@@ -436,9 +983,55 @@ server.tool(
     const text = status.recording
       ? `${modeLabel} in progress (PID: ${status.pid})`
       : status.processing
-        ? `${processingLabel}${status.processing_stage ? `: ${status.processing_stage}` : "."}`
+        ? `${processingLabel}${status.processing_title ? ` for ${status.processing_title}` : ""}${status.processing_stage ? `: ${status.processing_stage}` : "."}${status.processing_job_count > 1 ? ` (${status.processing_job_count} jobs queued)` : ""}`
         : "No recording in progress.";
     return { content: [{ type: "text" as const, text }] };
+  }
+);
+
+server.tool(
+  "list_processing_jobs",
+  "List background processing jobs for recent recordings, including queued, transcript-ready, needs-review, failed, and completed work.",
+  {
+    limit: z.number().optional().default(10).describe("Maximum number of jobs"),
+    include_completed: z.boolean().optional().default(true).describe("Include completed and failed jobs"),
+  },
+  { title: "Processing Jobs", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ limit, include_completed }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    const args = ["jobs", "--json", "--limit", String(limit)];
+    if (include_completed) args.push("--all");
+
+    try {
+      const { stdout } = await runMinutes(args);
+      const jobs = parseJsonOutput(stdout);
+      if (!Array.isArray(jobs) || jobs.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No processing jobs right now." }],
+          structuredContent: { jobs: [] },
+        };
+      }
+
+      const lines = jobs.map((job: any) => {
+        const title = job.title || "Queued recording";
+        const state = job.state || "queued";
+        const stage = job.stage ? ` — ${job.stage}` : "";
+        return `- ${job.id}: ${state} — ${title}${stage}`;
+      });
+
+      return {
+        content: [{ type: "text" as const, text: `Processing jobs:\n\n${lines.join("\n")}` }],
+        structuredContent: { jobs },
+      };
+    } catch (error: any) {
+      return {
+        content: [{ type: "text" as const, text: `Failed to list processing jobs: ${error.message}` }],
+        isError: true,
+      };
+    }
   }
 );
 
@@ -744,7 +1337,7 @@ registerAppTool(
   server,
   "get_person_profile",
   {
-    description: "Build a first-pass profile for a person across meetings using structured intent data.",
+    description: "Get a rich relationship profile for a person: meetings, commitments, topics, relationship score, and trend. Uses the conversation graph index for instant results.",
     inputSchema: {
       name: z.string().describe("Person / attendee name to profile"),
     },
@@ -752,81 +1345,87 @@ registerAppTool(
     _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
   },
   async ({ name }) => {
+    // Try graph index first (via CLI `minutes people --json`)
+    if (await isCliAvailable()) {
+      const { stdout } = await runMinutes(["people", "--json"]);
+      const people = parseJsonOutput(stdout);
+
+      if (Array.isArray(people)) {
+        const nameLower = name.toLowerCase();
+        const match = people.find((p: any) =>
+          p.name?.toLowerCase().includes(nameLower) ||
+          p.slug?.toLowerCase().includes(nameLower)
+        );
+
+        if (match) {
+          const daysSince = Math.round(match.days_since || 0);
+          const last = daysSince < 1 ? "today" : daysSince < 2 ? "yesterday" : `${daysSince}d ago`;
+          const sections = [];
+
+          sections.push(`Relationship score: ${(match.score || 0).toFixed(1)} | ${match.meeting_count} meetings | last: ${last}`);
+
+          if (match.losing_touch) {
+            sections.push("⚠ LOSING TOUCH — meeting frequency has declined");
+          }
+
+          if (match.top_topics?.length > 0) {
+            sections.push("Top topics: " + match.top_topics.join(", "));
+          }
+
+          if (match.open_commitments > 0) {
+            sections.push(`Open commitments: ${match.open_commitments}`);
+          }
+
+          return {
+            content: [{ type: "text" as const, text: `Profile for ${match.name}:\n\n${sections.join("\n")}` }],
+            structuredContent: { ...match, view: "person" },
+            _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "person" },
+          };
+        }
+      }
+
+      // Fall back to legacy CLI person command for richer meeting-level data
+      const { stdout: legacyOut, stderr } = await runMinutes(["person", name]);
+      const profile = parseJsonOutput(legacyOut);
+
+      if (profile && typeof profile === "object") {
+        const topics = Array.isArray(profile.top_topics) ? profile.top_topics : [];
+        const openIntents = Array.isArray(profile.open_intents) ? profile.open_intents : [];
+        const recentMeetings = Array.isArray(profile.recent_meetings) ? profile.recent_meetings : [];
+
+        if (topics.length === 0 && openIntents.length === 0 && recentMeetings.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `No profile data found for ${name}.` }],
+            structuredContent: { name, top_topics: [], open_intents: [], recent_meetings: [], view: "person" },
+            _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "person" },
+          };
+        }
+
+        const sections = [];
+        if (topics.length > 0) sections.push("Top topics:\n" + topics.map((t: any) => `- ${t.topic} (${t.count})`).join("\n"));
+        if (openIntents.length > 0) sections.push("Open commitments:\n" + openIntents.map((i: any) => `- ${i.kind}: ${i.what}${i.by_date ? ` by ${i.by_date}` : ""}`).join("\n"));
+        if (recentMeetings.length > 0) sections.push("Recent meetings:\n" + recentMeetings.map((m: any) => `- ${m.date} — ${m.title}`).join("\n"));
+
+        return {
+          content: [{ type: "text" as const, text: `Profile for ${profile.name}:\n\n${sections.join("\n\n")}` }],
+          structuredContent: { ...profile, view: "person" },
+          _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "person" },
+        };
+      }
+
+      return { content: [{ type: "text" as const, text: stderr || legacyOut || `No data found for ${name}.` }] };
+    }
+
     // Pure-TS fallback when CLI is not available
-    if (!(await isCliAvailable())) {
-      const profile = await reader.getPersonProfile(MEETINGS_DIR, name);
-      const sections = [];
-      if (profile.topics.length > 0) sections.push("Topics: " + profile.topics.join(", "));
-      if (profile.meetings.length > 0) {
-        sections.push("Meetings:\n" + profile.meetings.map((m) => `- ${m.date} — ${m.title}`).join("\n"));
-      }
-      if (profile.openActions.length > 0) {
-        sections.push("Open actions:\n" + profile.openActions.map((a) => `- ${a.task} (${a.status})`).join("\n"));
-      }
-      const text = sections.length > 0 ? sections.join("\n\n") : `No profile data found for ${name}.`;
-      return {
-        content: [{ type: "text" as const, text }],
-        structuredContent: { name, top_topics: profile.topics.map((t) => ({ topic: t, count: 1 })), open_intents: profile.openActions, recent_meetings: profile.meetings, view: "person" },
-        _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "person" },
-      };
-    }
-
-    const { stdout, stderr } = await runMinutes(["person", name]);
-    const profile = parseJsonOutput(stdout);
-
-    if (!profile || typeof profile !== "object") {
-      return { content: [{ type: "text" as const, text: stderr || stdout }] };
-    }
-
-    const topics = Array.isArray(profile.top_topics) ? profile.top_topics : [];
-    const openIntents = Array.isArray(profile.open_intents) ? profile.open_intents : [];
-    const recentMeetings = Array.isArray(profile.recent_meetings)
-      ? profile.recent_meetings
-      : [];
-
-    if (topics.length === 0 && openIntents.length === 0 && recentMeetings.length === 0) {
-      return {
-        content: [{ type: "text" as const, text: `No profile data found for ${name}.` }],
-        structuredContent: { name, top_topics: [], open_intents: [], recent_meetings: [], view: "person" },
-        _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "person" },
-      };
-    }
-
+    const profile = await reader.getPersonProfile(MEETINGS_DIR, name);
     const sections = [];
-    if (topics.length > 0) {
-      sections.push(
-        "Top topics:\n" +
-          topics.map((topic: any) => `- ${topic.topic} (${topic.count})`).join("\n")
-      );
-    }
-    if (openIntents.length > 0) {
-      sections.push(
-        "Open commitments/actions:\n" +
-          openIntents
-            .map(
-              (intent: any) =>
-                `- ${intent.kind}: ${intent.what}${intent.by_date ? ` by ${intent.by_date}` : ""}`
-            )
-            .join("\n")
-      );
-    }
-    if (recentMeetings.length > 0) {
-      sections.push(
-        "Recent meetings:\n" +
-          recentMeetings
-            .map((meeting: any) => `- ${meeting.date} — ${meeting.title}`)
-            .join("\n")
-      );
-    }
-
+    if (profile.topics.length > 0) sections.push("Topics: " + profile.topics.join(", "));
+    if (profile.meetings.length > 0) sections.push("Meetings:\n" + profile.meetings.map((m) => `- ${m.date} — ${m.title}`).join("\n"));
+    if (profile.openActions.length > 0) sections.push("Open actions:\n" + profile.openActions.map((a) => `- ${a.task} (${a.status})`).join("\n"));
+    const text = sections.length > 0 ? sections.join("\n\n") : `No profile data found for ${name}.`;
     return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Profile for ${profile.name}:\n\n${sections.join("\n\n")}`,
-        },
-      ],
-      structuredContent: { ...profile, view: "person" },
+      content: [{ type: "text" as const, text }],
+      structuredContent: { name, top_topics: profile.topics.map((t) => ({ topic: t, count: 1 })), open_intents: profile.openActions, recent_meetings: profile.meetings, view: "person" },
       _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "person" },
     };
   }
@@ -948,7 +1547,7 @@ registerAppTool(
   },
   async ({ path: filePath }) => {
     try {
-      const resolved = validatePathInDirectory(filePath, MEETINGS_DIR, [".md"]);
+      const resolved = validatePathInDirectory(filePath, await getEffectiveMeetingsDir(), [".md"]);
       const content = await readFile(resolved, "utf-8");
       return {
         content: [{ type: "text" as const, text: content }],
@@ -972,15 +1571,16 @@ server.tool(
     file_path: z.string().describe("Path to audio file (.wav, .m4a, .mp3)"),
     type: z.enum(["meeting", "memo"]).optional().default("memo").describe("Content type"),
     title: z.string().optional().describe("Optional title"),
+    language: z.string().optional().describe("Transcription language code (e.g. 'en', 'ur', 'es', 'zh'). Overrides config.toml setting."),
   },
   { title: "Process Audio", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  async ({ file_path, type: contentType, title }) => {
+  async ({ file_path, type: contentType, title, language }) => {
     if (!(await isCliAvailable())) {
       return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
     }
     const allowedDirs = [
       join(MINUTES_HOME, "inbox"),
-      MEETINGS_DIR,
+      await getEffectiveMeetingsDir(),
       join(homedir(), "Downloads"),
     ];
     const audioExts = [".wav", ".m4a", ".mp3", ".ogg", ".webm"];
@@ -989,6 +1589,7 @@ server.tool(
       const resolved = validatePathInDirectories(file_path, allowedDirs, audioExts);
       const args = ["process", resolved, "-t", contentType];
       if (title) args.push("--title", title);
+      if (language) args.push("--language", language);
       const { stdout } = await runMinutes(args, 300000);
       const result = parseJsonOutput(stdout);
 
@@ -1032,7 +1633,7 @@ server.tool(
       if (meeting_path) {
         const resolved = validatePathInDirectory(
           meeting_path,
-          MEETINGS_DIR,
+          await getEffectiveMeetingsDir(),
           [".md"]
         );
         args.push("--meeting", resolved);
@@ -1164,6 +1765,134 @@ server.tool(
   }
 );
 
+// ── Tool: track_commitments ─────────────────────────────────
+
+registerAppTool(
+  server,
+  "track_commitments",
+  {
+    description: "List open and stale commitments (action items, intents, decisions) across all meetings. Optionally filter by person. Answers: 'What did I promise Sarah?' or 'What's overdue?'",
+    inputSchema: {
+      person: z.string().optional().describe("Filter by person name or slug (optional — omit for all commitments)"),
+    },
+    annotations: { title: "Track Commitments", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
+  },
+  async ({ person }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: "Minutes CLI not available. Install with: cargo install minutes-cli" }] };
+    }
+
+    // Use dedicated commitments command for full text detail
+    const args = ["commitments", "--json"];
+    if (person) args.push("--person", person);
+
+    const { stdout } = await runMinutes(args);
+    const commitments = parseJsonOutput(stdout);
+
+    if (!Array.isArray(commitments) || commitments.length === 0) {
+      const scope = person ? ` for ${person}` : "";
+      return {
+        content: [{ type: "text" as const, text: `No open commitments found${scope}.` }],
+        structuredContent: { commitments: [], person: person || null, view: "commitments" },
+        _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "commitments" },
+      };
+    }
+
+    // Group by status
+    const stale = commitments.filter((c: any) => c.status === "stale");
+    const open = commitments.filter((c: any) => c.status === "open");
+
+    const lines: string[] = [];
+    if (stale.length > 0) {
+      lines.push(`STALE (${stale.length} overdue):`);
+      for (const c of stale) {
+        const who = c.person_name || "unassigned";
+        lines.push(`  ⚠ ${c.text} (${who}; due: ${c.due_date || "no date"}; from: ${c.meeting_title})`);
+      }
+    }
+    if (open.length > 0) {
+      if (stale.length > 0) lines.push("");
+      lines.push(`OPEN (${open.length}):`);
+      for (const c of open) {
+        const who = c.person_name || "unassigned";
+        lines.push(`  · ${c.text} (${who}; from: ${c.meeting_title})`);
+      }
+    }
+
+    const text = `Commitments${person ? ` for ${person}` : ""}:\n\n${lines.join("\n")}`;
+
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: { commitments, person: person || null, stale_count: stale.length, open_count: open.length, view: "commitments" },
+      _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "commitments" },
+    };
+  }
+);
+
+// ── Tool: relationship_map ──────────────────────────────────
+
+registerAppTool(
+  server,
+  "relationship_map",
+  {
+    description: "Show all contacts with relationship scores, meeting frequency, and 'losing touch' alerts. Overview of your entire conversation network.",
+    inputSchema: {
+      limit: z.number().optional().describe("Max people to return (default: 15)"),
+    },
+    annotations: { title: "Relationship Map", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
+  },
+  async ({ limit }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: "Minutes CLI not available. Install with: cargo install minutes-cli" }] };
+    }
+
+    const maxPeople = limit || 15;
+    const { stdout } = await runMinutes(["people", "--json", "--limit", String(maxPeople)]);
+    const people = parseJsonOutput(stdout);
+
+    if (!Array.isArray(people) || people.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: "No relationship data found. Run: minutes people --rebuild" }],
+        structuredContent: { people: [], view: "relationship_map" },
+        _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "relationship_map" },
+      };
+    }
+
+    // Format human-readable output
+    const lines: string[] = [];
+    const losingTouch: string[] = [];
+
+    for (const p of people) {
+      const daysSince = Math.round(p.days_since || 0);
+      const last = daysSince < 1 ? "today" : daysSince < 2 ? "yesterday" : `${daysSince}d ago`;
+      const status = p.losing_touch
+        ? "⚠ losing touch"
+        : p.open_commitments > 0
+          ? `${p.open_commitments} open commitment${p.open_commitments !== 1 ? "s" : ""}`
+          : "✓ all clear";
+
+      lines.push(`${p.name} — ${p.meeting_count} meetings, last: ${last}, ${status} (score: ${(p.score || 0).toFixed(1)})`);
+
+      if (p.losing_touch) {
+        losingTouch.push(`${p.name} — ${p.meeting_count} meetings total, last seen ${daysSince}d ago`);
+      }
+    }
+
+    let text = `Relationship Map (${people.length} contacts):\n\n${lines.join("\n")}`;
+    if (losingTouch.length > 0) {
+      text += `\n\nLosing Touch:\n${losingTouch.join("\n")}`;
+    }
+
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: { people, view: "relationship_map" },
+      _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "relationship_map" },
+    };
+  }
+);
+
 // ── Resources ───────────────────────────────────────────────
 
 server.resource(
@@ -1243,7 +1972,7 @@ server.resource(
     const { stdout } = await runMinutes(["resolve", slug]);
     const parsed = parseJsonOutput(stdout);
     if (parsed.path) {
-      const validated = validatePathInDirectory(parsed.path, MEETINGS_DIR, [".md"]);
+      const validated = validatePathInDirectory(parsed.path, await getEffectiveMeetingsDir(), [".md"]);
       const content = await readFile(validated, "utf-8");
       return { contents: [{ uri: uri.href, mimeType: "text/markdown", text: content }] };
     }
@@ -1251,14 +1980,66 @@ server.resource(
   }
 );
 
+// ── Resource: recent_ideas (voice memos from last N days) ──
+
+server.resource(
+  "recent-ideas",
+  "minutes://ideas/recent",
+  { description: "Recent voice memos and ideas captured from any device (last 14 days)" },
+  async (uri) => {
+    const meetings = await reader.listMeetings(await getEffectiveMeetingsDir(), 200);
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 14);
+
+    const memos = meetings.filter((m) => {
+      if (m.frontmatter.type !== "memo") return false;
+      const date = new Date(m.frontmatter.date);
+      return date >= cutoff;
+    });
+
+    if (memos.length === 0) {
+      return {
+        contents: [{
+          uri: uri.href,
+          mimeType: "text/plain",
+          text: "No voice memos in the last 14 days.",
+        }],
+      };
+    }
+
+    const lines = memos
+      .sort((a, b) => new Date(b.frontmatter.date).getTime() - new Date(a.frontmatter.date).getTime())
+      .slice(0, 20)
+      .map((m) => {
+        const date = new Date(m.frontmatter.date).toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        });
+        const device = m.frontmatter.device ? ` (${m.frontmatter.device})` : "";
+        return `- [${date}] ${m.frontmatter.title}${device} — ${m.frontmatter.duration}`;
+      })
+      .join("\n");
+
+    return {
+      contents: [{
+        uri: uri.href,
+        mimeType: "text/plain",
+        text: `Recent voice memos (${memos.length} in last 14 days):\n\n${lines}`,
+      }],
+    };
+  }
+);
+
 // ── Tool: start_dictation ──────────────────────────────────
 
 server.tool(
   "start_dictation",
-  "Start dictation mode. Speak naturally — text goes to clipboard and daily note after each pause. Runs until stop_dictation is called or silence timeout.",
-  {},
+  "Start dictation mode. Speak naturally — text accumulates across pauses and the combined result is written when dictation ends. Runs until stop_dictation is called or silence timeout.",
+  {
+    language: z.string().optional().describe("Transcription language code (e.g. 'en', 'ur', 'es', 'zh'). Overrides config.toml setting."),
+  },
   { title: "Start Dictation", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  async () => {
+  async ({ language }) => {
     if (!(await isCliAvailable())) {
       return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
     }
@@ -1275,9 +2056,27 @@ server.tool(
       };
     }
 
-    // Spawn detached dictation process
-    const child = spawn(MINUTES_BIN, ["dictate"], {
-      detached: true,
+    // Extension runtime: mic won't work for spawned child processes.
+    // Desktop delegation for dictation requires a future Tauri extension.
+    if (isExtensionRuntime) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Dictation is not yet supported via the Claude Desktop extension. " +
+              "The extension runtime cannot pass microphone access to child processes.\n\n" +
+              "Workaround: run `minutes dictate` from your terminal, or use start_recording instead " +
+              "(recording delegates to the Minutes desktop app when it's running).",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Spawn dictation as child (not detached — preserves macOS TCC mic grant)
+    const dictArgs = ["dictate"];
+    if (language) dictArgs.push("--language", language);
+    const child = spawn(MINUTES_BIN, dictArgs, {
       stdio: "ignore",
       env: { ...process.env, RUST_LOG: "info" },
     });
@@ -1290,7 +2089,7 @@ server.tool(
       content: [
         {
           type: "text" as const,
-          text: "Dictation started. Speak naturally — text will be copied to clipboard after each pause. Say \"stop dictation\" when done.",
+          text: "Dictation started. Speak naturally — text accumulates across pauses and will be copied when dictation ends. Say \"stop dictation\" when done.",
         },
       ],
     };
@@ -1331,6 +2130,436 @@ server.tool(
   }
 );
 
+// ── Tool: list_voices ────────────────────────────────────────
+
+server.tool(
+  "list_voices",
+  "List enrolled voice profiles for speaker identification. Shows who has been enrolled, sample count, and model version.",
+  {},
+  { title: "Voice Profiles", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: "Minutes CLI not available." }] };
+    }
+
+    const { stdout, stderr } = await runMinutes(["voices", "--json"]);
+    const profiles = parseJsonOutput(stdout);
+
+    if (!Array.isArray(profiles) || profiles.length === 0) {
+      return {
+        content: [{ type: "text" as const, text: "No voice profiles enrolled. The user can enroll with: minutes enroll" }],
+      };
+    }
+
+    const lines = profiles.map((p: any) =>
+      `${p.name} — ${p.sample_count} samples, ${p.source} (${p.model_version})`
+    );
+
+    return {
+      content: [{ type: "text" as const, text: `Voice profiles (${profiles.length}):\n\n${lines.join("\n")}` }],
+      structuredContent: { profiles, view: "voices" },
+    };
+  }
+);
+
+// ── Tool: confirm_speaker ────────────────────────────────────
+
+server.tool(
+  "confirm_speaker",
+  "Confirm or correct a speaker attribution in a meeting. Promotes the attribution to High confidence and rewrites the transcript label. Optionally saves the speaker's voice profile for future meetings.",
+  {
+    meeting: z.string().describe("Path to the meeting markdown file"),
+    speaker_label: z.string().describe("Speaker label to confirm (e.g., SPEAKER_1)"),
+    name: z.string().describe("Real name to assign to this speaker"),
+    save_voice: z.boolean().optional().default(false).describe("Save this speaker's voice profile for future automatic identification"),
+  },
+  { title: "Confirm Speaker", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ meeting, speaker_label, name, save_voice }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: "Minutes CLI not available." }] };
+    }
+
+    const args = ["confirm", "--meeting", meeting, "--speaker", speaker_label, "--name", name];
+    if (save_voice) args.push("--save-voice");
+
+    try {
+      const { stdout, stderr } = await runMinutes(args);
+      const output = (stderr || stdout || "").trim();
+
+      return {
+        content: [{ type: "text" as const, text: output || `Confirmed: ${speaker_label} = ${name}` }],
+        structuredContent: { meeting, speaker_label, name, save_voice, confirmed: true },
+      };
+    } catch (error: any) {
+      const msg = error?.stderr || error?.message || String(error);
+      return {
+        content: [{ type: "text" as const, text: `Failed to confirm speaker: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: get_meeting_insights ─────────────────────────────
+
+server.tool(
+  "get_meeting_insights",
+  "Query structured insights extracted from meetings — decisions, commitments, and questions with confidence levels. Use this to find what was decided, who committed to what, and what's still open across all meetings. External systems can subscribe to these events for workflow automation.",
+  {
+    kind: z.enum(MEETING_INSIGHT_KINDS).optional().describe("Filter by insight type"),
+    confidence: z.enum(["tentative", "inferred", "strong", "explicit"]).optional().describe("Minimum confidence level"),
+    participant: z.string().optional().describe("Filter by participant name (partial match)"),
+    since: z.string().optional().describe("Only insights since this date (YYYY-MM-DD)"),
+    limit: z.number().optional().default(50).describe("Maximum number of results"),
+    actionable_only: z.boolean().optional().default(false).describe("Only return actionable insights (Strong or Explicit confidence)"),
+  },
+  { title: "Get Meeting Insights", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ kind, confidence, participant, since, limit, actionable_only }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    const args = ["insights", "--limit", String(limit ?? 50)];
+    if (kind) { args.push("--kind", kind); }
+    if (actionable_only) {
+      args.push("--actionable");
+    } else if (confidence) {
+      args.push("--confidence", confidence);
+    }
+    if (participant) { args.push("--participant", participant); }
+    if (since) { args.push("--since", since); }
+
+    try {
+      const { stdout } = await runMinutes(args);
+      const insights = parseJsonOutput(stdout);
+      const count = Array.isArray(insights) ? insights.length : 0;
+
+      if (count === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No meeting insights found matching the filter criteria. Insights are extracted when meetings are processed with summarization enabled." }],
+        };
+      }
+
+      return {
+        content: [{ type: "text" as const, text: `Found ${count} insight(s):\n\n${JSON.stringify(insights, null, 2)}` }],
+        structuredContent: { count, insights },
+      };
+    } catch (error: any) {
+      const msg = error?.stderr || error?.message || String(error);
+      return {
+        content: [{ type: "text" as const, text: `Failed to query insights: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: start_live_transcript ──────────────────────────────
+
+server.tool(
+  "start_live_transcript",
+  "Start real-time transcription. If a recording is already running, it already includes a live transcript — use read_live_transcript to read it. Runs until stop is called.",
+  {
+    language: z.string().optional().describe("Transcription language code (e.g. 'en', 'ur', 'es', 'zh'). Overrides config.toml setting."),
+  },
+  { title: "Start Live Transcript", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async ({ language }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+    // Pre-flight checks with short timeouts (these are instant file reads)
+    const { stdout: statusOut } = await runMinutes(["status"], 5000);
+    const status = parseJsonOutput(statusOut);
+    if (status.recording) {
+      return {
+        content: [{ type: "text" as const, text: "Recording already in progress — it includes a live transcript. Use read_live_transcript to follow along." }],
+      };
+    }
+
+    // Check if a live transcript is already running
+    try {
+      const { stdout: ltStatus } = await runMinutes(["transcript", "--status", "--format", "json"], 5000);
+      const ltParsed = parseJsonOutput(ltStatus);
+      if (ltParsed?.active) {
+        return {
+          content: [{ type: "text" as const, text: "Live transcript already running. Use read_live_transcript to read it, or minutes stop to end it." }],
+        };
+      }
+    } catch { /* no active session, proceed */ }
+
+    // Extension runtime: mic won't work for spawned child processes.
+    if (isExtensionRuntime) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Live transcript is not yet supported via the Claude Desktop extension. " +
+              "The extension runtime cannot pass microphone access to child processes.\n\n" +
+              "Workaround: run `minutes live` from your terminal, or use start_recording instead " +
+              "(recording delegates to the Minutes desktop app when it's running).",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Spawn live transcript as child (not detached — preserves macOS TCC mic grant)
+    const liveArgs = ["live"];
+    if (language) liveArgs.push("--language", language);
+    const child = spawn(MINUTES_BIN, liveArgs, {
+      stdio: "ignore",
+      env: { ...process.env, RUST_LOG: "info" },
+    });
+    child.unref();
+
+    // Verify the session actually started
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const { stdout: verifyOut } = await runMinutes(["transcript", "--status", "--format", "json"], 5000);
+      const verifyStatus = parseJsonOutput(verifyOut);
+      if (verifyStatus?.active) {
+        return {
+          content: [{ type: "text" as const, text: "Live transcript started. Use read_live_transcript to read the transcript. Use minutes stop to end the session." }],
+        };
+      }
+    } catch { /* fall through to error */ }
+
+    return {
+      content: [{ type: "text" as const, text: "Live transcript may have failed to start. Check minutes health or try again. Common causes: no microphone, whisper model not downloaded, or another session already active." }],
+      isError: true,
+    };
+  }
+);
+
+// ── Tool: read_live_transcript ──────────────────────────────
+
+server.tool(
+  "read_live_transcript",
+  "Read the live transcript — works during both recordings and live transcript sessions. Use 'since' to get new lines after a cursor (line number) or time window (e.g., '5m', '30s'). Use 'status' mode to check if a session is active.",
+  {
+    since: z.string().optional().describe("Line number (e.g., '42') or duration (e.g., '5m', '30s'). Omit to get all lines."),
+    status_only: z.boolean().optional().default(false).describe("If true, return session status instead of transcript lines"),
+  },
+  { title: "Read Live Transcript", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ since, status_only }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    const args = ["transcript", "--format", "json"];
+    if (status_only) {
+      args.push("--status");
+    } else if (since) {
+      args.push("--since", since);
+    }
+
+    try {
+      const { stdout } = await runMinutes(args, 10000);
+      // For status queries, a message is helpful. For transcript reads, empty = no new lines.
+      const fallback = status_only ? "No transcript data available." : "";
+      return {
+        content: [{ type: "text" as const, text: stdout || fallback }],
+      };
+    } catch (error: any) {
+      const msg = error?.stderr || error?.message || String(error);
+      return {
+        content: [{ type: "text" as const, text: `Failed to read transcript: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: ingest_meeting ────────────────────────────────────
+
+server.tool(
+  "ingest_meeting",
+  "Extract facts from a meeting and update the knowledge base (person profiles, log, index). Requires [knowledge] to be configured in config.toml. Uses structured frontmatter data only by default (zero hallucination risk). Set engine to 'agent' for richer LLM-based extraction.",
+  {
+    path: z.string().optional().describe("Path to a specific meeting .md file. Omit to process all meetings."),
+    all: z.boolean().optional().default(false).describe("Process all meetings in the output directory"),
+    dry_run: z.boolean().optional().default(false).describe("Show what would be extracted without writing anything"),
+  },
+  { title: "Ingest Meeting", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ path, all, dry_run }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    const args = ["ingest"];
+    if (path) {
+      // Validate path is within the meetings directory to prevent path traversal
+      const resolved = validatePathInDirectory(path, await getEffectiveMeetingsDir(), [".md"]);
+      args.push(resolved);
+    }
+    if (all) args.push("--all");
+    if (dry_run) args.push("--dry-run");
+
+    if (!path && !all) {
+      return {
+        content: [{ type: "text" as const, text: "Provide a meeting path or use all=true to process all meetings." }],
+        isError: true,
+      };
+    }
+
+    try {
+      const { stdout, stderr } = await runMinutes(args);
+      const output = stderr || stdout;
+      return { content: [{ type: "text" as const, text: output }] };
+    } catch (error: any) {
+      const msg = error?.stderr || error?.message || String(error);
+      return {
+        content: [{ type: "text" as const, text: `Knowledge ingestion failed: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: knowledge_status ──────────────────────────────────
+
+server.tool(
+  "knowledge_status",
+  "Show the current state of the knowledge base — whether it's configured, which adapter is in use, and how many person profiles and log entries exist.",
+  {},
+  { title: "Knowledge Status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    try {
+      const { stdout } = await runMinutes(["paths", "--json"]);
+      const paths = parseJsonOutput(stdout);
+      const configPath = paths?.config || "unknown";
+
+      // Read config to check knowledge settings
+      const { readFile: readFileAsync } = await import("fs/promises");
+      let configContent = "";
+      try {
+        configContent = await readFileAsync(configPath, "utf-8");
+      } catch {
+        // Try default location
+        try {
+          configContent = await readFileAsync(join(homedir(), ".config", "minutes", "config.toml"), "utf-8");
+        } catch {
+          return { content: [{ type: "text" as const, text: "Knowledge base: not configured.\n\nAdd [knowledge] section to ~/.config/minutes/config.toml with enabled = true and a path." }] };
+        }
+      }
+
+      const knowledge = parseKnowledgeConfig(configContent);
+      if (!knowledge || !knowledge.enabled) {
+        return { content: [{ type: "text" as const, text: "Knowledge base: not configured or disabled.\n\nAdd [knowledge] section to ~/.config/minutes/config.toml with enabled = true and a path." }] };
+      }
+
+      const rawKbPath = knowledge.path || "unknown";
+      const kbPath = rawKbPath.startsWith("~") ? join(homedir(), rawKbPath.slice(1)) : rawKbPath;
+      const { adapter, engine } = knowledge;
+
+      // Count people and log entries
+      const { readdir, stat: statAsync } = await import("fs/promises");
+      let peopleCount = 0;
+      let logEntries = 0;
+
+      try {
+        const peopleDir = adapter === "para" ? join(kbPath, "areas", "people") : join(kbPath, "people");
+        const entries = await readdir(peopleDir, { withFileTypes: true });
+        peopleCount = entries.filter(e => e.isDirectory() || e.name.endsWith(".md")).length;
+      } catch { /* dir may not exist yet */ }
+
+      try {
+        const logPath = adapter === "para" ? join(kbPath, "memory", "log.md") : join(kbPath, "log.md");
+        const logContent = await readFileAsync(logPath, "utf-8");
+        logEntries = (logContent.match(/^## \[/gm) || []).length;
+      } catch { /* log may not exist yet */ }
+
+      const lines = [
+        `Knowledge base: **enabled**`,
+        `Path: ${kbPath}`,
+        `Adapter: ${adapter}`,
+        `Extraction engine: ${engine}`,
+        `People profiles: ${peopleCount}`,
+        `Log entries: ${logEntries}`,
+      ];
+
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (error: any) {
+      const msg = error?.stderr || error?.message || String(error);
+      return {
+        content: [{ type: "text" as const, text: `Failed to check knowledge status: ${msg}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Dashboard ───────────────────────────────────────────────
+
+server.tool(
+  "open_dashboard",
+  "Open the Meeting Intelligence Dashboard in the browser. Shows a visual overview of your conversation memory: metrics, meeting timeline, decisions, recurring topics, action items, and voice memos. Runs a local HTTP server — data never leaves your machine.",
+  {},
+  { title: "Open Dashboard", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async () => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }] };
+    }
+
+    // Check if dashboard is already running via PID file
+    const pidPath = join(homedir(), ".minutes", "dashboard.pid");
+    try {
+      const pidStr = await readFile(pidPath, "utf-8");
+      const pid = parseInt(pidStr.trim(), 10);
+      if (pid > 0) {
+        // Check if process is alive
+        try {
+          process.kill(pid, 0);
+          return {
+            content: [{
+              type: "text" as const,
+              text: `Dashboard already running (PID ${pid}). Open http://localhost:3141 in your browser.`,
+            }],
+          };
+        } catch {
+          // Process not alive, stale PID — proceed to launch
+        }
+      }
+    } catch {
+      // No PID file — proceed to launch
+    }
+
+    // Spawn dashboard as detached subprocess
+    const { spawn } = await import("child_process");
+    const child = spawn(MINUTES_BIN, ["dashboard"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+
+    // Give it a moment to start
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // Count meetings for the response
+    try {
+      const { stdout } = await runMinutes(["list", "--format", "json", "--limit", "999"]);
+      const lines = stdout.trim().split("\n").filter(Boolean);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Dashboard opened at http://localhost:3141 (${lines.length} meetings loaded).`,
+        }],
+      };
+    } catch {
+      return {
+        content: [{
+          type: "text" as const,
+          text: "Dashboard opened at http://localhost:3141.",
+        }],
+      };
+    }
+  }
+);
+
 // ── Start server ────────────────────────────────────────────
 
 async function main() {
@@ -1339,7 +2568,9 @@ async function main() {
   console.error("Minutes MCP server running on stdio");
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>dev.useminutes.calendar-helper</string>
+    <string>com.useminutes.calendar-helper</string>
     <key>CFBundleName</key>
     <string>Minutes Calendar Helper</string>
     <key>NSCalendarsFullAccessUsageDescription</key>

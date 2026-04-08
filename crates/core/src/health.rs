@@ -29,8 +29,11 @@ pub struct HealthItem {
 pub fn check_all(config: &Config) -> Vec<HealthItem> {
     vec![
         model_status(config),
+        vad_model_status(config),
+        ffmpeg_status(),
+        diarization_status(config),
         mic_status(),
-        calendar_status(),
+        calendar_status(config),
         watcher_status(config),
         output_dir_status(config),
         disk_space(config),
@@ -61,6 +64,122 @@ pub fn model_status(config: &Config) -> HealthItem {
     }
 }
 
+/// Check if the Silero VAD model is downloaded (improves non-English transcription).
+pub fn vad_model_status(config: &Config) -> HealthItem {
+    let vad_model = &config.transcription.vad_model;
+    if vad_model.is_empty() {
+        return HealthItem {
+            label: "VAD model".into(),
+            state: "ready".into(),
+            detail: "Disabled (vad_model is empty). Energy-based silence detection will be used."
+                .into(),
+            optional: true,
+        };
+    }
+
+    let model_dir = &config.transcription.model_path;
+    let mut candidates = vec![model_dir.join(format!("ggml-{}.bin", vad_model))];
+    // Accept old filename for backward compatibility (only for silero variants)
+    if vad_model.starts_with("silero") {
+        candidates.push(model_dir.join("ggml-silero-vad.bin"));
+    }
+    let found = candidates.iter().find(|p| p.exists());
+
+    HealthItem {
+        label: "VAD model".into(),
+        state: if found.is_some() {
+            "ready"
+        } else {
+            "attention"
+        }
+        .into(),
+        detail: if let Some(path) = found {
+            format!("Silero VAD installed at {}.", path.display())
+        } else {
+            "Silero VAD not installed. Run `minutes setup` to download it. \
+             Without it, non-English audio may produce transcription loops."
+                .into()
+        },
+        optional: true,
+    }
+}
+
+/// Check if ffmpeg is available for audio decoding.
+pub fn ffmpeg_status() -> HealthItem {
+    let available = std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok();
+
+    HealthItem {
+        label: "ffmpeg".into(),
+        state: if available { "ready" } else { "attention" }.into(),
+        detail: if available {
+            "Installed. Used for high-quality audio decoding of m4a/mp3/ogg files.".into()
+        } else {
+            "Not found. Non-English audio in m4a/mp3/ogg format may produce poor transcriptions. \
+             Install: brew install ffmpeg (macOS) / apt install ffmpeg (Linux)"
+                .into()
+        },
+        optional: true,
+    }
+}
+
+/// Check if diarization models are downloaded (when diarization is enabled).
+pub fn diarization_status(config: &Config) -> HealthItem {
+    if config.diarization.engine == "none" {
+        return HealthItem {
+            label: "Speaker diarization".into(),
+            state: "ready".into(),
+            detail: "Disabled. Remove `diarization.engine = \"none\"` from config to auto-detect."
+                .into(),
+            optional: true,
+        };
+    }
+
+    let is_auto = config.diarization.engine == "auto";
+    let is_pyannote_rs = config.diarization.engine == "pyannote-rs" || is_auto;
+
+    if is_pyannote_rs {
+        let installed = crate::diarize::models_installed(config);
+        return HealthItem {
+            label: "Speaker diarization".into(),
+            state: if installed {
+                "ready"
+            } else {
+                if is_auto {
+                    "ready"
+                } else {
+                    "attention"
+                }
+            }
+            .into(),
+            detail: if installed {
+                let mode = if is_auto { "auto-detected" } else { "enabled" };
+                format!("pyannote-rs models installed ({mode}). Meetings will identify speakers.",)
+            } else if is_auto {
+                "Models not downloaded — diarization will be skipped. \
+                 Run `minutes setup --diarization` to enable speaker identification (~34 MB)."
+                    .into()
+            } else {
+                "Models not downloaded. Run `minutes setup --diarization` to install (~34 MB)."
+                    .into()
+            },
+            optional: true,
+        };
+    }
+
+    // Legacy pyannote (Python) or other engines
+    HealthItem {
+        label: "Speaker diarization".into(),
+        state: "ready".into(),
+        detail: format!("Using {} engine.", config.diarization.engine),
+        optional: true,
+    }
+}
+
 /// Check if audio input devices are available.
 pub fn mic_status() -> HealthItem {
     let devices = crate::capture::list_input_devices();
@@ -83,7 +202,15 @@ pub fn mic_status() -> HealthItem {
 }
 
 /// Check macOS calendar access (macOS only, returns unavailable on other platforms).
-pub fn calendar_status() -> HealthItem {
+pub fn calendar_status(config: &Config) -> HealthItem {
+    if !config.calendar.enabled {
+        return HealthItem {
+            label: "Calendar access".into(),
+            state: "ready".into(),
+            detail: "Calendar integration disabled. Enable with [calendar] enabled = true in config.toml.".into(),
+            optional: true,
+        };
+    }
     #[cfg(target_os = "macos")]
     {
         let mut cmd = std::process::Command::new("osascript");
@@ -102,7 +229,7 @@ pub fn calendar_status() -> HealthItem {
             Some(Err(_)) => HealthItem {
                 label: "Calendar access".into(),
                 state: "attention".into(),
-                detail: "Calendar access is unavailable. Meeting suggestions will be hidden."
+                detail: "Calendar access is unavailable. Meeting suggestions will be hidden. Disable with [calendar] enabled = false in config.toml."
                     .into(),
                 optional: true,
             },

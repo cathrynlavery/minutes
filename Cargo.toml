@@ -1,14 +1,19 @@
 [workspace]
-members = ["crates/core", "crates/cli", "crates/reader", "tauri/src-tauri"]
+members = ["crates/core", "crates/cli", "crates/reader", "crates/whisper-guard", "tauri/src-tauri"]
 resolver = "2"
 
 [workspace.package]
-version = "0.5.0"
+version = "0.10.4"
 edition = "2021"
 license = "MIT"
 authors = ["Mat Silverstein"]
 description = "Conversation memory for AI assistants"
 repository = "https://github.com/silverstein/minutes"
+homepage = "https://useminutes.app"
+
+[profile.release]
+strip = true
+lto = "thin"
 
 [workspace.dependencies]
 # Serialization
@@ -18,7 +23,7 @@ serde_yaml = "0.9"
 toml = "0.8"
 
 # Audio
-cpal = "0.15"
+cpal = { git = "https://github.com/RustAudio/cpal.git", rev = "8b152c39ea432a14b4e65625e20857884e41d277", features = ["pipewire"] }
 hound = "3.5"
 
 # Transcription
@@ -40,13 +45,14 @@ anyhow = "1"
 # Filesystem
 dirs = "6"
 walkdir = "2"
+which = "4"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 
 # Signal handling
-ctrlc = { version = "3", features = ["termination"] }
+ctrlc = "3"
 
 # HTTP client (for LLM API calls — no secrets in process args)
 ureq = { version = "3", features = ["json"] }
@@ -60,5 +66,20 @@ schemars = { version = "1", features = ["derive", "chrono04"] }
 # Audio format conversion
 symphonia = { version = "0.5", features = ["mp3", "aac", "ogg", "wav", "isomp4"] }
 
+# Noise reduction (pure Rust RNNoise port)
+nnnoiseless = "0.5"
+
 # Channels (for streaming audio)
 crossbeam-channel = "0.5"
+
+# Speaker diarization (native, no Python) — patched fork fixes i16→f32
+# normalization bug and trailing speech flush in get_segments
+pyannote-rs = { git = "https://github.com/gregoire22enpc/pyannote-rs", rev = "ae9fbc1" }
+
+# ONNX Runtime + ndarray (used directly for segmentation model — pyannote-rs
+# has a normalisation bug so we bypass get_segments for the segmentation step)
+ort = { version = "2.0.0-rc.10", features = ["ndarray"] }
+ndarray = "0.16"
+
+# SQLite (relationship graph index)
+rusqlite = { version = "0.33", features = ["bundled"] }

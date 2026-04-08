@@ -4,10 +4,10 @@
 // decisions, action items, and people from any AI agent or app.
 //
 // Usage:
-//   import { listMeetings, searchMeetings } from 'minutes-sdk';
+//   import { listMeetings, searchMeetings, defaultDir } from 'minutes-sdk';
 //
-//   const meetings = await listMeetings('~/meetings');
-//   const results = await searchMeetings('~/meetings', 'pricing');
+//   const meetings = await listMeetings(defaultDir());
+//   const results = await searchMeetings(defaultDir(), 'pricing');
 
 export {
   // Types
@@ -16,6 +16,9 @@ export {
   type Intent,
   type Frontmatter,
   type MeetingFile,
+
+  // Config
+  defaultDir,
 
   // Parsing
   splitFrontmatter,
@@ -26,5 +29,7 @@ export {
   searchMeetings,
   getMeeting,
   findOpenActions,
+  findDecisions,
   getPersonProfile,
+  listVoiceMemos,
 } from "./reader.js";

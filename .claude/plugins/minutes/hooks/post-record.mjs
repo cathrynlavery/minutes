@@ -182,6 +182,26 @@ try {
   }
 }
 
+// 2c. Check for speaker attributions that need confirmation
+try {
+  if (meetingContent.includes("speaker_map:")) {
+    const hasMedium = meetingContent.includes("confidence: medium");
+    const hasHigh = meetingContent.includes("confidence: high");
+
+    if (hasMedium && !hasHigh) {
+      alerts.push(
+        `Speaker attributions are auto-detected (medium confidence). Run \`minutes confirm --meeting ${meetingPath}\` to confirm who is who.`
+      );
+    }
+  } else if (meetingContent.includes("SPEAKER_")) {
+    alerts.push(
+      `Meeting has anonymous speaker labels. Run \`minutes confirm --meeting ${meetingPath}\` to tag speakers with real names.`
+    );
+  }
+} catch (err) {
+  logError("speaker-attribution-check", err);
+}
+
 // --- Phase 3: Output alerts as additional context ---
 if (alerts.length > 0) {
   const output = {

@@ -14,6 +14,7 @@
 
 import { readFile, readdir, stat } from "fs/promises";
 import { join, extname } from "path";
+import { homedir } from "os";
 import { parse as parseYaml } from "yaml";
 
 // ── Types ────────────────────────────────────────────────────
@@ -38,6 +39,13 @@ export interface Intent {
   by_date?: string;
 }
 
+export interface SpeakerAttribution {
+  speaker_label: string;
+  name: string;
+  confidence: "high" | "medium" | "low";
+  source: "deterministic" | "llm" | "enrollment" | "manual";
+}
+
 export interface Frontmatter {
   title: string;
   type: string;
@@ -45,6 +53,8 @@ export interface Frontmatter {
   duration: string;
   source?: string;
   status?: string;
+  device?: string;
+  captured_at?: string;
   tags: string[];
   attendees: string[];
   people: string[];
@@ -53,6 +63,7 @@ export interface Frontmatter {
   action_items: ActionItem[];
   decisions: Decision[];
   intents: Intent[];
+  speaker_map?: SpeakerAttribution[];
 }
 
 export interface MeetingFile {
@@ -354,4 +365,71 @@ export async function getPersonProfile(
     openActions,
     topics: Array.from(topicSet),
   };
+}
+
+/**
+ * Default meetings directory (~\/meetings).
+ * Override with MEETINGS_DIR env var or pass a custom path to any function.
+ */
+export function defaultDir(): string {
+  return process.env.MEETINGS_DIR || join(homedir(), "meetings");
+}
+
+/**
+ * List recent voice memos (type: memo), sorted by date descending.
+ * Useful for cross-device pipeline recall — "what ideas did I capture recently?"
+ */
+export async function listVoiceMemos(
+  dir: string,
+  options: { days?: number; limit?: number } = {}
+): Promise<MeetingFile[]> {
+  const { days = 14, limit = 20 } = options;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+
+  const meetings = await listMeetings(dir, 500);
+  const memos = meetings.filter((m) => {
+    if (m.frontmatter.type !== "memo") return false;
+    const date = new Date(m.frontmatter.date);
+    return date >= cutoff;
+  });
+
+  return memos.slice(0, limit);
+}
+
+/**
+ * Find decisions across all meetings, optionally filtered by topic keyword.
+ */
+export async function findDecisions(
+  dir: string,
+  topic?: string,
+  limit: number = 50
+): Promise<Array<{ path: string; title: string; date: string; decision: Decision }>> {
+  const files = await findMarkdownFiles(dir);
+  const results: Array<{ path: string; title: string; date: string; decision: Decision }> = [];
+
+  for (const file of files) {
+    const meeting = await readMeetingFile(file);
+    if (!meeting) continue;
+
+    for (const decision of meeting.frontmatter.decisions) {
+      if (topic) {
+        const topicLower = topic.toLowerCase();
+        const matches =
+          decision.text.toLowerCase().includes(topicLower) ||
+          (decision.topic && decision.topic.toLowerCase().includes(topicLower));
+        if (!matches) continue;
+      }
+      results.push({
+        path: meeting.path,
+        title: meeting.frontmatter.title,
+        date: meeting.frontmatter.date,
+        decision,
+      });
+    }
+  }
+
+  return results
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, limit);
 }

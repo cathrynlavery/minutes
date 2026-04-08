@@ -30,6 +30,26 @@ pub fn dictation_pid_path() -> PathBuf {
     Config::minutes_dir().join("dictation.pid")
 }
 
+/// Path to the live transcript PID file (`~/.minutes/live-transcript.pid`).
+pub fn live_transcript_pid_path() -> PathBuf {
+    Config::minutes_dir().join("live-transcript.pid")
+}
+
+/// Path to the live transcript JSONL file (`~/.minutes/live-transcript.jsonl`).
+pub fn live_transcript_jsonl_path() -> PathBuf {
+    Config::minutes_dir().join("live-transcript.jsonl")
+}
+
+/// Path to the live transcript WAV file (`~/.minutes/live-transcript.wav`).
+pub fn live_transcript_wav_path() -> PathBuf {
+    Config::minutes_dir().join("live-transcript.wav")
+}
+
+/// Path to the live transcript status sidecar (`~/.minutes/live-transcript-status.json`).
+pub fn live_transcript_status_path() -> PathBuf {
+    Config::minutes_dir().join("live-transcript-status.json")
+}
+
 /// Path to the recording metadata JSON (`~/.minutes/recording-meta.json`).
 pub fn recording_meta_path() -> PathBuf {
     Config::minutes_dir().join("recording-meta.json")
@@ -56,12 +76,13 @@ pub enum CaptureMode {
     Meeting,
     QuickThought,
     Dictation,
+    LiveTranscript,
 }
 
 impl CaptureMode {
     pub fn content_type(self) -> crate::markdown::ContentType {
         match self {
-            Self::Meeting => crate::markdown::ContentType::Meeting,
+            Self::Meeting | Self::LiveTranscript => crate::markdown::ContentType::Meeting,
             Self::QuickThought => crate::markdown::ContentType::Memo,
             Self::Dictation => crate::markdown::ContentType::Dictation,
         }
@@ -72,6 +93,7 @@ impl CaptureMode {
             Self::Meeting => "meeting",
             Self::QuickThought => "quick thought",
             Self::Dictation => "dictation",
+            Self::LiveTranscript => "live transcript",
         }
     }
 }
@@ -87,6 +109,12 @@ pub struct ProcessingStatus {
     pub stage: Option<String>,
     pub owner_pid: u32,
     pub mode: Option<CaptureMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub job_count: usize,
 }
 
 pub fn write_recording_metadata(mode: CaptureMode) -> std::io::Result<()> {
@@ -122,6 +150,9 @@ pub fn clear_recording_metadata() -> std::io::Result<()> {
 pub fn set_processing_status(
     stage: Option<&str>,
     mode: Option<CaptureMode>,
+    title: Option<&str>,
+    job_id: Option<&str>,
+    job_count: usize,
 ) -> std::io::Result<()> {
     let path = processing_status_path();
     if let Some(parent) = path.parent() {
@@ -133,6 +164,9 @@ pub fn set_processing_status(
         stage: stage.map(String::from),
         owner_pid: std::process::id(),
         mode,
+        title: title.map(String::from),
+        job_id: job_id.map(String::from),
+        job_count,
     };
     let json = serde_json::to_string(&status)?;
     fs::write(path, json)
@@ -154,6 +188,9 @@ pub fn read_processing_status() -> ProcessingStatus {
             stage: None,
             owner_pid: 0,
             mode: None,
+            title: None,
+            job_id: None,
+            job_count: 0,
         };
     }
 
@@ -173,6 +210,9 @@ pub fn read_processing_status() -> ProcessingStatus {
             stage: None,
             owner_pid: 0,
             mode: None,
+            title: None,
+            job_id: None,
+            job_count: 0,
         })
 }
 
@@ -257,6 +297,74 @@ pub fn create_pid_file(path: &Path) -> Result<(), PidError> {
 
     tracing::debug!("PID file created: {} (PID {})", path.display(), pid);
     Ok(())
+}
+
+/// A guard that holds an exclusive flock on a PID file for the lifetime of a session.
+/// The PID file is removed and the lock released when the guard is dropped.
+pub struct PidGuard {
+    file: Option<fs::File>,
+    path: PathBuf,
+}
+
+impl Drop for PidGuard {
+    fn drop(&mut self) {
+        // On Unix: unlink first (flock persists on the unlinked inode until fd is closed).
+        // This prevents the race where another process acquires the lock between
+        // our fd close and our unlink.
+        // On Windows: must close the fd before deleting (can't delete an open file).
+        #[cfg(unix)]
+        {
+            fs::remove_file(&self.path).ok();
+            self.file.take(); // releases flock on the now-unlinked inode
+        }
+        #[cfg(not(unix))]
+        {
+            self.file.take(); // release handle so Windows can delete
+            fs::remove_file(&self.path).ok();
+        }
+        tracing::debug!("PID guard dropped: {}", self.path.display());
+    }
+}
+
+/// Create a PID file with an exclusive flock held for the lifetime of the returned guard.
+/// The flock is NOT released until the guard is dropped, preventing concurrent starts.
+pub fn create_pid_guard(path: &Path) -> Result<PidGuard, PidError> {
+    use fs2::FileExt;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+
+    if file.try_lock_exclusive().is_err() {
+        let existing_pid = fs::read_to_string(path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        return Err(PidError::AlreadyRecording(existing_pid));
+    }
+
+    if let Some(old_pid) = read_locked_pid(&mut file)? {
+        if old_pid != 0 && is_process_alive(old_pid) {
+            file.unlock().ok();
+            return Err(PidError::AlreadyRecording(old_pid));
+        }
+    }
+
+    let pid = std::process::id();
+    write_locked_pid(&mut file, pid)?;
+
+    tracing::debug!("PID guard created: {} (PID {})", path.display(), pid);
+    Ok(PidGuard {
+        file: Some(file),
+        path: path.to_path_buf(),
+    })
 }
 
 /// Remove a PID file at the given path.
@@ -439,6 +547,9 @@ pub struct RecordingStatus {
     pub processing: bool,
     pub processing_stage: Option<String>,
     pub recording_mode: Option<CaptureMode>,
+    pub processing_title: Option<String>,
+    pub processing_job_id: Option<String>,
+    pub processing_job_count: usize,
     pub pid: Option<u32>,
     pub duration_secs: Option<f64>,
     pub wav_path: Option<String>,
@@ -446,7 +557,22 @@ pub struct RecordingStatus {
 
 /// Get current recording status.
 pub fn status() -> RecordingStatus {
-    let processing = read_processing_status();
+    let jobs_summary = crate::jobs::processing_summary();
+    let processing = jobs_summary
+        .as_ref()
+        .map(|job| ProcessingStatus {
+            processing: true,
+            stage: job.stage.clone().or_else(|| job.state.default_stage()),
+            owner_pid: job.owner_pid.unwrap_or(0),
+            mode: Some(job.mode),
+            title: job
+                .title
+                .clone()
+                .or_else(|| job.output_path.as_ref().map(|path| path.to_string())),
+            job_id: Some(job.id.clone()),
+            job_count: crate::jobs::active_job_count(),
+        })
+        .unwrap_or_else(read_processing_status);
     match check_recording() {
         Ok(Some(pid)) => {
             let wav = current_wav_path();
@@ -463,9 +589,12 @@ pub fn status() -> RecordingStatus {
 
             RecordingStatus {
                 recording: true,
-                processing: false,
-                processing_stage: None,
+                processing: processing.processing,
+                processing_stage: processing.stage,
                 recording_mode: read_recording_metadata().map(|meta| meta.mode),
+                processing_title: processing.title,
+                processing_job_id: processing.job_id,
+                processing_job_count: processing.job_count,
                 pid: Some(pid),
                 // Duration is approximate: time since WAV was last modified.
                 // The record process writes continuously, so this is close.
@@ -478,6 +607,9 @@ pub fn status() -> RecordingStatus {
             processing: processing.processing,
             processing_stage: processing.stage,
             recording_mode: processing.mode,
+            processing_title: processing.title,
+            processing_job_id: processing.job_id,
+            processing_job_count: processing.job_count,
             pid: None,
             duration_secs: None,
             wav_path: None,
@@ -489,43 +621,45 @@ pub fn status() -> RecordingStatus {
 mod tests {
     use super::*;
     use fs2::FileExt;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    fn test_guard() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 
     #[test]
     fn is_process_alive_detects_current_process() {
-        let _guard = test_guard();
+        let _guard = crate::test_home_env_lock();
         assert!(is_process_alive(std::process::id()));
     }
 
     #[test]
     fn is_process_alive_returns_false_for_dead_pid() {
-        let _guard = test_guard();
+        let _guard = crate::test_home_env_lock();
         // PID 99999999 almost certainly doesn't exist
         assert!(!is_process_alive(99_999_999));
     }
 
     #[test]
     fn processing_status_round_trip() {
-        let _guard = test_guard();
-        set_processing_status(Some("Transcribing audio"), Some(CaptureMode::QuickThought)).unwrap();
+        let _guard = crate::test_home_env_lock();
+        set_processing_status(
+            Some("Transcribing audio"),
+            Some(CaptureMode::QuickThought),
+            None,
+            None,
+            0,
+        )
+        .unwrap();
         let status = read_processing_status();
         assert!(status.processing);
         assert_eq!(status.stage.as_deref(), Some("Transcribing audio"));
         assert_eq!(status.owner_pid, std::process::id());
         assert_eq!(status.mode, Some(CaptureMode::QuickThought));
+        assert_eq!(status.title, None);
+        assert_eq!(status.job_id, None);
+        assert_eq!(status.job_count, 0);
         clear_processing_status().unwrap();
     }
 
     #[test]
     fn recording_metadata_round_trip() {
-        let _guard = test_guard();
+        let _guard = crate::test_home_env_lock();
         write_recording_metadata(CaptureMode::QuickThought).unwrap();
         let metadata = read_recording_metadata().unwrap();
         assert_eq!(metadata.mode, CaptureMode::QuickThought);
@@ -534,7 +668,7 @@ mod tests {
 
     #[test]
     fn sentinel_lifecycle() {
-        let _guard = test_guard();
+        let _guard = crate::test_home_env_lock();
         // Ensure clean state
         let _ = std::fs::remove_file(stop_sentinel_path());
         assert!(!stop_sentinel_path().exists());
@@ -553,7 +687,7 @@ mod tests {
 
     #[test]
     fn sentinel_write_and_clear() {
-        let _guard = test_guard();
+        let _guard = crate::test_home_env_lock();
         // Write a sentinel and verify check_and_clear removes it
         write_stop_sentinel().unwrap();
         assert!(stop_sentinel_path().exists());
@@ -565,7 +699,7 @@ mod tests {
 
     #[test]
     fn check_and_clear_sentinel_returns_false_when_absent() {
-        let _guard = test_guard();
+        let _guard = crate::test_home_env_lock();
         // Ensure no sentinel exists
         let _ = std::fs::remove_file(stop_sentinel_path());
         assert!(!check_and_clear_sentinel());
@@ -573,7 +707,7 @@ mod tests {
 
     #[test]
     fn create_pid_file_writes_using_locked_handle_without_reopen() {
-        let _guard = test_guard();
+        let _guard = crate::test_home_env_lock();
         let tempdir = tempfile::tempdir().unwrap();
         let pid_path = tempdir.path().join("recording.pid");
 

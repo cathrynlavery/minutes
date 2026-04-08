@@ -39,6 +39,7 @@
           <button class="filter-btn active" data-filter="all">All</button>
           <button class="filter-btn" data-filter="meeting">Meetings</button>
           <button class="filter-btn" data-filter="memo">Memos</button>
+          <button class="filter-btn" data-filter="people" id="people-tab-btn">People</button>
         </div>
       </div>
       <div class="dashboard-body">
@@ -67,6 +68,13 @@
     <div id="person" style="display:none">
       <div class="person-header" id="person-header"></div>
       <div class="person-body" id="person-body"></div>
+    </div>
+
+    <!-- People Map -->
+    <div id="people-map" style="display:none">
+      <button class="back-btn" id="people-back-btn">&larr; Back to meetings</button>
+      <div class="people-header" id="people-header"></div>
+      <div class="people-grid" id="people-grid"></div>
     </div>
 
     <!-- Report -->

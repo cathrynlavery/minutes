@@ -3,19 +3,18 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 // ──────────────────────────────────────────────────────────────
-// Speaker diarization via subprocess.
+// Speaker diarization.
 //
 // Engines:
-//   "pyannote"   → Python pyannote.audio (best quality, needs Python)
-//   "none"       → Skip diarization (default)
+//   "pyannote-rs" → Native Rust via pyannote-rs crate (recommended)
+//   "pyannote"    → Python pyannote.audio subprocess (legacy)
+//   "none"        → Skip diarization (default)
 //
-// Protocol:
-//   Rust spawns a Python script that runs pyannote, outputs JSON to stdout.
-//   No library linking — subprocess call is AGPL-safe.
+// The pyannote-rs engine uses ONNX models (~34 MB total):
+//   - segmentation-3.0.onnx (speech segmentation)
+//   - voxceleb_CAM++_LM.onnx (speaker embeddings, large-margin fine-tuned)
 //
-// Output format:
-//   [{"speaker": "SPEAKER_0", "start": 0.0, "end": 5.2},
-//    {"speaker": "SPEAKER_1", "start": 5.2, "end": 12.8}, ...]
+// Download with: minutes setup --diarization
 // ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,10 +28,361 @@ pub struct SpeakerSegment {
 pub struct DiarizationResult {
     pub segments: Vec<SpeakerSegment>,
     pub num_speakers: usize,
+    /// Per-speaker averaged embeddings (for Level 3 confirmed learning).
+    /// Empty when using the Python subprocess engine.
+    pub speaker_embeddings: std::collections::HashMap<String, Vec<f32>>,
+}
+
+// ── Speaker attribution ──────────────────────────────────────
+
+/// How confident we are that a speaker label maps to a real person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+}
+
+/// How the attribution was determined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AttributionSource {
+    Deterministic,
+    Llm,
+    Enrollment,
+    Manual,
+}
+
+/// A mapping from an anonymous speaker label to a real person.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SpeakerAttribution {
+    pub speaker_label: String,
+    pub name: String,
+    pub confidence: Confidence,
+    pub source: AttributionSource,
+}
+
+/// Rewrite speaker labels in a transcript for high-confidence attributions only.
+pub fn apply_confirmed_names(transcript: &str, attributions: &[SpeakerAttribution]) -> String {
+    let high_map: std::collections::HashMap<&str, &str> = attributions
+        .iter()
+        .filter(|a| a.confidence == Confidence::High)
+        .map(|a| (a.speaker_label.as_str(), a.name.as_str()))
+        .collect();
+
+    if high_map.is_empty() {
+        return transcript.to_string();
+    }
+
+    let mut output = String::new();
+    for line in transcript.lines() {
+        let mut replaced = false;
+        if let Some(rest) = line.strip_prefix('[') {
+            if let Some(bracket_end) = rest.find(']') {
+                let inside = &rest[..bracket_end];
+                if let Some(space_pos) = inside.find(' ') {
+                    let label = &inside[..space_pos];
+                    if let Some(name) = high_map.get(label) {
+                        let after = &rest[bracket_end..];
+                        output.push_str(&format!(
+                            "[{} {}{}\n",
+                            name,
+                            &inside[space_pos + 1..],
+                            after
+                        ));
+                        replaced = true;
+                    }
+                }
+            }
+        }
+        if !replaced {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+    output
+}
+
+/// Model filenames expected by pyannote-rs.
+pub const SEGMENTATION_MODEL: &str = "segmentation-3.0.onnx";
+
+pub const SEGMENTATION_MODEL_URL: &str =
+    "https://github.com/thewh1teagle/pyannote-rs/releases/download/v0.1.0/segmentation-3.0.onnx";
+
+/// Descriptor for a speaker embedding ONNX model.
+pub struct EmbeddingModelInfo {
+    pub filename: &'static str,
+    pub url: &'static str,
+    pub version: &'static str,
+}
+
+/// Resolve the configured embedding model name to its ONNX file, download URL,
+/// and version tag stored alongside voice profiles.
+pub fn embedding_model_info(name: &str) -> Option<&'static EmbeddingModelInfo> {
+    static CAM_PP: EmbeddingModelInfo = EmbeddingModelInfo {
+        filename: "wespeaker_en_voxceleb_CAM++.onnx",
+        url: "https://github.com/thewh1teagle/pyannote-rs/releases/download/v0.1.0/wespeaker_en_voxceleb_CAM++.onnx",
+        version: "wespeaker_en_voxceleb_CAM++_v0.3",
+    };
+    static CAM_PP_LM: EmbeddingModelInfo = EmbeddingModelInfo {
+        filename: "voxceleb_CAM++_LM.onnx",
+        url: "https://huggingface.co/Wespeaker/wespeaker-voxceleb-campplus-LM/resolve/main/voxceleb_CAM%2B%2B_LM.onnx",
+        version: "wespeaker_voxceleb_CAM++_LM_v0.3",
+    };
+
+    match name {
+        "cam++" => Some(&CAM_PP),
+        "cam++-lm" => Some(&CAM_PP_LM),
+        _ => None,
+    }
+}
+
+/// All recognized embedding model names (for help / error messages).
+pub const EMBEDDING_MODEL_NAMES: &[&str] = &["cam++", "cam++-lm"];
+
+/// Resolve from config, falling back to the default (cam++).
+pub fn embedding_model_for_config(config: &Config) -> &'static EmbeddingModelInfo {
+    embedding_model_info(&config.diarization.embedding_model)
+        .unwrap_or_else(|| embedding_model_info("cam++").unwrap())
+}
+
+/// Check if diarization models are installed.
+pub fn models_installed(config: &Config) -> bool {
+    let dir = &config.diarization.model_path;
+    let emb = embedding_model_for_config(config);
+    dir.join(SEGMENTATION_MODEL).exists() && dir.join(emb.filename).exists()
+}
+
+/// Pre-process audio to 16kHz mono WAV via ffmpeg (if available).
+/// Returns (effective_path, temp_path_to_cleanup).
+/// pyannote-rs works best with 16kHz mono s16 WAV. Live recordings from cpal
+/// are often 44.1kHz F32, which the symphonia fallback can struggle with.
+fn preprocess_audio(audio_path: &Path) -> (std::path::PathBuf, Option<std::path::PathBuf>) {
+    let temp_path = std::env::temp_dir().join("minutes-diarize-preprocessed.wav");
+
+    match std::process::Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-i",
+            audio_path.to_str().unwrap_or(""),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-sample_fmt",
+            "s16",
+            temp_path.to_str().unwrap_or(""),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => {
+            tracing::info!("audio preprocessed to 16kHz mono via ffmpeg");
+            (temp_path.clone(), Some(temp_path))
+        }
+        _ => {
+            tracing::debug!("ffmpeg not available for preprocessing, using original audio");
+            (audio_path.to_path_buf(), None)
+        }
+    }
+}
+
+/// Paths to per-source audio stems from a multi-source call capture.
+#[derive(Debug, Clone)]
+pub struct StemPaths {
+    pub voice: std::path::PathBuf,
+    pub system: std::path::PathBuf,
+}
+
+/// Discover stem files alongside an audio file.
+/// The native call helper writes `{basename}.voice.wav` and `{basename}.system.wav`
+/// next to the main recording. Returns Some only if both files exist and are non-empty.
+pub fn discover_stems(audio_path: &Path) -> Option<StemPaths> {
+    let stem = audio_path.file_stem()?.to_str()?;
+    let dir = audio_path.parent()?;
+    let voice = dir.join(format!("{}.voice.wav", stem));
+    let system = dir.join(format!("{}.system.wav", stem));
+
+    let voice_ok = std::fs::metadata(&voice)
+        .map(|m| m.len() > 44) // WAV header is 44 bytes; must have actual data
+        .unwrap_or(false);
+    let system_ok = std::fs::metadata(&system)
+        .map(|m| m.len() > 44)
+        .unwrap_or(false);
+
+    if voice_ok && system_ok {
+        tracing::info!(
+            voice = %voice.display(),
+            system = %system.display(),
+            "discovered per-source audio stems"
+        );
+        Some(StemPaths { voice, system })
+    } else {
+        None
+    }
+}
+
+/// Compute RMS energy per time window from a WAV file.
+/// Returns a vec of (start_secs, rms) tuples, one per window.
+fn compute_energy_windows(wav_path: &Path, window_secs: f64) -> Result<Vec<(f64, f32)>, String> {
+    let reader = hound::WavReader::open(wav_path)
+        .map_err(|e| format!("failed to open stem {}: {}", wav_path.display(), e))?;
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate as f64;
+    let window_samples = (sample_rate * window_secs) as usize;
+
+    if window_samples == 0 {
+        return Err("window too small".into());
+    }
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .filter_map(|s| s.ok())
+            .collect(),
+        hound::SampleFormat::Int => {
+            let bits = spec.bits_per_sample;
+            let max_val = (1i64 << (bits - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+    };
+
+    // Mix to mono if multi-channel
+    let channels = spec.channels as usize;
+    let mono: Vec<f32> = if channels > 1 {
+        samples
+            .chunks(channels)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples
+    };
+
+    let mut windows = Vec::new();
+    for (i, chunk) in mono.chunks(window_samples).enumerate() {
+        let sum_sq: f64 = chunk.iter().map(|&s| (s as f64) * (s as f64)).sum();
+        let rms = (sum_sq / chunk.len() as f64).sqrt() as f32;
+        let start = i as f64 * window_secs;
+        windows.push((start, rms));
+    }
+
+    Ok(windows)
+}
+
+/// Speaker attribution from per-source audio stems (no ML diarization).
+/// Compares energy levels between voice and system stems per time window,
+/// assigning "SPEAKER_0" (you) or "SPEAKER_1" (remote) to each window.
+pub fn diarize_from_stems(stems: &StemPaths, _config: &Config) -> Option<DiarizationResult> {
+    let window_secs = 1.0; // 1-second energy windows
+
+    let voice_energy = match compute_energy_windows(&stems.voice, window_secs) {
+        Ok(e) => e,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to read voice stem, falling back to ML diarization");
+            return None;
+        }
+    };
+    let system_energy = match compute_energy_windows(&stems.system, window_secs) {
+        Ok(e) => e,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to read system stem, falling back to ML diarization");
+            return None;
+        }
+    };
+
+    // Energy threshold: below this RMS, the source is considered silent.
+    // Typical speech RMS is 0.01-0.1; noise floor is <0.001.
+    let silence_threshold = 0.005_f32;
+
+    let mut segments: Vec<SpeakerSegment> = Vec::new();
+    let window_count = voice_energy.len().min(system_energy.len());
+
+    // Use SPEAKER_0/SPEAKER_1 labels to match apply_speakers expectations.
+    // The attribution pipeline maps these to real names via speaker_map.
+    let voice_label = "SPEAKER_0";
+    let call_label = "SPEAKER_1";
+
+    for i in 0..window_count {
+        let (start, voice_rms) = voice_energy[i];
+        let (_, system_rms) = system_energy[i];
+        let end = start + window_secs;
+
+        let voice_active = voice_rms > silence_threshold;
+        let system_active = system_rms > silence_threshold;
+
+        let speaker = if voice_active && !system_active {
+            voice_label.to_string()
+        } else if system_active && !voice_active {
+            call_label.to_string()
+        } else if voice_active && system_active {
+            if voice_rms >= system_rms {
+                voice_label.to_string()
+            } else {
+                call_label.to_string()
+            }
+        } else {
+            continue; // Both silent, skip
+        };
+
+        // Merge with previous segment if same speaker
+        if let Some(last) = segments.last_mut() {
+            if last.speaker == speaker && (start - last.end).abs() < 0.01 {
+                last.end = end;
+                continue;
+            }
+        }
+
+        segments.push(SpeakerSegment {
+            speaker,
+            start,
+            end,
+        });
+    }
+
+    let num_speakers = segments
+        .iter()
+        .map(|s| s.speaker.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    // If no segments were produced (both stems are silent), fall back to ML
+    if segments.is_empty() {
+        tracing::warn!("stem-based diarization produced no segments (all silent), falling back");
+        return None;
+    }
+
+    tracing::info!(
+        speakers = num_speakers,
+        segments = segments.len(),
+        voice_stem = %stems.voice.display(),
+        system_stem = %stems.system.display(),
+        "stem-based diarization complete"
+    );
+
+    Some(DiarizationResult {
+        segments,
+        num_speakers,
+        speaker_embeddings: std::collections::HashMap::new(),
+    })
 }
 
 /// Run speaker diarization on an audio file.
-/// Returns None if diarization is disabled.
+/// Returns None if diarization is disabled or models are not available.
+///
+/// When per-source stems are available alongside the audio file,
+/// uses energy-based attribution instead of ML diarization.
+///
+/// Engine options:
+/// - `"auto"` (default): use pyannote-rs if models are downloaded, otherwise skip
+/// - `"pyannote-rs"`: native Rust diarization (requires `minutes setup --diarization`)
+/// - `"pyannote"`: legacy Python subprocess (requires `pip install pyannote.audio`)
+/// - `"none"`: explicitly disabled
 pub fn diarize(audio_path: &Path, config: &Config) -> Option<DiarizationResult> {
     let engine = &config.diarization.engine;
 
@@ -40,18 +390,73 @@ pub fn diarize(audio_path: &Path, config: &Config) -> Option<DiarizationResult> 
         return None;
     }
 
-    tracing::info!(engine = %engine, file = %audio_path.display(), "running diarization");
+    // Check for per-source stems alongside the audio file.
+    // If stems exist, use energy-based attribution (zero ML cost).
+    if let Some(stems) = discover_stems(audio_path) {
+        if let Some(result) = diarize_from_stems(&stems, config) {
+            return Some(result);
+        }
+        // Stem attribution failed, fall through to ML diarization
+        tracing::warn!("stem-based diarization failed, falling back to ML engine");
+    }
 
-    let result = match engine.as_str() {
-        "pyannote" => diarize_with_pyannote(audio_path),
-        other => {
-            tracing::warn!(engine = %other, "unknown diarization engine, skipping");
+    // "auto" mode: use pyannote-rs if models are downloaded, otherwise skip silently
+    let resolved_engine = if engine == "auto" {
+        if models_installed(config) {
+            tracing::info!("diarization models found — auto-enabling pyannote-rs");
+            "pyannote-rs"
+        } else {
+            tracing::debug!("diarization models not found — skipping (run `minutes setup --diarization` to enable)");
             return None;
+        }
+    } else {
+        engine.as_str()
+    };
+
+    tracing::info!(engine = %resolved_engine, file = %audio_path.display(), "running diarization");
+
+    // Pre-process: resample to 16kHz mono via ffmpeg if available.
+    // pyannote-rs/symphonia can struggle with 44.1kHz F32 WAVs from live capture.
+    // This matches how transcribe.rs preprocesses audio for whisper.
+    let (effective_path, _temp_file) = preprocess_audio(audio_path);
+
+    // Run diarization in a separate thread so we can detect panics and
+    // keep the main pipeline from getting stuck on ONNX inference issues.
+    let effective_path_owned = effective_path.clone();
+    #[allow(unused_variables)] // config_clone is used only when the diarize feature is enabled
+    let config_clone = config.clone();
+    let engine_owned = resolved_engine.to_string();
+    let handle = std::thread::spawn(move || -> Result<DiarizationResult, String> {
+        let result = match engine_owned.as_str() {
+            #[cfg(feature = "diarize")]
+            "pyannote-rs" => diarize_with_pyannote_rs(&effective_path_owned, &config_clone),
+            #[cfg(not(feature = "diarize"))]
+            "pyannote-rs" => {
+                Err("pyannote-rs engine requires the 'diarize' feature. Rebuild with: cargo build --features diarize".into())
+            }
+            "pyannote" => diarize_with_pyannote(&effective_path_owned),
+            other => {
+                Err(format!("unknown diarization engine: {}", other).into())
+            }
+        };
+        result.map_err(|e| e.to_string())
+    });
+
+    let result = match handle.join() {
+        Ok(r) => Some(r),
+        Err(_) => {
+            tracing::error!("diarization thread panicked");
+            None
         }
     };
 
+    // Clean up preprocessed temp file
+    if let Some(ref temp) = _temp_file {
+        std::fs::remove_file(temp).ok();
+    }
+
     match result {
-        Ok(result) => {
+        Some(Ok(result)) => {
             tracing::info!(
                 speakers = result.num_speakers,
                 segments = result.segments.len(),
@@ -59,17 +464,38 @@ pub fn diarize(audio_path: &Path, config: &Config) -> Option<DiarizationResult> 
             );
             Some(result)
         }
-        Err(e) => {
+        Some(Err(e)) => {
             tracing::error!(error = %e, "diarization failed, continuing without speaker labels");
             None
         }
+        None => None,
     }
 }
 
 /// Apply diarization results to a transcript.
 /// Replaces timestamp-only lines with speaker-labeled lines.
+/// Segments are sorted by start time before matching.
 pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
-    let mut output = String::new();
+    // Sort segments by start time for deterministic matching
+    let mut sorted_segments = result.segments.clone();
+    sorted_segments.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    enum OutputLine {
+        Attributed {
+            speaker: String,
+            ts_str: String,
+            text: String,
+        },
+        Raw(String),
+    }
+
+    let mut lines: Vec<OutputLine> = Vec::new();
+    let mut unknown_count = 0usize;
+    let mut matched_count = 0usize;
 
     for line in transcript.lines() {
         // Parse timestamp from lines like "[0:00] text"
@@ -79,26 +505,119 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
                 let text = rest[bracket_end + 1..].trim();
 
                 if let Some(secs) = parse_timestamp(ts_str) {
-                    let speaker = find_speaker(secs, &result.segments);
-                    output.push_str(&format!("[{} {}] {}\n", speaker, ts_str, text));
+                    let speaker = find_speaker(secs, &sorted_segments).to_string();
+                    if speaker == "UNKNOWN" {
+                        unknown_count += 1;
+                    } else {
+                        matched_count += 1;
+                    }
+                    lines.push(OutputLine::Attributed {
+                        speaker,
+                        ts_str: ts_str.to_string(),
+                        text: text.to_string(),
+                    });
                     continue;
                 }
             }
         }
-        output.push_str(line);
-        output.push('\n');
+        lines.push(OutputLine::Raw(line.to_string()));
+    }
+
+    // Hypothesis: Whisper often starts transcribing at t=0 while diarization
+    // detects voice activity slightly later (VAD onset latency, mic warmup, or
+    // leading silence). The first transcript segment therefore lands before the
+    // first diarization segment, outside the 0.5s gap tolerance, and gets
+    // labeled UNKNOWN. Since the opening words almost certainly belong to
+    // whoever is about to speak, we inherit the speaker from the next
+    // attributed segment rather than leaving it unresolved.
+    let first_attr = lines
+        .iter()
+        .position(|l| matches!(l, OutputLine::Attributed { .. }));
+    if let Some(first_idx) = first_attr {
+        let is_unknown = matches!(&lines[first_idx], OutputLine::Attributed { speaker, .. } if speaker == "UNKNOWN");
+        if is_unknown {
+            let next_speaker = lines[first_idx + 1..].iter().find_map(|l| match l {
+                OutputLine::Attributed { speaker, .. } if speaker != "UNKNOWN" => {
+                    Some(speaker.clone())
+                }
+                _ => None,
+            });
+            if let Some(resolved) = next_speaker {
+                if let OutputLine::Attributed { speaker, .. } = &mut lines[first_idx] {
+                    *speaker = resolved;
+                    unknown_count = unknown_count.saturating_sub(1);
+                    matched_count += 1;
+                }
+            }
+        }
+    }
+
+    let mut output = String::new();
+    for line in &lines {
+        match line {
+            OutputLine::Attributed {
+                speaker,
+                ts_str,
+                text,
+            } => {
+                output.push_str(&format!("[{} {}] {}\n", speaker, ts_str, text));
+            }
+            OutputLine::Raw(raw) => {
+                output.push_str(raw);
+                output.push('\n');
+            }
+        }
+    }
+
+    if unknown_count > 0 {
+        tracing::warn!(
+            unknown = unknown_count,
+            matched = matched_count,
+            "speaker attribution results — high unknown count may indicate timestamp/segment mismatch"
+        );
     }
 
     output
 }
 
 /// Find which speaker is talking at a given timestamp.
+/// Segments MUST be sorted by start time.
+///
+/// 1. Exact containment: timestamp falls within [start, end)
+/// 2. Gap fallback (0.5s tolerance): if the timestamp falls in a small gap
+///    between segments, prefer the *next* speaker (who is about to talk)
+///    over the previous one (who just stopped). This matches how whisper
+///    floors timestamps to segment boundaries.
+/// 3. Beyond tolerance: return "UNKNOWN" — don't fabricate attribution
+///    for timestamps in silence.
 fn find_speaker(time_secs: f64, segments: &[SpeakerSegment]) -> &str {
-    for seg in segments {
-        if time_secs >= seg.start && time_secs < seg.end {
-            return &seg.speaker;
+    // Exact containment (binary search since segments are sorted)
+    let idx = segments.partition_point(|seg| seg.end <= time_secs);
+    if idx < segments.len() && time_secs >= segments[idx].start && time_secs < segments[idx].end {
+        return &segments[idx].speaker;
+    }
+
+    // Gap fallback: check the surrounding segments within 0.5s tolerance.
+    // Prefer the next segment (speaker about to talk) over the previous one.
+    let tolerance = 0.5;
+
+    // Next segment: idx (the one whose end is > time_secs)
+    if idx < segments.len() {
+        let gap = segments[idx].start - time_secs;
+        if gap >= 0.0 && gap <= tolerance {
+            return &segments[idx].speaker;
         }
     }
+
+    // Previous segment
+    if idx > 0 {
+        let prev = &segments[idx - 1];
+        let gap = time_secs - prev.end;
+        if gap >= 0.0 && gap <= tolerance {
+            return &prev.speaker;
+        }
+    }
+
     "UNKNOWN"
 }
 
@@ -121,15 +640,585 @@ fn parse_timestamp(ts: &str) -> Option<f64> {
     }
 }
 
+// ── Native diarization via pyannote-rs ──────────────────────
+
+#[cfg(feature = "diarize")]
+fn diarize_with_pyannote_rs(
+    audio_path: &Path,
+    config: &Config,
+) -> Result<DiarizationResult, Box<dyn std::error::Error>> {
+    use pyannote_rs::EmbeddingExtractor;
+
+    let model_dir = &config.diarization.model_path;
+    let seg_model = model_dir.join(SEGMENTATION_MODEL);
+    let emb_info = embedding_model_for_config(config);
+    let emb_model = model_dir.join(emb_info.filename);
+
+    if !seg_model.exists() {
+        return Err(format!(
+            "Segmentation model not found at {}. Run `minutes setup --diarization` to download.",
+            seg_model.display()
+        )
+        .into());
+    }
+    if !emb_model.exists() {
+        return Err(format!(
+            "Embedding model not found at {}. Run `minutes setup --diarization` to download.",
+            emb_model.display()
+        )
+        .into());
+    }
+
+    let (mut f32_samples, mut i16_samples, sample_rate) = load_audio(audio_path)?;
+
+    tracing::info!(
+        f32_samples = f32_samples.len(),
+        i16_samples = i16_samples.len(),
+        sample_rate = sample_rate,
+        "audio loaded for diarization"
+    );
+
+    // Step 1: Segment speech using the ONNX model directly with properly
+    // normalized f32 input. We bypass pyannote_rs::get_segments because it
+    // casts i16 to f32 without dividing by 32768, feeding the model values
+    // in [-32768, 32767] when it expects [-1.0, 1.0].
+    let mut speech_segments = segment_speech(&f32_samples, sample_rate, &seg_model)?;
+
+    // If the model found no speech, the audio may be too quiet (e.g. MacBook
+    // built-in mic with peaks as low as 0.0004). Normalize to a usable level
+    // and retry — this avoids hardcoding a sensitivity threshold.
+    if speech_segments.is_empty() {
+        let peak = f32_samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        const TARGET_PEAK: f32 = 0.5;
+
+        if peak > 0.0 && peak < TARGET_PEAK {
+            let gain = TARGET_PEAK / peak;
+            tracing::info!(
+                peak = format!("{:.6}", peak),
+                gain = format!("{:.1}x", gain),
+                "no speech detected — retrying with normalized audio"
+            );
+            for s in &mut f32_samples {
+                *s = (*s * gain).clamp(-1.0, 1.0);
+            }
+            i16_samples = f32_samples
+                .iter()
+                .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+                .collect();
+
+            speech_segments = segment_speech(&f32_samples, sample_rate, &seg_model)?;
+        }
+    }
+
+    tracing::info!(
+        segments = speech_segments.len(),
+        "speech segmentation complete"
+    );
+
+    // Step 2: Extract speaker embeddings and cluster.
+    //
+    // We replace pyannote-rs's EmbeddingManager with our own clustering
+    // that maintains running-average speaker templates. EmbeddingManager
+    // only stores the first segment's embedding per speaker, which causes
+    // over-segmentation (one person → multiple speakers) as the reference
+    // embedding becomes unrepresentative over time.
+    let mut extractor = EmbeddingExtractor::new(&emb_model)?;
+    let threshold = config.diarization.threshold;
+
+    // Merge adjacent speech segments that are separated by short gaps.
+    // The segmentation model often splits continuous speech into many
+    // tiny fragments; merging them produces longer, more stable segments
+    // for embedding extraction.
+    let speech_segments = merge_short_segments(speech_segments, sample_rate);
+
+    tracing::info!(
+        segments = speech_segments.len(),
+        "speech segments after merge"
+    );
+
+    // speaker_templates[i] = (running average embedding, segment count)
+    let mut speaker_templates: Vec<(Vec<f32>, usize)> = Vec::new();
+    // Per-segment: which speaker index was assigned
+    let mut seg_speaker_ids: Vec<usize> = Vec::new();
+
+    // Minimum samples for reliable embedding extraction (~1.5s at 16kHz).
+    // Shorter segments produce unstable embeddings that corrupt clustering.
+    let min_embed_samples = (sample_rate as f64 * 1.5) as usize;
+
+    for seg in &speech_segments {
+        let seg_i16 = &i16_samples[seg.start_sample..seg.end_sample];
+
+        // Skip too-short segments for clustering; they still appear in the
+        // transcript but inherit the nearest speaker label.
+        if seg_i16.len() < min_embed_samples {
+            seg_speaker_ids.push(usize::MAX); // sentinel: inherit later
+            continue;
+        }
+
+        let raw_embedding: Vec<f32> = extractor.compute(seg_i16)?.collect();
+
+        // L2-normalize so every segment contributes equally to the
+        // average direction, regardless of the model's output magnitude.
+        let embedding = l2_normalize(&raw_embedding);
+
+        // Find best matching speaker by cosine similarity
+        let mut best_id = None;
+        let mut best_sim = threshold;
+        for (id, (template, _)) in speaker_templates.iter().enumerate() {
+            let sim = crate::voice::cosine_similarity(&embedding, template);
+            if sim > best_sim {
+                best_sim = sim;
+                best_id = Some(id);
+            }
+        }
+
+        let speaker_id = match best_id {
+            Some(id) => {
+                let (ref mut template, ref mut count) = speaker_templates[id];
+                let old_count = *count as f32;
+                let new_count = old_count + 1.0;
+                for (i, val) in embedding.iter().enumerate() {
+                    template[i] = (template[i] * old_count + val) / new_count;
+                }
+                *count += 1;
+                id
+            }
+            None => {
+                let id = speaker_templates.len();
+                speaker_templates.push((embedding, 1));
+                id
+            }
+        };
+
+        seg_speaker_ids.push(speaker_id);
+    }
+
+    // Merge pass: if two speaker templates are similar enough, merge them.
+    // This catches cases where early segments created separate speakers
+    // that converged as more data came in.
+    //
+    // The merge threshold is set to max(threshold - 0.05, 0.3) to avoid
+    // merging genuinely different speakers. The 0.3 floor prevents overly
+    // aggressive merging when the user sets a low diarization threshold.
+    let merge_threshold = (threshold - 0.05).max(0.3);
+    let num_templates = speaker_templates.len();
+    let mut merge_map: Vec<usize> = (0..num_templates).collect();
+
+    for i in 0..num_templates {
+        for j in (i + 1)..num_templates {
+            if merge_map[j] != j {
+                continue; // already merged
+            }
+            let ri = merge_map[i]; // canonical id for i
+            let sim =
+                crate::voice::cosine_similarity(&speaker_templates[ri].0, &speaker_templates[j].0);
+            if sim > merge_threshold {
+                tracing::info!(
+                    from = j,
+                    into = ri,
+                    similarity = format!("{:.4}", sim),
+                    "merging speaker clusters"
+                );
+                merge_map[j] = ri;
+            }
+        }
+    }
+
+    // Resolve transitive merges (e.g. 3→2→1 becomes 3→1, 2→1).
+    // Loop bound prevents infinite loops if merge_map is ever inconsistent.
+    for i in 0..num_templates {
+        let mut root = merge_map[i];
+        let mut steps = 0;
+        while merge_map[root] != root && steps < num_templates {
+            root = merge_map[root];
+            steps += 1;
+        }
+        merge_map[i] = root;
+    }
+
+    // Assign compact labels (SPEAKER_1, SPEAKER_2, ...) to canonical IDs
+    let mut canonical_to_label: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::new();
+    let mut next_label = 1usize;
+    for &canonical in &merge_map {
+        canonical_to_label.entry(canonical).or_insert_with(|| {
+            let label = format!("SPEAKER_{}", next_label);
+            next_label += 1;
+            label
+        });
+    }
+
+    // Build segments with merged labels.
+    // Segments that were too short for embedding extraction (sentinel usize::MAX)
+    // inherit the label of the nearest non-skipped segment.
+    let mut segments = Vec::new();
+
+    // First pass: resolve labels for non-skipped segments
+    let resolved_labels: Vec<Option<String>> = seg_speaker_ids
+        .iter()
+        .map(|&raw_id| {
+            if raw_id == usize::MAX {
+                None
+            } else {
+                let canonical_id = merge_map[raw_id];
+                Some(canonical_to_label[&canonical_id].clone())
+            }
+        })
+        .collect();
+
+    // Forward pass: fill skipped segments by inheriting from the nearest
+    // *temporal* neighbor (not acoustic). A short segment between two different
+    // speakers gets the label of whichever speaker was most recent, not
+    // whichever it sounds like. This is an acceptable tradeoff: extracting
+    // embeddings from <1.5s segments produces unreliable results, and temporal
+    // proximity is a reasonable heuristic for meeting-style audio.
+    let mut last_known_label: Option<String> = None;
+    let mut final_labels: Vec<String> = Vec::with_capacity(resolved_labels.len());
+    for label in &resolved_labels {
+        if let Some(l) = label {
+            last_known_label = Some(l.clone());
+        }
+        final_labels.push(last_known_label.clone().unwrap_or_else(|| "UNKNOWN".into()));
+    }
+    // Backward pass: fix leading skipped segments (before any known label)
+    if let Some(first_known) = resolved_labels.iter().find_map(|l| l.as_ref()) {
+        for label in &mut final_labels {
+            if label == "UNKNOWN" {
+                *label = first_known.clone();
+            } else {
+                break;
+            }
+        }
+    }
+
+    for (idx, seg) in speech_segments.iter().enumerate() {
+        segments.push(SpeakerSegment {
+            speaker: final_labels[idx].clone(),
+            start: seg.start,
+            end: seg.end,
+        });
+    }
+
+    // Rebuild final speaker embeddings by weighted-averaging merged templates.
+    // Each template is weighted by its segment count so a template built from
+    // 50 segments contributes proportionally more than one from 2 segments.
+    let mut speaker_embeddings: std::collections::HashMap<String, Vec<f32>> =
+        std::collections::HashMap::new();
+    let mut speaker_total_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (raw_id, (template, count)) in speaker_templates.iter().enumerate() {
+        let canonical_id = merge_map[raw_id];
+        let label = canonical_to_label[&canonical_id].clone();
+        let entry = speaker_embeddings
+            .entry(label.clone())
+            .or_insert_with(|| vec![0.0f32; template.len()]);
+        for (i, val) in template.iter().enumerate() {
+            entry[i] += val * (*count as f32);
+        }
+        *speaker_total_counts.entry(label).or_insert(0) += count;
+    }
+    for (label, embedding) in speaker_embeddings.iter_mut() {
+        let total = *speaker_total_counts.get(label).unwrap_or(&1) as f32;
+        for val in embedding.iter_mut() {
+            *val /= total;
+        }
+    }
+
+    let num_speakers = speaker_embeddings.len();
+
+    tracing::info!(
+        raw_clusters = num_templates,
+        merged_speakers = num_speakers,
+        threshold = threshold,
+        merge_threshold = format!("{:.3}", merge_threshold),
+        "speaker clustering complete"
+    );
+
+    Ok(DiarizationResult {
+        segments,
+        num_speakers,
+        speaker_embeddings,
+    })
+}
+
+/// A detected speech region with sample-level boundaries for embedding extraction.
+#[cfg(feature = "diarize")]
+#[derive(Clone)]
+struct SpeechSegment {
+    start: f64,
+    end: f64,
+    start_sample: usize,
+    end_sample: usize,
+}
+
+/// L2-normalize a vector to unit length. Returns the zero vector if the input
+/// has zero norm (avoids NaN propagation).
+#[cfg(feature = "diarize")]
+fn l2_normalize(v: &[f32]) -> Vec<f32> {
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return v.to_vec();
+    }
+    v.iter().map(|x| x / norm).collect()
+}
+
+/// Merge speech segments that are separated by gaps shorter than `max_gap`
+/// and ensure all resulting segments are at least `min_dur` long by absorbing
+/// tiny neighbours. This reduces over-fragmentation from the frame-level
+/// segmentation model, producing longer segments with more stable embeddings.
+#[cfg(feature = "diarize")]
+fn merge_short_segments(segments: Vec<SpeechSegment>, sample_rate: u32) -> Vec<SpeechSegment> {
+    if segments.is_empty() {
+        return segments;
+    }
+
+    let max_gap_samples = (sample_rate as f64 * 0.3) as usize; // 300ms gap tolerance
+    let min_dur_samples = (sample_rate as f64 * 0.5) as usize; // 0.5s minimum
+
+    // Cap gap tolerance for short segments so they don't absorb across long pauses.
+    let max_short_gap_samples = (sample_rate as f64 * 1.0) as usize; // 1s ceiling
+
+    let mut merged: Vec<SpeechSegment> = Vec::new();
+    let mut current = segments[0].clone();
+
+    for seg in segments.iter().skip(1) {
+        let gap = seg.start_sample.saturating_sub(current.end_sample);
+        let current_dur = current.end_sample.saturating_sub(current.start_sample);
+
+        let should_merge = gap <= max_gap_samples
+            || (current_dur < min_dur_samples && gap <= max_short_gap_samples);
+
+        if should_merge {
+            current.end = seg.end;
+            current.end_sample = seg.end_sample;
+        } else {
+            merged.push(current);
+            current = seg.clone();
+        }
+    }
+    merged.push(current);
+
+    tracing::debug!(
+        before = segments.len(),
+        after = merged.len(),
+        "merged adjacent speech segments"
+    );
+
+    merged
+}
+
+/// Run the segmentation ONNX model directly with properly normalised f32 audio.
+///
+/// pyannote-rs's `get_segments` has a bug: it casts raw i16 samples to f32
+/// (`x as f32`) without dividing by 32768, so the model receives values in
+/// [-32768, 32767] instead of the [-1.0, 1.0] it was trained on. This causes
+/// the model to classify all frames as non-speech for typical microphone input.
+///
+/// This function mirrors the same sliding-window logic but feeds the model
+/// correctly normalised f32 waveform data.
+#[cfg(feature = "diarize")]
+fn segment_speech(
+    samples: &[f32],
+    sample_rate: u32,
+    model_path: &Path,
+) -> Result<Vec<SpeechSegment>, Box<dyn std::error::Error>> {
+    use ndarray::{Array1, ArrayViewD, Axis, IxDyn};
+    use ort::session::builder::GraphOptimizationLevel;
+    use ort::session::Session;
+
+    let mut session = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_threads(1)?
+        .with_inter_threads(1)?
+        .commit_from_file(model_path)?;
+
+    // These constants come from the pyannote segmentation-3.0 model architecture:
+    // - frame_size (270 samples @ 16kHz = 16.875ms) is the hop between output frames,
+    //   derived from the model's sincnet + temporal pooling stride.
+    // - frame_start (721 samples @ 16kHz = 45ms) is the receptive-field offset, i.e.
+    //   how many input samples precede the center of the first output frame.
+    // - window_size (10s @ sample_rate) matches the model's fixed-length input window.
+    // See pyannote-rs source and pyannote-audio's SlidingWindowFeature for derivation.
+    let frame_size: usize = 270;
+    let frame_start: usize = 721;
+    let window_size = (sample_rate as usize) * 10;
+
+    // Pad to fill the last window
+    let mut padded = samples.to_vec();
+    let remainder = padded.len() % window_size;
+    if remainder != 0 {
+        padded.extend(vec![0.0f32; window_size - remainder]);
+    }
+
+    let mut result = Vec::new();
+    let mut is_speeching = false;
+    let mut offset = frame_start;
+    let mut start_offset = 0usize;
+
+    for window_start in (0..padded.len()).step_by(window_size) {
+        let window_end = (window_start + window_size).min(padded.len());
+        let window = &padded[window_start..window_end];
+
+        let array = Array1::from_iter(window.iter().copied());
+        let array = array.view().insert_axis(Axis(0)).insert_axis(Axis(1));
+
+        let inputs = ort::inputs![ort::value::TensorRef::from_array_view(array.into_dyn())
+            .map_err(|e| format!("tensor prep: {e:?}"))?];
+
+        let ort_outs = session.run(inputs)?;
+        let ort_out = ort_outs
+            .get("output")
+            .ok_or("segmentation model missing 'output' tensor")?;
+        let ort_out = ort_out
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("tensor extract: {e:?}"))?;
+
+        let (shape, data) = ort_out;
+        let shape_slice: Vec<usize> = (0..shape.len()).map(|i| shape[i] as usize).collect();
+        let view = ArrayViewD::<f32>::from_shape(IxDyn(&shape_slice), data)
+            .map_err(|e| format!("ndarray shape: {e}"))?;
+
+        for row in view.outer_iter() {
+            for sub_row in row.axis_iter(Axis(0)) {
+                let max_index = sub_row
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+
+                if max_index != 0 {
+                    if !is_speeching {
+                        start_offset = offset;
+                        is_speeching = true;
+                    }
+                } else if is_speeching {
+                    let start_secs = start_offset as f64 / sample_rate as f64;
+                    let end_secs = offset as f64 / sample_rate as f64;
+                    let si = start_offset.min(samples.len().saturating_sub(1));
+                    let ei = offset.min(samples.len());
+                    result.push(SpeechSegment {
+                        start: start_secs,
+                        end: end_secs,
+                        start_sample: si,
+                        end_sample: ei,
+                    });
+                    is_speeching = false;
+                }
+                offset += frame_size;
+            }
+        }
+    }
+
+    // Flush trailing speech (unlike pyannote-rs, we don't drop it)
+    if is_speeching {
+        let start_secs = start_offset as f64 / sample_rate as f64;
+        let end_secs = offset as f64 / sample_rate as f64;
+        let si = start_offset.min(samples.len().saturating_sub(1));
+        let ei = samples.len();
+        result.push(SpeechSegment {
+            start: start_secs,
+            end: end_secs,
+            start_sample: si,
+            end_sample: ei,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Load audio file as both f32 (for segmentation) and i16 (for embedding extraction).
+///
+/// Returns `(f32_samples, i16_samples, sample_rate)` where f32 is normalised
+/// to [-1.0, 1.0] and i16 mirrors the same waveform in PCM scale.
+#[cfg(feature = "diarize")]
+#[allow(clippy::type_complexity)]
+fn load_audio(audio_path: &Path) -> Result<(Vec<f32>, Vec<i16>, u32), Box<dyn std::error::Error>> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::DecoderOptions;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(audio_path)?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = audio_path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe().format(
+        &hint,
+        mss,
+        &FormatOptions::default(),
+        &MetadataOptions::default(),
+    )?;
+
+    let mut format = probed.format;
+
+    let track = format.default_track().ok_or("no audio track found")?;
+    let track_id = track.id;
+    let sample_rate = track.codec_params.sample_rate.ok_or("no sample rate")?;
+    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
+
+    let mut decoder =
+        symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
+
+    let mut all_samples: Vec<f32> = Vec::new();
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        let decoded = decoder.decode(&packet)?;
+        let spec = *decoded.spec();
+        let num_frames = decoded.capacity();
+
+        let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
+        sample_buf.copy_interleaved_ref(decoded);
+
+        let samples = sample_buf.samples();
+
+        if channels > 1 {
+            for chunk in samples.chunks(channels) {
+                let mono: f32 = chunk.iter().sum::<f32>() / channels as f32;
+                all_samples.push(mono);
+            }
+        } else {
+            all_samples.extend_from_slice(samples);
+        }
+    }
+
+    let i16_samples: Vec<i16> = all_samples
+        .iter()
+        .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+        .collect();
+
+    Ok((all_samples, i16_samples, sample_rate))
+}
+
+// ── Legacy Python subprocess diarization ────────────────────
+
 /// Run pyannote diarization via Python subprocess.
 fn diarize_with_pyannote(
     audio_path: &Path,
 ) -> Result<DiarizationResult, Box<dyn std::error::Error>> {
-    // Check if Python is available
     let python = find_python()?;
 
     // Security: pass audio path as sys.argv[1], never interpolate into source code.
-    // A crafted filename with quotes/backticks could inject arbitrary Python otherwise.
     let script = r#"
 import json, sys
 try:
@@ -170,6 +1259,7 @@ except Exception as e:
     Ok(DiarizationResult {
         segments,
         num_speakers,
+        speaker_embeddings: std::collections::HashMap::new(), // Python path can't extract embeddings
     })
 }
 
@@ -231,6 +1321,55 @@ mod tests {
     }
 
     #[test]
+    fn find_speaker_gap_fallback_prefers_next_speaker() {
+        // Segments with gaps — sorted by start time (as apply_speakers provides)
+        let segments = vec![
+            SpeakerSegment {
+                speaker: "SPEAKER_0".into(),
+                start: 0.045,
+                end: 3.98,
+            },
+            SpeakerSegment {
+                speaker: "SPEAKER_1".into(),
+                start: 4.12,
+                end: 8.5,
+            },
+        ];
+
+        // Timestamp 0.0 falls 0.045s before first segment — within 0.5s tolerance
+        assert_eq!(find_speaker(0.0, &segments), "SPEAKER_0");
+        // Timestamp 4.0 falls in gap: 0.02s from A end, 0.12s from B start
+        // Prefer next speaker (B) — they're about to talk
+        assert_eq!(find_speaker(4.0, &segments), "SPEAKER_1");
+        // Timestamp 8.6 is 0.1s past segment B — within 0.5s tolerance
+        assert_eq!(find_speaker(8.6, &segments), "SPEAKER_1");
+        // Timestamp 10.0 is 1.5s past segment B — beyond 0.5s tolerance
+        assert_eq!(find_speaker(10.0, &segments), "UNKNOWN");
+        // Timestamp 15.0 is far from any segment
+        assert_eq!(find_speaker(15.0, &segments), "UNKNOWN");
+    }
+
+    #[test]
+    fn find_speaker_silence_stays_unknown() {
+        // Long silence gap between speakers — should NOT fabricate attribution
+        let segments = vec![
+            SpeakerSegment {
+                speaker: "SPEAKER_0".into(),
+                start: 0.0,
+                end: 5.0,
+            },
+            SpeakerSegment {
+                speaker: "SPEAKER_1".into(),
+                start: 10.0,
+                end: 15.0,
+            },
+        ];
+
+        // Timestamp 7.0 is 2s from both segments — beyond tolerance
+        assert_eq!(find_speaker(7.0, &segments), "UNKNOWN");
+    }
+
+    #[test]
     fn apply_speakers_labels_transcript() {
         let transcript = "[0:00] Hello everyone\n[0:05] Thanks for joining\n";
         let result = DiarizationResult {
@@ -247,6 +1386,7 @@ mod tests {
                 },
             ],
             num_speakers: 2,
+            speaker_embeddings: std::collections::HashMap::new(),
         };
 
         let labeled = apply_speakers(transcript, &result);
@@ -255,9 +1395,258 @@ mod tests {
     }
 
     #[test]
+    fn apply_speakers_first_unknown_inherits_next_speaker() {
+        // Simulate Whisper starting at t=0 but diarization detecting speech
+        // only from t=1.5 — the first line would be UNKNOWN without the fix
+        let transcript = "[0:00] Hello\n[0:03] How are you\n[0:07] Good thanks\n";
+        let result = DiarizationResult {
+            segments: vec![
+                SpeakerSegment {
+                    speaker: "SPEAKER_0".into(),
+                    start: 1.5,
+                    end: 5.0,
+                },
+                SpeakerSegment {
+                    speaker: "SPEAKER_1".into(),
+                    start: 5.0,
+                    end: 10.0,
+                },
+            ],
+            num_speakers: 2,
+            speaker_embeddings: std::collections::HashMap::new(),
+        };
+
+        let labeled = apply_speakers(transcript, &result);
+        // First segment inherits from the next attributed segment (SPEAKER_0)
+        assert!(
+            labeled.contains("[SPEAKER_0 0:00]"),
+            "first UNKNOWN should inherit next speaker, got: {labeled}"
+        );
+        assert!(labeled.contains("[SPEAKER_0 0:03]"));
+        assert!(labeled.contains("[SPEAKER_1 0:07]"));
+    }
+
+    #[test]
     fn diarize_returns_none_when_disabled() {
         let config = Config::default(); // engine = "none"
         let result = diarize(Path::new("/fake.wav"), &config);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_confirmed_names_rewrites_high_confidence() {
+        let transcript = "[SPEAKER_1 0:00] Hello\n[SPEAKER_2 0:05] Hi there\n";
+        let attributions = vec![
+            SpeakerAttribution {
+                speaker_label: "SPEAKER_1".into(),
+                name: "Mat".into(),
+                confidence: Confidence::High,
+                source: AttributionSource::Manual,
+            },
+            SpeakerAttribution {
+                speaker_label: "SPEAKER_2".into(),
+                name: "Alex".into(),
+                confidence: Confidence::Medium,
+                source: AttributionSource::Deterministic,
+            },
+        ];
+        let result = apply_confirmed_names(transcript, &attributions);
+        assert!(result.contains("[Mat 0:00]"));
+        assert!(result.contains("[SPEAKER_2 0:05]"));
+    }
+
+    #[test]
+    fn apply_confirmed_names_no_high_is_noop() {
+        let transcript = "[SPEAKER_1 0:00] Hello\n";
+        let result = apply_confirmed_names(
+            transcript,
+            &[SpeakerAttribution {
+                speaker_label: "SPEAKER_1".into(),
+                name: "Mat".into(),
+                confidence: Confidence::Medium,
+                source: AttributionSource::Deterministic,
+            }],
+        );
+        assert_eq!(result, transcript);
+    }
+
+    #[test]
+    fn speaker_attribution_roundtrips_yaml() {
+        let attr = SpeakerAttribution {
+            speaker_label: "SPEAKER_2".into(),
+            name: "Sarah".into(),
+            confidence: Confidence::High,
+            source: AttributionSource::Manual,
+        };
+        let yaml = serde_yaml::to_string(&attr).unwrap();
+        let parsed: SpeakerAttribution = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.confidence, Confidence::High);
+        assert_eq!(parsed.source, AttributionSource::Manual);
+    }
+
+    #[test]
+    fn diarize_returns_none_for_unknown_engine() {
+        let mut config = Config::default();
+        config.diarization.engine = "nonexistent".into();
+        let result = diarize(Path::new("/fake.wav"), &config);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn models_installed_returns_false_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.diarization.model_path = dir.path().join("missing-models");
+        assert!(!models_installed(&config));
+    }
+
+    #[test]
+    fn config_recognizes_pyannote_rs_engine() {
+        let mut config = Config::default();
+        config.diarization.engine = "pyannote-rs".into();
+        assert_eq!(config.diarization.engine, "pyannote-rs");
+        assert_eq!(config.diarization.threshold, 0.4);
+    }
+
+    // ── l2_normalize tests ──────────────────────────────────────
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn l2_normalize_unit_vector() {
+        let v = vec![3.0f32, 4.0];
+        let n = l2_normalize(&v);
+        let norm: f32 = n.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-6,
+            "expected unit length, got {}",
+            norm
+        );
+        assert!((n[0] - 0.6).abs() < 1e-6);
+        assert!((n[1] - 0.8).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn l2_normalize_zero_vector() {
+        let v = vec![0.0f32; 5];
+        let n = l2_normalize(&v);
+        assert_eq!(n, v, "zero vector should be returned as-is");
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn l2_normalize_single_element() {
+        let v = vec![7.0f32];
+        let n = l2_normalize(&v);
+        assert!((n[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn l2_normalize_negative_values() {
+        let v = vec![-3.0f32, 4.0];
+        let n = l2_normalize(&v);
+        let norm: f32 = n.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-6);
+        assert!(n[0] < 0.0, "sign should be preserved");
+    }
+
+    // ── merge_short_segments tests ──────────────────────────────
+
+    #[cfg(feature = "diarize")]
+    fn make_seg(start_s: f64, end_s: f64, sr: u32) -> SpeechSegment {
+        SpeechSegment {
+            start: start_s,
+            end: end_s,
+            start_sample: (start_s * sr as f64) as usize,
+            end_sample: (end_s * sr as f64) as usize,
+        }
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn merge_short_segments_empty_input() {
+        let result = merge_short_segments(vec![], 16000);
+        assert!(result.is_empty());
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn merge_short_segments_single_segment() {
+        let segs = vec![make_seg(0.0, 2.0, 16000)];
+        let result = merge_short_segments(segs, 16000);
+        assert_eq!(result.len(), 1);
+        assert!((result[0].start - 0.0).abs() < 1e-6);
+        assert!((result[0].end - 2.0).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn merge_short_segments_merges_small_gaps() {
+        // Two segments 200ms apart → should merge (300ms tolerance)
+        let segs = vec![make_seg(0.0, 1.0, 16000), make_seg(1.2, 2.0, 16000)];
+        let result = merge_short_segments(segs, 16000);
+        assert_eq!(result.len(), 1);
+        assert!((result[0].end - 2.0).abs() < 1e-6);
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn merge_short_segments_preserves_large_gaps() {
+        // Two segments 2s apart → should NOT merge
+        let segs = vec![make_seg(0.0, 1.0, 16000), make_seg(3.0, 4.0, 16000)];
+        let result = merge_short_segments(segs, 16000);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn merge_short_segments_short_segment_respects_gap_ceiling() {
+        // A short segment (0.3s) followed by another 1.5s away.
+        // Even though the first is <0.5s (min_dur), the gap exceeds the 1s
+        // ceiling so they should NOT merge.
+        let segs = vec![make_seg(0.0, 0.3, 16000), make_seg(1.8, 3.0, 16000)];
+        let result = merge_short_segments(segs, 16000);
+        assert_eq!(
+            result.len(),
+            2,
+            "short segment should not absorb across >1s gap"
+        );
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn merge_short_segments_short_segment_merges_within_ceiling() {
+        // A short segment (0.3s) followed by another 0.8s away.
+        // First is <0.5s and gap is <1s ceiling → should merge.
+        let segs = vec![make_seg(0.0, 0.3, 16000), make_seg(1.1, 2.0, 16000)];
+        let result = merge_short_segments(segs, 16000);
+        assert_eq!(
+            result.len(),
+            1,
+            "short segment should absorb within 1s ceiling"
+        );
+    }
+
+    #[cfg(feature = "diarize")]
+    #[test]
+    fn merge_short_segments_all_below_min_duration() {
+        // All segments are very short. They should chain-merge until they
+        // hit the gap ceiling.
+        let segs = vec![
+            make_seg(0.0, 0.1, 16000),
+            make_seg(0.2, 0.3, 16000),
+            make_seg(0.4, 0.5, 16000),
+            // 3s gap — exceeds ceiling
+            make_seg(3.5, 3.6, 16000),
+        ];
+        let result = merge_short_segments(segs, 16000);
+        assert_eq!(
+            result.len(),
+            2,
+            "chain of short segments should merge, but not across 3s gap"
+        );
+        assert!((result[0].end - 0.5).abs() < 1e-6);
+        assert!((result[1].start - 3.5).abs() < 1e-6);
     }
 }

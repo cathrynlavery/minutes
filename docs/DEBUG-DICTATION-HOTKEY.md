@@ -1,5 +1,27 @@
 # DEBUG: Dictation Hotkey Freezes App
 
+## Current status
+
+This document started as a freeze-debugging note. That original UI-thread
+freeze path has since been refactored away.
+
+The current macOS blocker is different:
+
+- the native hotkey uses `CGEventTap`, which requires Input Monitoring
+- macOS TCC gets confused if we test from multiple app identities
+- repo-local bundles, raw `target/` binaries, and freshly rebuilt ad-hoc apps
+  are not reliable identities for permission debugging
+
+Use the dedicated dev app install flow instead:
+
+```bash
+./scripts/install-dev-app.sh
+./scripts/diagnose-desktop-hotkey.sh "$HOME/Applications/Minutes Dev.app"
+```
+
+See [docs/DESKTOP-DEVELOPMENT.md](/Users/silverbook/Sites/minutes/docs/DESKTOP-DEVELOPMENT.md)
+for the current canonical workflow.
+
 ## Problem
 When the user toggles the dictation hotkey "On" in Settings > Dictation, the Minutes Tauri app freezes completely (macOS shows "Non-responsive application"). This happens every time.
 

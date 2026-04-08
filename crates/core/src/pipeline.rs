@@ -6,9 +6,83 @@ use crate::markdown::{self, ContentType, Frontmatter, OutputStatus, WriteResult}
 use crate::notes;
 use crate::summarize;
 use crate::transcribe;
-use chrono::Local;
+use chrono::{DateTime, Local};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+
+/// Result of Level 2 voice enrollment matching.
+struct VoiceMatchResult {
+    /// Speaker attributions from voice matching (one per matched label).
+    attributions: Vec<diarize::SpeakerAttribution>,
+    /// Whether the user's own enrolled profile exists in the database
+    /// (by `config.identity.name`), regardless of whether it matched a speaker.
+    self_profile_exists: bool,
+}
+
+/// Match diarized speaker embeddings against enrolled voice profiles (Level 2).
+///
+/// For each speaker label, `match_embedding` returns at most one name — the
+/// profile with the highest cosine similarity above threshold. This means each
+/// label gets at most one attribution, even if multiple profiles exceed the
+/// threshold.
+fn match_speakers_by_voice(
+    config: &Config,
+    diarization_embeddings: &std::collections::HashMap<String, Vec<f32>>,
+) -> VoiceMatchResult {
+    if !config.voice.enabled || diarization_embeddings.is_empty() {
+        return VoiceMatchResult {
+            attributions: Vec::new(),
+            self_profile_exists: false,
+        };
+    }
+
+    let profiles = crate::voice::open_db()
+        .ok()
+        .and_then(|conn| crate::voice::load_all_with_embeddings(&conn).ok())
+        .unwrap_or_default();
+
+    if profiles.is_empty() {
+        return VoiceMatchResult {
+            attributions: Vec::new(),
+            self_profile_exists: false,
+        };
+    }
+
+    let self_profile_exists = config
+        .identity
+        .name
+        .as_ref()
+        .map(|name| {
+            let slug = slugify(name);
+            profiles.iter().any(|p| p.person_slug == slug)
+        })
+        .unwrap_or(false);
+
+    let threshold = config.voice.match_threshold;
+    let mut attributions = Vec::new();
+
+    for (label, emb) in diarization_embeddings {
+        if let Some(name) = crate::voice::match_embedding(emb, &profiles, threshold) {
+            tracing::info!(
+                speaker = %label,
+                name = %name,
+                threshold = threshold,
+                "Level 2: voice enrollment match"
+            );
+            attributions.push(diarize::SpeakerAttribution {
+                speaker_label: label.clone(),
+                name,
+                confidence: diarize::Confidence::High,
+                source: diarize::AttributionSource::Enrollment,
+            });
+        }
+    }
+
+    VoiceMatchResult {
+        attributions,
+        self_profile_exists,
+    }
+}
 
 // ──────────────────────────────────────────────────────────────
 // Pipeline orchestration:
@@ -33,6 +107,34 @@ pub enum PipelineStage {
     Saving,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct BackgroundPipelineContext {
+    pub sidecar: Option<SidecarMetadata>,
+    pub user_notes: Option<String>,
+    pub pre_context: Option<String>,
+    pub calendar_event: Option<crate::calendar::CalendarEvent>,
+    pub recorded_at: Option<DateTime<Local>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscriptArtifact {
+    pub write_result: WriteResult,
+    pub frontmatter: Frontmatter,
+    pub transcript: String,
+}
+
+/// Optional metadata from a sidecar JSON file (e.g., from iPhone Apple Shortcut).
+/// Merged into frontmatter when present.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SidecarMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<chrono::DateTime<Local>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
 /// Process an audio file through the full pipeline.
 pub fn process(
     audio_path: &Path,
@@ -40,7 +142,29 @@ pub fn process(
     title: Option<&str>,
     config: &Config,
 ) -> Result<WriteResult, MinutesError> {
-    process_with_progress(audio_path, content_type, title, config, |_| {})
+    process_with_sidecar(audio_path, content_type, title, config, None, |_| {})
+}
+
+/// Process an audio file with optional sidecar metadata (from iPhone, etc.).
+pub fn process_with_sidecar<F>(
+    audio_path: &Path,
+    content_type: ContentType,
+    title: Option<&str>,
+    config: &Config,
+    sidecar: Option<&SidecarMetadata>,
+    on_progress: F,
+) -> Result<WriteResult, MinutesError>
+where
+    F: FnMut(PipelineStage),
+{
+    process_with_progress_and_sidecar(
+        audio_path,
+        content_type,
+        title,
+        config,
+        sidecar,
+        on_progress,
+    )
 }
 
 pub fn process_with_progress<F>(
@@ -48,6 +172,484 @@ pub fn process_with_progress<F>(
     content_type: ContentType,
     title: Option<&str>,
     config: &Config,
+    on_progress: F,
+) -> Result<WriteResult, MinutesError>
+where
+    F: FnMut(PipelineStage),
+{
+    process_with_progress_and_sidecar(audio_path, content_type, title, config, None, on_progress)
+}
+
+pub fn transcribe_to_artifact(
+    audio_path: &Path,
+    content_type: ContentType,
+    title: Option<&str>,
+    config: &Config,
+    context: &BackgroundPipelineContext,
+    existing_output_path: Option<&Path>,
+) -> Result<TranscriptArtifact, MinutesError> {
+    let metadata = std::fs::metadata(audio_path)?;
+    if metadata.len() == 0 {
+        return Err(crate::error::TranscribeError::EmptyAudio.into());
+    }
+
+    if let Ok(canonical) = audio_path.canonicalize() {
+        let allowed = &config.security.allowed_audio_dirs;
+        if !allowed.is_empty() {
+            let in_allowed = allowed.iter().any(|dir| {
+                dir.canonicalize()
+                    .map(|d| canonical.starts_with(&d))
+                    .unwrap_or(false)
+            });
+            if !in_allowed {
+                return Err(crate::error::TranscribeError::UnsupportedFormat(format!(
+                    "file not in allowed directories: {}",
+                    audio_path.display()
+                ))
+                .into());
+            }
+        }
+    }
+
+    let step_start = std::time::Instant::now();
+    let result = transcribe::transcribe(audio_path, config)?;
+    let transcribe_ms = step_start.elapsed().as_millis() as u64;
+    let transcript = result.text;
+    let filter_stats = result.stats;
+    let word_count = transcript.split_whitespace().count();
+    logging::log_step(
+        "transcribe",
+        &audio_path.display().to_string(),
+        transcribe_ms,
+        serde_json::json!({"words": word_count, "mode": "background", "diagnosis": filter_stats.diagnosis()}),
+    );
+
+    let status = if word_count < config.transcription.min_words {
+        Some(OutputStatus::NoSpeech)
+    } else {
+        Some(OutputStatus::TranscriptOnly)
+    };
+
+    let matched_event = if content_type == ContentType::Meeting {
+        context
+            .calendar_event
+            .clone()
+            .or_else(|| crate::calendar::events_overlapping_now().first().cloned())
+    } else {
+        None
+    };
+    let calendar_event_title = matched_event.as_ref().map(|event| event.title.clone());
+    let attendees = matched_event
+        .as_ref()
+        .map(|event| event.attendees.clone())
+        .unwrap_or_default();
+
+    let auto_title = title.map(String::from).unwrap_or_else(|| {
+        if status == Some(OutputStatus::NoSpeech) {
+            "Untitled Recording".into()
+        } else {
+            calendar_event_title
+                .as_deref()
+                .and_then(title_from_context)
+                .map(finalize_title)
+                .unwrap_or_else(|| generate_title(&transcript, context.pre_context.as_deref()))
+        }
+    });
+
+    let entities = build_entity_links(
+        &auto_title,
+        context.pre_context.as_deref(),
+        &attendees,
+        &[],
+        &[],
+        &[],
+        &[],
+    );
+    let people = entities
+        .people
+        .iter()
+        .map(|entity| entity.label.clone())
+        .collect();
+
+    let source = if let Some(source) = context
+        .sidecar
+        .as_ref()
+        .and_then(|sidecar| sidecar.source.clone())
+    {
+        Some(source)
+    } else {
+        match content_type {
+            ContentType::Memo => Some("voice-memos".into()),
+            ContentType::Meeting => None,
+            ContentType::Dictation => Some("dictation".into()),
+        }
+    };
+
+    let frontmatter = Frontmatter {
+        title: auto_title,
+        r#type: content_type,
+        date: context.recorded_at.unwrap_or_else(Local::now),
+        duration: estimate_duration(audio_path),
+        source,
+        status,
+        tags: vec![],
+        attendees,
+        calendar_event: calendar_event_title,
+        people,
+        entities,
+        device: context
+            .sidecar
+            .as_ref()
+            .and_then(|sidecar| sidecar.device.clone()),
+        captured_at: context
+            .sidecar
+            .as_ref()
+            .and_then(|sidecar| sidecar.captured_at),
+        context: context.pre_context.clone(),
+        action_items: vec![],
+        decisions: vec![],
+        intents: vec![],
+        recorded_by: config.identity.name.clone(),
+        visibility: None,
+        speaker_map: vec![],
+        filter_diagnosis: if status == Some(OutputStatus::NoSpeech) {
+            Some(filter_stats.diagnosis())
+        } else {
+            None
+        },
+    };
+
+    let write_result = if let Some(path) = existing_output_path {
+        markdown::rewrite_with_retry_path(
+            path,
+            &frontmatter,
+            &transcript,
+            None,
+            context.user_notes.as_deref(),
+            Some(audio_path),
+        )?
+    } else {
+        markdown::write_with_retry_path(
+            &frontmatter,
+            &transcript,
+            None,
+            context.user_notes.as_deref(),
+            Some(audio_path),
+            config,
+        )?
+    };
+
+    Ok(TranscriptArtifact {
+        write_result,
+        frontmatter,
+        transcript,
+    })
+}
+
+pub fn enrich_transcript_artifact<F>(
+    audio_path: &Path,
+    artifact: &TranscriptArtifact,
+    config: &Config,
+    context: &BackgroundPipelineContext,
+    mut on_progress: F,
+) -> Result<WriteResult, MinutesError>
+where
+    F: FnMut(PipelineStage),
+{
+    if artifact.frontmatter.status == Some(OutputStatus::NoSpeech) {
+        return Ok(artifact.write_result.clone());
+    }
+
+    let mut transcript = artifact.transcript.clone();
+    let mut diarization_num_speakers = 0usize;
+    let mut diarization_embeddings: std::collections::HashMap<String, Vec<f32>> =
+        std::collections::HashMap::new();
+    if config.diarization.engine != "none" && artifact.frontmatter.r#type == ContentType::Meeting {
+        on_progress(PipelineStage::Diarizing);
+        let diarize_start = std::time::Instant::now();
+        if let Some(result) = diarize::diarize(audio_path, config) {
+            let diarize_ms = diarize_start.elapsed().as_millis() as u64;
+            diarization_num_speakers = result.num_speakers;
+            diarization_embeddings = result.speaker_embeddings.clone();
+            logging::log_step(
+                "diarize",
+                &audio_path.display().to_string(),
+                diarize_ms,
+                serde_json::json!({
+                    "speakers": result.num_speakers,
+                    "segments": result.segments.len(),
+                    "first_segment_start": result.segments.first().map(|s| s.start),
+                    "last_segment_end": result.segments.last().map(|s| s.end),
+                }),
+            );
+            transcript = diarize::apply_speakers(&transcript, &result);
+        } else {
+            logging::log_step(
+                "diarize",
+                &audio_path.display().to_string(),
+                diarize_start.elapsed().as_millis() as u64,
+                serde_json::json!({"skipped": true}),
+            );
+        }
+    }
+
+    let screen_dir = crate::screen::screens_dir_for(audio_path);
+    let screen_files = if screen_dir.exists() {
+        crate::screen::list_screenshots(&screen_dir)
+    } else {
+        vec![]
+    };
+
+    let mut summary_participants: Vec<String> = Vec::new();
+    let mut structured_actions: Vec<markdown::ActionItem> = Vec::new();
+    let mut structured_decisions: Vec<markdown::Decision> = Vec::new();
+    let mut structured_intents: Vec<markdown::Intent> = Vec::new();
+
+    let mut raw_summary: Option<summarize::Summary> = None;
+    let summary = if config.summarization.engine != "none" {
+        on_progress(PipelineStage::Summarizing);
+        let transcript_with_notes = if let Some(notes) = context.user_notes.as_ref() {
+            format!(
+                "USER NOTES (these moments were marked as important — weight them heavily):\n{}\n\nTRANSCRIPT:\n{}",
+                notes, transcript
+            )
+        } else {
+            transcript.clone()
+        };
+
+        summarize::summarize_with_screens(&transcript_with_notes, &screen_files, config).map(
+            |summary| {
+                structured_actions = extract_action_items(&summary);
+                structured_decisions = extract_decisions(&summary);
+                structured_intents = extract_intents(&summary);
+                summary_participants = summary.participants.clone();
+                let formatted = summarize::format_summary(&summary);
+                raw_summary = Some(summary);
+                formatted
+            },
+        )
+    } else {
+        None
+    };
+
+    if !screen_files.is_empty()
+        && !config.screen_context.keep_after_summary
+        && std::fs::remove_dir_all(&screen_dir).is_ok()
+    {
+        tracing::info!(dir = %screen_dir.display(), "screen captures cleaned up");
+    }
+
+    let mut attendees = artifact.frontmatter.attendees.clone();
+    let mut seen_lower: std::collections::HashSet<String> =
+        attendees.iter().map(|name| name.to_lowercase()).collect();
+    for participant in &summary_participants {
+        let lower = participant.to_lowercase();
+        if !lower.is_empty() && seen_lower.insert(lower) {
+            attendees.push(participant.clone());
+        }
+    }
+
+    let mut speaker_map: Vec<diarize::SpeakerAttribution> = Vec::new();
+    if diarization_num_speakers > 0 && artifact.frontmatter.r#type == ContentType::Meeting {
+        // Level 2: Voice enrollment matching via embedding cosine similarity.
+        let voice_result = match_speakers_by_voice(config, &diarization_embeddings);
+        speaker_map.extend(voice_result.attributions);
+
+        // Level 0: deterministic 1-on-1 mapping (skip if Level 2 already matched)
+        let transcript_labels = crate::summarize::extract_speaker_labels_pub(&transcript);
+        let l2_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|a| a.speaker_label.clone())
+            .collect();
+
+        if !attendees.is_empty()
+            && diarization_num_speakers == attendees.len()
+            && diarization_num_speakers == 2
+            && transcript_labels.len() == 2
+            && l2_labels.is_empty()
+        {
+            if let Some(my_name) = config.identity.name.as_ref() {
+                let my_slug = slugify(my_name);
+                let other = attendees
+                    .iter()
+                    .find(|attendee| slugify(attendee) != my_slug);
+                if let Some(other_name) = other {
+                    let my_confidence = if voice_result.self_profile_exists {
+                        diarize::Confidence::High
+                    } else {
+                        diarize::Confidence::Medium
+                    };
+                    let my_source = if voice_result.self_profile_exists {
+                        diarize::AttributionSource::Enrollment
+                    } else {
+                        diarize::AttributionSource::Deterministic
+                    };
+                    speaker_map.push(diarize::SpeakerAttribution {
+                        speaker_label: transcript_labels[0].clone(),
+                        name: my_name.clone(),
+                        confidence: my_confidence,
+                        source: my_source,
+                    });
+                    speaker_map.push(diarize::SpeakerAttribution {
+                        speaker_label: transcript_labels[1].clone(),
+                        name: other_name.clone(),
+                        confidence: diarize::Confidence::Medium,
+                        source: diarize::AttributionSource::Deterministic,
+                    });
+                }
+            }
+        }
+
+        let mapped_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|attribution| attribution.speaker_label.clone())
+            .collect();
+        let has_unmapped = transcript.lines().any(|line| {
+            if let Some(rest) = line.strip_prefix('[') {
+                if let Some(bracket_end) = rest.find(']') {
+                    let inside = &rest[..bracket_end];
+                    if let Some(space_pos) = inside.find(' ') {
+                        let label = &inside[..space_pos];
+                        return label.starts_with("SPEAKER_") && !mapped_labels.contains(label);
+                    }
+                }
+            }
+            false
+        });
+        if has_unmapped {
+            for attribution in summarize::map_speakers(&transcript, &attendees, config) {
+                if !mapped_labels.contains(&attribution.speaker_label) {
+                    speaker_map.push(attribution);
+                }
+            }
+        }
+
+        if speaker_map
+            .iter()
+            .any(|attribution| attribution.confidence == diarize::Confidence::High)
+        {
+            transcript = diarize::apply_confirmed_names(&transcript, &speaker_map);
+        }
+    }
+
+    let entities = build_entity_links(
+        &artifact.frontmatter.title,
+        context.pre_context.as_deref(),
+        &attendees,
+        &structured_actions,
+        &structured_decisions,
+        &structured_intents,
+        &artifact.frontmatter.tags,
+    );
+    let people = entities
+        .people
+        .iter()
+        .map(|entity| entity.label.clone())
+        .collect();
+
+    let mut frontmatter = artifact.frontmatter.clone();
+    frontmatter.status = if config.summarization.engine != "none" {
+        Some(OutputStatus::Complete)
+    } else {
+        Some(OutputStatus::TranscriptOnly)
+    };
+    frontmatter.attendees = attendees;
+    frontmatter.people = people;
+    frontmatter.entities = entities;
+    frontmatter.action_items = structured_actions;
+    frontmatter.decisions = structured_decisions;
+    frontmatter.intents = structured_intents;
+    frontmatter.speaker_map = speaker_map;
+
+    on_progress(PipelineStage::Saving);
+    let result = markdown::rewrite_with_retry_path(
+        &artifact.write_result.path,
+        &frontmatter,
+        &transcript,
+        summary.as_deref(),
+        context.user_notes.as_deref(),
+        Some(audio_path),
+    )?;
+
+    if !diarization_embeddings.is_empty() {
+        crate::voice::save_meeting_embeddings(&result.path, &diarization_embeddings);
+    }
+
+    // Emit structured insight events for agent subscription
+    if let Some(ref summary_data) = raw_summary {
+        crate::events::emit_insights_from_summary(
+            summary_data,
+            &result.path.display().to_string(),
+            &frontmatter.title,
+            &frontmatter.attendees,
+        );
+    }
+
+    if let Err(error) = crate::daily_notes::append_backlink(
+        &result,
+        frontmatter.date,
+        summary.as_deref(),
+        Some(&frontmatter),
+        config,
+    ) {
+        tracing::warn!(
+            error = %error,
+            output = %result.path.display(),
+            "failed to append daily note backlink"
+        );
+    }
+
+    match crate::vault::sync_file(&result.path, config) {
+        Ok(Some(vault_path)) => {
+            crate::events::append_event(crate::events::MinutesEvent::VaultSynced {
+                source_path: result.path.display().to_string(),
+                vault_path: vault_path.display().to_string(),
+                strategy: config.vault.strategy.clone(),
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(error = %error, output = %result.path.display(), "vault sync failed");
+        }
+    }
+
+    if config.knowledge.enabled {
+        match crate::knowledge::update_from_meeting(&result, &frontmatter, &transcript, config) {
+            Ok(update) => {
+                if update.facts_written > 0 {
+                    tracing::info!(
+                        facts_written = update.facts_written,
+                        facts_skipped = update.facts_skipped,
+                        people = ?update.people_updated,
+                        "knowledge base updated"
+                    );
+                    crate::events::append_event(crate::events::MinutesEvent::KnowledgeUpdated {
+                        meeting_path: result.path.display().to_string(),
+                        facts_written: update.facts_written,
+                        facts_skipped: update.facts_skipped,
+                        people_updated: update.people_updated,
+                    });
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    meeting = %result.path.display(),
+                    "knowledge update failed"
+                );
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+fn process_with_progress_and_sidecar<F>(
+    audio_path: &Path,
+    content_type: ContentType,
+    title: Option<&str>,
+    config: &Config,
+    sidecar: Option<&SidecarMetadata>,
     mut on_progress: F,
 ) -> Result<WriteResult, MinutesError>
 where
@@ -89,20 +691,23 @@ where
     on_progress(PipelineStage::Transcribing);
     tracing::info!(step = "transcribe", file = %audio_path.display(), "transcribing audio");
     let step_start = std::time::Instant::now();
-    let transcript = transcribe::transcribe(audio_path, config)?;
+    let result = transcribe::transcribe(audio_path, config)?;
     let transcribe_ms = step_start.elapsed().as_millis() as u64;
+    let transcript = result.text;
+    let filter_stats = result.stats;
 
     let word_count = transcript.split_whitespace().count();
     tracing::info!(
         step = "transcribe",
         words = word_count,
+        diagnosis = filter_stats.diagnosis(),
         "transcription complete"
     );
     logging::log_step(
         "transcribe",
         &audio_path.display().to_string(),
         transcribe_ms,
-        serde_json::json!({"words": word_count}),
+        serde_json::json!({"words": word_count, "diagnosis": filter_stats.diagnosis()}),
     );
 
     // Check minimum word threshold
@@ -110,6 +715,7 @@ where
         tracing::warn!(
             words = word_count,
             min = config.transcription.min_words,
+            diagnosis = filter_stats.diagnosis(),
             "below minimum word threshold — marking as no-speech"
         );
         Some(OutputStatus::NoSpeech)
@@ -120,11 +726,16 @@ where
     };
 
     // Step 2: Diarize (optional — depends on config.diarization.engine)
+    let mut diarization_num_speakers: usize = 0;
+    let mut diarization_embeddings: std::collections::HashMap<String, Vec<f32>> =
+        std::collections::HashMap::new();
     let transcript = if config.diarization.engine != "none" && content_type == ContentType::Meeting
     {
         on_progress(PipelineStage::Diarizing);
         tracing::info!(step = "diarize", "running speaker diarization");
         if let Some(result) = diarize::diarize(audio_path, config) {
+            diarization_num_speakers = result.num_speakers;
+            diarization_embeddings = result.speaker_embeddings.clone();
             diarize::apply_speakers(&transcript, &result)
         } else {
             transcript
@@ -158,6 +769,7 @@ where
 
     let mut summary_participants: Vec<String> = Vec::new();
 
+    let mut raw_summary: Option<summarize::Summary> = None;
     let summary: Option<String> = if config.summarization.engine != "none" {
         on_progress(PipelineStage::Summarizing);
         tracing::info!(step = "summarize", "generating summary");
@@ -184,7 +796,9 @@ where
                     "extracted participants from summary"
                 );
             }
-            summarize::format_summary(&s)
+            let formatted = summarize::format_summary(&s);
+            raw_summary = Some(s);
+            formatted
         })
     } else {
         None
@@ -234,11 +848,116 @@ where
         tracing::info!(attendees = ?attendees, "merged attendee list");
     }
 
+    // Step 4b: Speaker attribution
+    // Level 2 → Level 0 → Level 1 (voice enrollment → deterministic → LLM)
+    let mut speaker_map: Vec<diarize::SpeakerAttribution> = Vec::new();
+    let mut transcript = transcript;
+
+    if diarization_num_speakers > 0 && content_type == ContentType::Meeting {
+        // Level 2: Voice enrollment matching via embedding cosine similarity.
+        let voice_result = match_speakers_by_voice(config, &diarization_embeddings);
+        speaker_map.extend(voice_result.attributions);
+
+        // Level 0: deterministic 1-on-1 mapping (skip if Level 2 already matched)
+        let transcript_labels = crate::summarize::extract_speaker_labels_pub(&transcript);
+        let l2_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|a| a.speaker_label.clone())
+            .collect();
+
+        if !attendees.is_empty()
+            && diarization_num_speakers == attendees.len()
+            && diarization_num_speakers == 2
+            && transcript_labels.len() == 2
+            && l2_labels.is_empty()
+        {
+            if let Some(my_name) = config.identity.name.as_ref() {
+                let my_slug = slugify(my_name);
+                let other = attendees.iter().find(|a| slugify(a) != my_slug);
+                if let Some(other_name) = other {
+                    let my_confidence = if voice_result.self_profile_exists {
+                        diarize::Confidence::High
+                    } else {
+                        diarize::Confidence::Medium
+                    };
+                    let my_source = if voice_result.self_profile_exists {
+                        diarize::AttributionSource::Enrollment
+                    } else {
+                        diarize::AttributionSource::Deterministic
+                    };
+
+                    speaker_map.push(diarize::SpeakerAttribution {
+                        speaker_label: transcript_labels[0].clone(),
+                        name: my_name.clone(),
+                        confidence: my_confidence,
+                        source: my_source,
+                    });
+                    speaker_map.push(diarize::SpeakerAttribution {
+                        speaker_label: transcript_labels[1].clone(),
+                        name: other_name.clone(),
+                        confidence: diarize::Confidence::Medium,
+                        source: diarize::AttributionSource::Deterministic,
+                    });
+                    tracing::info!(
+                        my_name = %my_name,
+                        my_confidence = ?my_confidence,
+                        other_name = %other_name,
+                        labels = ?transcript_labels,
+                        "Level 0: deterministic 1-on-1 speaker attribution"
+                    );
+                }
+            }
+        }
+
+        // Level 1: LLM suggestions for unmapped speakers
+        let mapped_labels: std::collections::HashSet<String> = speaker_map
+            .iter()
+            .map(|a| a.speaker_label.clone())
+            .collect();
+        let has_unmapped = transcript.lines().any(|line| {
+            if let Some(rest) = line.strip_prefix('[') {
+                if let Some(bracket_end) = rest.find(']') {
+                    let inside = &rest[..bracket_end];
+                    if let Some(space_pos) = inside.find(' ') {
+                        let label = &inside[..space_pos];
+                        return label.starts_with("SPEAKER_") && !mapped_labels.contains(label);
+                    }
+                }
+            }
+            false
+        });
+        if has_unmapped {
+            let llm_attributions = summarize::map_speakers(&transcript, &attendees, config);
+            for attr in llm_attributions {
+                if !mapped_labels.contains(&attr.speaker_label) {
+                    speaker_map.push(attr);
+                }
+            }
+        }
+
+        // Apply high-confidence attributions to transcript
+        if speaker_map
+            .iter()
+            .any(|a| a.confidence == diarize::Confidence::High)
+        {
+            transcript = diarize::apply_confirmed_names(&transcript, &speaker_map);
+        }
+    }
+
     // Step 5: Write markdown (always)
     let duration = estimate_duration(audio_path);
-    let auto_title = title
-        .map(String::from)
-        .unwrap_or_else(|| generate_title(&transcript, pre_context.as_deref()));
+    let auto_title = title.map(String::from).unwrap_or_else(|| {
+        if status == Some(OutputStatus::NoSpeech) {
+            "Untitled Recording".into()
+        } else {
+            // Prefer calendar event title over transcript-derived title
+            calendar_event_title
+                .as_deref()
+                .and_then(title_from_context)
+                .map(finalize_title)
+                .unwrap_or_else(|| generate_title(&transcript, pre_context.as_deref()))
+        }
+    });
     let entities = build_entity_links(
         &auto_title,
         pre_context.as_deref(),
@@ -254,42 +973,73 @@ where
         .map(|entity| entity.label.clone())
         .collect();
 
+    // Determine source field: sidecar overrides default, normalize to "voice-memos" (plural)
+    let source = if let Some(s) = sidecar.and_then(|s| s.source.clone()) {
+        Some(s)
+    } else {
+        match content_type {
+            ContentType::Memo => Some("voice-memos".into()),
+            ContentType::Meeting => None,
+            ContentType::Dictation => Some("dictation".into()),
+        }
+    };
+
+    // Use sidecar captured_at, then audio file creation time, then now() as last resort
+    let recording_date = sidecar
+        .and_then(|s| s.captured_at)
+        .or_else(|| metadata.created().ok().map(DateTime::<Local>::from))
+        .unwrap_or_else(Local::now);
+
     let frontmatter = Frontmatter {
         title: auto_title,
         r#type: content_type,
-        date: Local::now(),
+        date: recording_date,
         duration,
-        source: match content_type {
-            ContentType::Memo => Some("voice-memo".into()),
-            ContentType::Meeting => None,
-            ContentType::Dictation => Some("dictation".into()),
-        },
+        source,
         status,
         tags: vec![],
         attendees,
         calendar_event: calendar_event_title,
         people,
         entities,
+        device: sidecar.and_then(|s| s.device.clone()),
+        captured_at: sidecar.and_then(|s| s.captured_at),
         context: pre_context,
         action_items: structured_actions,
         decisions: structured_decisions,
         intents: structured_intents,
         recorded_by: config.identity.name.clone(),
         visibility: None,
+        speaker_map,
+        filter_diagnosis: if status == Some(OutputStatus::NoSpeech) {
+            Some(filter_stats.diagnosis())
+        } else {
+            None
+        },
     };
 
     tracing::info!(step = "write", "writing markdown");
     let step_start = std::time::Instant::now();
-    let result = markdown::write(
+    let result = markdown::write_with_retry_path(
         &frontmatter,
         &transcript,
         summary.as_deref(),
         user_notes.as_deref(),
+        Some(audio_path),
         config,
     )?;
-    if let Err(error) =
-        crate::daily_notes::append_backlink(&result, frontmatter.date, summary.as_deref(), config)
-    {
+    // Save per-speaker embeddings as sidecar (for Level 3 confirmed learning)
+    if !diarization_embeddings.is_empty() {
+        crate::voice::save_meeting_embeddings(&result.path, &diarization_embeddings);
+    }
+
+    if let Err(error) = crate::daily_notes::append_backlink(
+        &result,
+        frontmatter.date,
+        summary.as_deref(),
+        Some(&frontmatter),
+        config,
+    ) {
         tracing::warn!(
             error = %error,
             output = %result.path.display(),
@@ -303,6 +1053,16 @@ where
         write_ms,
         serde_json::json!({"output": result.path.display().to_string(), "words": result.word_count}),
     );
+
+    // Emit structured insight events for agent subscription
+    if let Some(ref summary_data) = raw_summary {
+        crate::events::emit_insights_from_summary(
+            summary_data,
+            &result.path.display().to_string(),
+            &result.title,
+            &frontmatter.attendees,
+        );
+    }
 
     // Vault sync (non-fatal — pipeline succeeds regardless)
     match crate::vault::sync_file(&result.path, config) {
@@ -401,10 +1161,35 @@ fn title_from_transcript(transcript: &str) -> Option<String> {
     let candidate = normalize_space(&stripped);
 
     if candidate.is_empty() {
-        None
-    } else {
-        Some(to_display_title(&candidate))
+        return None;
     }
+
+    // Reject titles that are primarily non-Latin — a strong hallucination signal.
+    // Whisper frequently hallucinates CJK/Arabic/Cyrillic text on low-signal audio.
+    // We count Latin-script characters (including accented: é, ñ, ł, ü, etc.)
+    // rather than raw ASCII to avoid rejecting valid European language titles.
+    let alpha_chars: Vec<char> = candidate.chars().filter(|c| c.is_alphabetic()).collect();
+    if !alpha_chars.is_empty() {
+        let latin_count = alpha_chars
+            .iter()
+            .filter(|c| {
+                c.is_ascii_alphabetic()
+                    || ('\u{00C0}'..='\u{024F}').contains(c) // Latin-1 Supplement + Extended-A/B
+                    || ('\u{1E00}'..='\u{1EFF}').contains(c) // Latin Extended Additional
+            })
+            .count();
+        let latin_ratio = latin_count as f64 / alpha_chars.len() as f64;
+        if latin_ratio < 0.5 {
+            tracing::debug!(
+                candidate = %candidate,
+                latin_ratio = latin_ratio,
+                "rejecting non-Latin title as likely hallucination"
+            );
+            return None;
+        }
+    }
+
+    Some(to_display_title(&candidate))
 }
 
 fn clean_transcript_line(line: &str) -> Option<String> {
@@ -986,6 +1771,65 @@ mod tests {
     }
 
     #[test]
+    fn generate_title_rejects_hallucinated_cjk() {
+        // Whisper hallucinates CJK text on silence — title_from_transcript
+        // rejects non-ASCII-dominant candidates, so generate_title falls back
+        // to "Untitled Recording".
+        let transcript = "スパイシー";
+        let title = generate_title(transcript, None);
+        assert_eq!(title, "Untitled Recording");
+    }
+
+    #[test]
+    fn generate_title_rejects_mixed_hallucination() {
+        // Even with a timestamp prefix, the CJK content is rejected.
+        let transcript = "[0:00] スパイシー\n[0:05] 東京タワー";
+        let title = generate_title(transcript, None);
+        assert_eq!(title, "Untitled Recording");
+    }
+
+    #[test]
+    fn generate_title_allows_latin_with_accents() {
+        // Accented Latin characters (French, Spanish, etc.) should be fine.
+        let transcript = "café résumé naïve";
+        let title = generate_title(transcript, None);
+        assert_ne!(title, "Untitled Recording");
+    }
+
+    #[test]
+    fn generate_title_allows_polish_with_extended_latin() {
+        // Polish city name: Łódź has mostly non-ASCII but all Latin-extended chars.
+        let transcript = "Meeting in Łódź about the project";
+        let title = generate_title(transcript, None);
+        assert_ne!(title, "Untitled Recording");
+    }
+
+    #[test]
+    fn generate_title_allows_purely_accented_latin() {
+        // All non-ASCII but entirely Latin-script — must NOT be rejected.
+        // Łódź: Ł(\u{0141}) ó(\u{00F3}) d(ASCII) ź(\u{017A}) — 3/4 extended, 1/4 ASCII
+        let transcript = "Łódź Gdańsk Wrocław";
+        let title = generate_title(transcript, None);
+        assert_ne!(title, "Untitled Recording");
+    }
+
+    #[test]
+    fn generate_title_rejects_cyrillic() {
+        let transcript = "Привет мир";
+        let title = generate_title(transcript, None);
+        assert_eq!(title, "Untitled Recording");
+    }
+
+    #[test]
+    fn generate_title_below_threshold_seam() {
+        // 60% Latin (below 70% strip_foreign_script threshold) but first line is CJK.
+        // title_from_transcript must catch it via Latin-ratio check.
+        let transcript = "[0:00] スパイシー\n[0:05] Hello world\n[0:10] Good morning\n[0:15] 東京\n[0:20] Testing";
+        let title = generate_title(transcript, None);
+        assert_eq!(title, "Untitled Recording");
+    }
+
+    #[test]
     fn build_entity_links_derives_people_and_projects() {
         let action_items = vec![markdown::ActionItem {
             assignee: "mat".into(),
@@ -1032,5 +1876,89 @@ mod tests {
             .projects
             .iter()
             .any(|entity| entity.slug == "advisor-platform"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_post_record_hook_executes_and_receives_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let marker = dir.path().join("hook-ran.txt");
+        let transcript = dir.path().join("test-meeting.md");
+        std::fs::write(&transcript, "test content").unwrap();
+
+        // The hook is invoked as: sh -c '{cmd} "$1"' -- /path/to/transcript.md
+        // So the user's command receives the transcript path as $1.
+        // Use a simple script that copies $1 to the marker location.
+        let script = dir.path().join("hook.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ncp \"$1\" '{}'\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let config = Config {
+            hooks: crate::config::HooksConfig {
+                post_record: Some(script.display().to_string()),
+            },
+            ..Config::default()
+        };
+
+        // Replicate the exact invocation from run_post_record_hook
+        let cmd = config.hooks.post_record.as_ref().unwrap();
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} \"$1\"", cmd))
+            .arg("--")
+            .arg(transcript.display().to_string())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "hook failed (stderr={})", stderr);
+        assert!(marker.exists(), "hook should have created the marker file");
+        let contents = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(contents, "test content");
+    }
+}
+
+/// Execute the post_record hook if configured.
+/// Runs the command asynchronously in the background with the transcript path as argument.
+pub fn run_post_record_hook(config: &Config, transcript_path: &Path) {
+    if let Some(ref command) = config.hooks.post_record {
+        let cmd = command.clone();
+        let path = transcript_path.display().to_string();
+        std::thread::spawn(move || {
+            tracing::info!(command = %cmd, path = %path, "running post_record hook");
+            match std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{} \"$1\"", cmd))
+                .arg("--")
+                .arg(&path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+            {
+                Ok(output) => {
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        tracing::warn!(
+                            command = %cmd,
+                            exit_code = output.status.code(),
+                            stderr = %stderr,
+                            "post_record hook failed"
+                        );
+                    } else {
+                        tracing::info!(command = %cmd, "post_record hook completed");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(command = %cmd, error = %error, "post_record hook spawn failed");
+                }
+            }
+        });
     }
 }

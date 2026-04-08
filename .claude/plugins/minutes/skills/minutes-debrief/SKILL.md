@@ -34,6 +34,16 @@ Use `Read` on the meeting file path. Extract from the transcript and frontmatter
 - **Key discussion points** (from `## Summary` or the transcript itself)
 - **Attendees** (from `attendees:` frontmatter)
 
+### Phase 2b: Check speaker attributions
+
+If the meeting has a `speaker_map:` field in frontmatter, check the confidence levels:
+
+- **All High confidence**: Speakers are confirmed — use real names throughout the debrief.
+- **Any Medium confidence**: Note this — "Speakers were auto-identified (medium confidence). If the names look wrong, run: `minutes confirm --meeting <path>`"
+- **No speaker_map but has SPEAKER_X labels**: The meeting has diarization but no attribution — suggest: "I see anonymous speaker labels. If you know who was in this meeting, run `minutes confirm --meeting <path>` to tag them."
+
+This nudge is brief (one line) — don't make it a blocker.
+
 ### Phase 3: Check for matching prep
 
 Look for a prep file that matches this meeting:

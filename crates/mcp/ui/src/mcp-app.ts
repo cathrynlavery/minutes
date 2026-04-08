@@ -35,7 +35,7 @@ let currentDetailData: { content: string; path: string; title: string } | null =
 let activeFilter: "all" | "meeting" | "memo" = "all";
 let recordingPollTimer: ReturnType<typeof setInterval> | null = null;
 
-const VIEWS = ["loading", "error", "dashboard", "detail", "person", "report"] as const;
+const VIEWS = ["loading", "error", "dashboard", "detail", "person", "people-map", "report"] as const;
 type View = (typeof VIEWS)[number];
 
 function showView(view: View) {
@@ -252,10 +252,27 @@ $("filter-input").addEventListener("input", applyFilter);
 
 // Type toggles
 document.querySelectorAll(".filter-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
+  btn.addEventListener("click", async () => {
+    const filter = (btn as HTMLElement).dataset.filter;
+
+    // People tab → load relationship map
+    if (filter === "people") {
+      document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      showView("loading");
+      $("loading-text").textContent = "Loading people...";
+      try {
+        const result = await app.callServerTool({ name: "relationship_map", arguments: {} });
+        handleToolResult(result);
+      } catch (e: any) {
+        showError(e.message || "Failed to load people");
+      }
+      return;
+    }
+
     document.querySelectorAll(".filter-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    activeFilter = (btn as HTMLElement).dataset.filter as any;
+    activeFilter = filter as any;
     applyFilter();
   });
 });
@@ -560,6 +577,80 @@ function renderPerson(data: any) {
   showView("person");
 }
 
+// ─── View: People Map ─────────────────────────────────────────────────────────
+
+function renderPeopleMap(people: any[]) {
+  const total = people.length;
+  const losingCount = people.filter((p) => p.losing_touch).length;
+  const withCommitments = people.filter((p) => p.open_commitments > 0).length;
+
+  setInner(
+    $("people-header"),
+    `<h2>People</h2>
+    <div class="stats-bar">
+      <div class="stat"><span class="stat-value">${total}</span><span class="stat-label">Contacts</span></div>
+      <div class="stat"><span class="stat-value">${withCommitments}</span><span class="stat-label">With Commitments</span></div>
+      ${losingCount > 0 ? `<div class="stat stat-warn"><span class="stat-value">${losingCount}</span><span class="stat-label">Losing Touch</span></div>` : ""}
+    </div>`,
+  );
+
+  const cards = people.map((p) => {
+    const daysSince = Math.round(p.days_since || 0);
+    const last = daysSince < 1 ? "today" : daysSince < 2 ? "yesterday" : `${daysSince}d ago`;
+    const topics = (p.top_topics || []).slice(0, 3).join(", ");
+    const statusClass = p.losing_touch ? "losing-touch" : p.open_commitments > 0 ? "has-commitments" : "clear";
+    const statusText = p.losing_touch
+      ? "⚠ losing touch"
+      : p.open_commitments > 0
+        ? `${p.open_commitments} commitment${p.open_commitments !== 1 ? "s" : ""}`
+        : "✓ all clear";
+
+    return `
+    <div class="person-card ${statusClass}" data-name="${escapeAttr(p.name || "")}">
+      <div class="person-card-name">${escapeHtml(p.name || "Unknown")}</div>
+      <div class="person-card-meta">
+        <span>${p.meeting_count || 0} meeting${(p.meeting_count || 0) !== 1 ? "s" : ""}</span>
+        <span>last: ${escapeHtml(last)}</span>
+      </div>
+      ${topics ? `<div class="person-card-topics">${escapeHtml(topics)}</div>` : ""}
+      <div class="person-card-status ${statusClass}">${statusText}</div>
+      <div class="person-card-score">score: ${(p.score || 0).toFixed(1)}</div>
+    </div>`;
+  });
+
+  setInner($("people-grid"), cards.join(""));
+
+  // Click → person profile
+  $("people-grid").querySelectorAll(".person-card").forEach((card) => {
+    card.addEventListener("click", async () => {
+      const name = (card as HTMLElement).dataset.name;
+      if (!name) return;
+      showView("loading");
+      $("loading-text").textContent = `Loading ${name}...`;
+      try {
+        const result = await app.callServerTool({ name: "get_person_profile", arguments: { name } });
+        handleToolResult(result);
+      } catch (e: any) {
+        showError(e.message || "Failed to load person");
+      }
+    });
+  });
+
+  // Empty state
+  if (people.length === 0) {
+    setInner($("people-grid"), `<div class="empty-state">No people found. Record some meetings, then click People again.</div>`);
+  }
+
+  // Back button → return to dashboard
+  $("people-back-btn").onclick = () => {
+    if (cachedDashboardData) {
+      renderDashboard(cachedDashboardData);
+    }
+  };
+
+  showView("people-map");
+}
+
 // ─── View: Report ─────────────────────────────────────────────────────────────
 
 function renderReport(data: any) {
@@ -650,6 +741,10 @@ function handleToolResult(result: CallToolResult) {
       break;
     case "person":
       renderPerson(data);
+      break;
+    case "relationship_map":
+    case "commitments":
+      renderPeopleMap(data.people || []);
       break;
     case "report":
       renderReport(data);

@@ -8,10 +8,87 @@ use tauri::{
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
+mod call_capture;
 mod call_detect;
 mod commands;
 mod context;
+mod palette_dispatch;
 mod pty;
+mod shortcut_manager;
+
+#[cfg(target_os = "macos")]
+fn maybe_run_hotkey_diagnostic() -> Option<i32> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if !args.iter().any(|arg| arg == "--diagnose-hotkey") {
+        return None;
+    }
+
+    let mut keycode = minutes_core::hotkey_macos::KEYCODE_CAPS_LOCK;
+    let mut output_path: Option<std::path::PathBuf> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--diagnose-hotkey-keycode" {
+            if let Some(value) = iter.next() {
+                if let Ok(parsed) = value.parse::<i64>() {
+                    keycode = parsed;
+                }
+            }
+        } else if arg == "--diagnose-hotkey-output" {
+            if let Some(value) = iter.next() {
+                output_path = Some(std::path::PathBuf::from(value));
+            }
+        } else if let Some(value) = arg.strip_prefix("--diagnose-hotkey-keycode=") {
+            if let Ok(parsed) = value.parse::<i64>() {
+                keycode = parsed;
+            }
+        } else if let Some(value) = arg.strip_prefix("--diagnose-hotkey-output=") {
+            output_path = Some(std::path::PathBuf::from(value));
+        }
+    }
+
+    let probe = minutes_core::hotkey_macos::probe_hotkey_monitor(
+        keycode,
+        std::time::Duration::from_millis(1200),
+    );
+    let current_exe = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string());
+    let bundle_root = current_exe.as_ref().and_then(|path| {
+        path.strip_suffix("/Contents/MacOS/minutes-app")
+            .map(|root| root.to_string())
+    });
+
+    let payload = serde_json::json!({
+        "mode": "diagnose-hotkey",
+        "current_exe": current_exe,
+        "bundle_root": bundle_root,
+        "probe": probe,
+    });
+
+    match serde_json::to_string_pretty(&payload) {
+        Ok(json) => {
+            if let Some(path) = output_path {
+                if let Some(parent) = path.parent() {
+                    if let Err(error) = std::fs::create_dir_all(parent) {
+                        eprintln!("failed to create diagnostic output directory: {}", error);
+                        return Some(1);
+                    }
+                }
+                if let Err(error) = std::fs::write(&path, &json) {
+                    eprintln!("failed to write hotkey diagnostic: {}", error);
+                    return Some(1);
+                }
+            }
+            println!("{}", json);
+        }
+        Err(error) => {
+            eprintln!("failed to encode hotkey diagnostic: {}", error);
+            return Some(1);
+        }
+    }
+
+    Some(if probe.status == "active" { 0 } else { 2 })
+}
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
@@ -19,14 +96,22 @@ fn show_main_window(app: &tauri::AppHandle) {
         win.set_focus().ok();
         return;
     }
-    let _win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+    if let Ok(win) = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Minutes")
         .inner_size(480.0, 640.0)
         .min_inner_size(380.0, 480.0)
+        .transparent(true)
         .content_protected(true)
         .center()
         .focused(true)
-        .build();
+        .build()
+    {
+        #[cfg(target_os = "macos")]
+        {
+            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+            apply_vibrancy(&win, NSVisualEffectMaterial::Sidebar, None, None).ok();
+        }
+    }
 }
 
 fn show_note_window(app: &tauri::AppHandle) {
@@ -83,23 +168,96 @@ pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &st
 
 /// Update tray to reflect recording state
 pub fn update_tray_state(app: &tauri::AppHandle, is_recording: bool) {
+    update_tray_state_with_mode(app, is_recording, false);
+}
+
+pub fn update_tray_state_with_mode(app: &tauri::AppHandle, is_active: bool, is_live: bool) {
     if let Some(tray) = app.tray_by_id("minutes-tray") {
-        let icon_bytes: &[u8] = if is_recording {
+        let icon_bytes: &[u8] = if is_live {
+            include_bytes!("../icons/icon-live.png")
+        } else if is_active {
             include_bytes!("../icons/icon-recording.png")
         } else {
             include_bytes!("../icons/icon.png")
         };
         if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
             tray.set_icon(Some(icon)).ok();
-            tray.set_icon_as_template(!is_recording).ok();
+            tray.set_icon_as_template(!is_active).ok();
         }
-        tray.set_tooltip(Some(if is_recording {
+        let tooltip = if is_live {
+            "Minutes — Live Transcribing..."
+        } else if is_active {
             "Minutes — Recording..."
         } else {
             "Minutes"
-        }))
-        .ok();
+        };
+        tray.set_tooltip(Some(tooltip)).ok();
     }
+}
+
+// ── Auto-updater ────────────────────────────────────────────
+
+async fn check_for_update(app: &tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("[updater] init failed (non-fatal): {}", e);
+            return;
+        }
+    };
+
+    let update = match updater.check().await {
+        Ok(Some(u)) => u,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("[updater] check failed (non-fatal): {}", e);
+            return;
+        }
+    };
+
+    let version = update.version.clone();
+    let body = update.body.clone().unwrap_or_default();
+    eprintln!(
+        "[updater] v{} available (check only, no download yet)",
+        version
+    );
+
+    // Store pending update info in AppState
+    if let Some(state) = app.try_state::<commands::AppState>() {
+        if let Ok(mut pending) = state.pending_update.lock() {
+            *pending = Some(commands::PendingUpdate {
+                version: version.clone(),
+                body: body.clone(),
+            });
+        }
+
+        // Defer notification if any session activity is in progress.
+        // The pending_update is stored either way, so it will be surfaced
+        // by the 30s deferred poll once the session ends.
+        if state.recording.load(Ordering::Relaxed)
+            || state.starting.load(Ordering::Relaxed)
+            || state.processing.load(Ordering::Relaxed)
+            || state.live_transcript_active.load(Ordering::Relaxed)
+            || state.dictation_active.load(Ordering::Relaxed)
+        {
+            eprintln!("[updater] deferring notification (session active)");
+            return;
+        }
+    }
+
+    notify_update_available(app, &version, &body);
+}
+
+fn notify_update_available(app: &tauri::AppHandle, version: &str, body: &str) {
+    let _ = app.emit(
+        "update-ready",
+        serde_json::json!({
+            "version": version,
+            "body": body,
+        }),
+    );
 }
 
 // ── Calendar items in tray menu ──────────────────────────────
@@ -139,7 +297,7 @@ fn format_calendar_label(event: &minutes_core::calendar::CalendarEvent) -> Strin
 fn show_meeting_prompt(app: &tauri::AppHandle, event: &minutes_core::calendar::CalendarEvent) {
     // Don't show if already recording
     if let Some(state) = app.try_state::<commands::AppState>() {
-        if state.recording.load(Ordering::Relaxed) || state.processing.load(Ordering::Relaxed) {
+        if state.recording.load(Ordering::Relaxed) {
             return;
         }
     }
@@ -285,6 +443,12 @@ fn refresh_calendar_items(
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Some(code) = maybe_run_hotkey_diagnostic() {
+        std::process::exit(code);
+    }
+
+    let startup_config_snapshot = minutes_core::config::Config::load();
     let recording = Arc::new(AtomicBool::new(false));
     let starting = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -295,6 +459,10 @@ fn main() {
     let global_hotkey_enabled = Arc::new(AtomicBool::new(false));
     let global_hotkey_shortcut =
         Arc::new(Mutex::new(commands::default_hotkey_shortcut().to_string()));
+    let dictation_shortcut_enabled = Arc::new(AtomicBool::new(false));
+    let dictation_shortcut = Arc::new(Mutex::new(
+        startup_config_snapshot.dictation.shortcut.clone(),
+    ));
     let hotkey_runtime = Arc::new(Mutex::new(commands::HotkeyRuntime::default()));
     let discard_short_hotkey_capture = Arc::new(AtomicBool::new(false));
     let screen_share_hidden = Arc::new(AtomicBool::new(true));
@@ -306,13 +474,105 @@ fn main() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    commands::handle_global_hotkey_event(app, event.state());
+                .with_handler(|app, shortcut, event| {
+                    use tauri::Manager;
+                    let shortcut_id = shortcut.id();
+
+                    // Try the new unified shortcut manager first.
+                    // IMPORTANT: Extract the action under the lock, then execute
+                    // AFTER dropping it to avoid deadlock.
+                    type UnifiedResult = Option<(
+                        shortcut_manager::ShortcutSlot,
+                        Option<shortcut_manager::StateMachineAction>,
+                        Option<(shortcut_manager::ShortcutSlot, u64)>,
+                    )>;
+                    let unified_result: UnifiedResult = {
+                        if let Some(mgr_state) =
+                            app.try_state::<Arc<Mutex<shortcut_manager::ShortcutManager>>>()
+                        {
+                            if let Ok(mut mgr) = mgr_state.lock() {
+                                if let Some(slot) = mgr.find_slot_for_shortcut_id(shortcut_id) {
+                                    match event.state() {
+                                        tauri_plugin_global_shortcut::ShortcutState::Pressed => {
+                                            let hold_info = mgr.handle_press(slot);
+                                            Some((slot, None, hold_info))
+                                        }
+                                        tauri_plugin_global_shortcut::ShortcutState::Released => {
+                                            let session_active =
+                                                shortcut_manager::is_slot_session_active_fast(
+                                                    app, slot,
+                                                );
+                                            let (_s, action) =
+                                                mgr.handle_release(slot, session_active);
+                                            Some((slot, Some(action), None))
+                                        }
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }; // lock dropped here
+
+                    if let Some((slot, action, hold_info)) = unified_result {
+                        if let Some(action) = action {
+                            shortcut_manager::execute_action(app, slot, action);
+                        }
+                        if let Some((slot, generation)) = hold_info {
+                            shortcut_manager::schedule_hold_check(app, slot, generation);
+                        }
+                        return;
+                    }
+
+                    // Fall through to legacy handlers for shortcuts registered by old code
+                    let state = app.state::<commands::AppState>();
+                    let dictation_shortcut_value = state
+                        .dictation_shortcut
+                        .lock()
+                        .ok()
+                        .map(|value| value.clone())
+                        .unwrap_or_else(|| commands::default_dictation_shortcut().to_string());
+                    let dictation_shortcut_id =
+                        <tauri_plugin_global_shortcut::Shortcut as std::str::FromStr>::from_str(
+                            dictation_shortcut_value.as_str(),
+                        )
+                        .ok()
+                        .map(|shortcut| shortcut.id());
+                    let live_shortcut_value = state
+                        .live_shortcut
+                        .lock()
+                        .ok()
+                        .map(|value| value.clone())
+                        .unwrap_or_else(|| "CmdOrCtrl+Shift+L".to_string());
+                    let live_shortcut_id =
+                        <tauri_plugin_global_shortcut::Shortcut as std::str::FromStr>::from_str(
+                            live_shortcut_value.as_str(),
+                        )
+                        .ok()
+                        .map(|shortcut| shortcut.id());
+
+                    if Some(shortcut_id) == dictation_shortcut_id {
+                        commands::handle_dictation_shortcut_event(app, event.state());
+                    } else if Some(shortcut_id) == live_shortcut_id {
+                        commands::handle_live_shortcut_event(app, event.state());
+                    } else {
+                        commands::handle_global_hotkey_event(app, event.state());
+                    }
                 })
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::AppState {
             recording: recording.clone(),
             starting: starting.clone(),
@@ -320,22 +580,158 @@ fn main() {
             processing: processing.clone(),
             processing_stage: processing_stage.clone(),
             latest_output: latest_output.clone(),
+            call_capture_health: Arc::new(Mutex::new(None)),
             completion_notifications_enabled: completion_notifications_enabled.clone(),
             global_hotkey_enabled: global_hotkey_enabled.clone(),
             global_hotkey_shortcut: global_hotkey_shortcut.clone(),
+            dictation_shortcut_enabled: dictation_shortcut_enabled.clone(),
+            dictation_shortcut: dictation_shortcut.clone(),
             hotkey_runtime: hotkey_runtime.clone(),
             discard_short_hotkey_capture: discard_short_hotkey_capture.clone(),
             pty_manager: Arc::new(Mutex::new(pty::PtyManager::default())),
+            dictation_active: Arc::new(AtomicBool::new(false)),
             dictation_stop_flag: Arc::new(AtomicBool::new(false)),
+            live_transcript_active: Arc::new(AtomicBool::new(false)),
+            live_transcript_stop_flag: Arc::new(AtomicBool::new(false)),
+            live_shortcut_enabled: {
+                let cfg = minutes_core::config::Config::load();
+                Arc::new(AtomicBool::new(cfg.live_transcript.shortcut_enabled))
+            },
+            live_shortcut: {
+                let cfg = minutes_core::config::Config::load();
+                let s = if cfg.live_transcript.shortcut.is_empty() {
+                    "CmdOrCtrl+Shift+L".to_string()
+                } else {
+                    cfg.live_transcript.shortcut.clone()
+                };
+                Arc::new(Mutex::new(s))
+            },
+            pending_update: Arc::new(Mutex::new(None)),
         })
+        .manage(Arc::new(Mutex::new(
+            shortcut_manager::ShortcutManager::new(),
+        )))
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
+            let startup_config = minutes_core::config::Config::load();
 
             // Clean up stale terminal workspaces from previous sessions
             context::cleanup_stale_workspaces();
 
+            // Auto-update: check on launch, then every 6 hours.
+            // Check-only (no download). Download happens when user clicks "Restart Now".
+            // Defers notification if recording/live/dictation is active.
+            // Between checks, polls every 30s to surface deferred updates once sessions end.
+            let update_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                const CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
+                const DEFERRED_POLL_SECS: u64 = 30;
+
+                loop {
+                    tauri::async_runtime::block_on(check_for_update(&update_handle));
+
+                    let polls = CHECK_INTERVAL_SECS / DEFERRED_POLL_SECS;
+                    for _ in 0..polls {
+                        std::thread::sleep(std::time::Duration::from_secs(DEFERRED_POLL_SECS));
+                        commands::surface_deferred_update(&update_handle);
+                    }
+                }
+            });
+
+            // Preload whisper model for dictation in background thread.
+            // Only if dictation shortcuts are enabled — avoids 150MB RAM for
+            // users who never use dictation.
+            if startup_config.dictation.shortcut_enabled || startup_config.dictation.hotkey_enabled
+            {
+                let preload_config = startup_config.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = minutes_core::dictation::preload_model(&preload_config) {
+                        eprintln!("[dictation] model preload failed (non-fatal): {}", e);
+                    }
+                });
+            }
+
             // Create main window on launch
             show_main_window(app.handle());
+
+            if minutes_core::jobs::active_job_count() > 0 {
+                commands::spawn_processing_worker(
+                    app.handle().clone(),
+                    processing.clone(),
+                    processing_stage.clone(),
+                    latest_output.clone(),
+                    completion_notifications_enabled.clone(),
+                );
+            }
+
+            // Restore dictation shortcut via the unified ShortcutManager.
+            // This replaces the old dual-path (legacy hotkey + legacy standard shortcut).
+            {
+                let cfg = &startup_config;
+                let app_handle = app.handle().clone();
+                if cfg.dictation.hotkey_enabled || cfg.dictation.shortcut_enabled {
+                    let (shortcut, keycode) = if cfg.dictation.hotkey_enabled {
+                        let kc = cfg.dictation.hotkey_keycode;
+                        let label = if kc == 57 {
+                            "CapsLock"
+                        } else if kc == 63 {
+                            "fn"
+                        } else {
+                            "CapsLock"
+                        };
+                        (label.to_string(), kc)
+                    } else {
+                        (cfg.dictation.shortcut.clone(), -1i64)
+                    };
+                    let register_result = {
+                        let mgr_state =
+                            app_handle.state::<Arc<Mutex<shortcut_manager::ShortcutManager>>>();
+                        let mut mgr = match mgr_state.lock() {
+                            Ok(mgr) => mgr,
+                            Err(_) => {
+                                eprintln!("[shortcut_manager] mutex poisoned at startup");
+                                return Ok(());
+                            }
+                        };
+                        mgr.register(
+                            shortcut_manager::ShortcutSlot::Dictation,
+                            shortcut.clone(),
+                            keycode,
+                            &app_handle,
+                        )
+                    };
+                    match register_result {
+                        Ok(_) => {
+                            dictation_shortcut_enabled.store(true, Ordering::Relaxed);
+                            if let Ok(mut current) = dictation_shortcut.lock() {
+                                *current = shortcut;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[shortcut_manager] startup restore dictation failed: {}", e);
+                        }
+                    }
+                }
+            }
+
+            // Restore live transcript shortcut from config
+            if startup_config.live_transcript.shortcut_enabled {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let shortcut = if startup_config.live_transcript.shortcut.is_empty() {
+                    "CmdOrCtrl+Shift+L".to_string()
+                } else {
+                    startup_config.live_transcript.shortcut.clone()
+                };
+                if let Err(e) = app.global_shortcut().register(shortcut.as_str()) {
+                    eprintln!("[live-shortcut] startup restore failed: {}", e);
+                } else {
+                    let state = app.state::<commands::AppState>();
+                    state.live_shortcut_enabled.store(true, Ordering::Relaxed);
+                    if let Ok(mut current) = state.live_shortcut.lock() {
+                        *current = shortcut;
+                    };
+                }
+            }
 
             // Calendar state for dynamic tray menu items
             let cal_state = Arc::new(std::sync::Mutex::new(CalendarMenuState {
@@ -398,28 +794,32 @@ fn main() {
                 None::<&str>,
             )?;
             let screen_share_item_ref = screen_share_item.clone();
+            let check_update_item = MenuItem::with_id(
+                app,
+                "check-for-updates",
+                "Check for Updates",
+                true,
+                None::<&str>,
+            )?;
             let sep2 = MenuItem::with_id(app, "sep2", "──────────", false, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Minutes", true, None::<&str>)?;
 
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &open_item,
-                    &sep0,
-                    &record_item,
-                    &quick_thought_item,
-                    &stop_item,
-                    &sep,
-                    &note_item,
-                    &assistant_item,
-                    &list_item,
-                    &paste_summary_item,
-                    &paste_transcript_item,
-                    &sep2,
-                    &screen_share_item,
-                    &quit_item,
-                ],
-            )?;
+            let menu = Menu::new(app)?;
+            menu.append_items(&[
+                &open_item,
+                &sep0,
+                &record_item,
+                &quick_thought_item,
+                &stop_item,
+                &sep,
+                &note_item,
+                &assistant_item,
+                &list_item,
+            ])?;
+            if commands::supports_tray_artifact_copy() {
+                menu.append_items(&[&paste_summary_item, &paste_transcript_item])?;
+            }
+            menu.append_items(&[&sep2, &screen_share_item, &check_update_item, &quit_item])?;
 
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("load tray icon");
@@ -451,29 +851,21 @@ fn main() {
                             stp_item.set_enabled(true).ok();
                             let app_handle = app.clone();
                             let app_done = app.clone();
-                            let rec = recording.clone();
-                            let starting = starting.clone();
-                            let sf = stop.clone();
-                            let processing = processing.clone();
-                            let processing_stage = processing_stage.clone();
-                            let latest_output = latest_output.clone();
-                            let completion_notifications_enabled =
-                                completion_notifications_enabled.clone();
                             let ri = rec_item.clone();
                             let si = stp_item.clone();
                             std::thread::spawn(move || {
-                                commands::start_recording(
-                                    app_handle,
-                                    rec,
-                                    starting,
-                                    sf,
-                                    processing,
-                                    processing_stage,
-                                    latest_output,
-                                    completion_notifications_enabled,
-                                    None,
-                                    None,
+                                let app_for_launch = app_handle.clone();
+                                let state = app_handle.state::<commands::AppState>();
+                                let _ = commands::launch_recording(
+                                    app_for_launch,
+                                    &state,
                                     minutes_core::CaptureMode::Meeting,
+                                    None,
+                                    false,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
                                 );
                                 ri.set_text("Start Recording").ok();
                                 ri.set_enabled(true).ok();
@@ -492,30 +884,22 @@ fn main() {
                             stp_item.set_enabled(true).ok();
                             let app_handle = app.clone();
                             let app_done = app.clone();
-                            let rec = recording.clone();
-                            let starting = starting.clone();
-                            let sf = stop.clone();
-                            let processing = processing.clone();
-                            let processing_stage = processing_stage.clone();
-                            let latest_output = latest_output.clone();
-                            let completion_notifications_enabled =
-                                completion_notifications_enabled.clone();
                             let ri = rec_item.clone();
                             let qi = quick_item.clone();
                             let si = stp_item.clone();
                             std::thread::spawn(move || {
-                                commands::start_recording(
-                                    app_handle,
-                                    rec,
-                                    starting,
-                                    sf,
-                                    processing,
-                                    processing_stage,
-                                    latest_output,
-                                    completion_notifications_enabled,
-                                    None,
-                                    None,
+                                let app_for_launch = app_handle.clone();
+                                let state = app_handle.state::<commands::AppState>();
+                                let _ = commands::launch_recording(
+                                    app_for_launch,
+                                    &state,
                                     minutes_core::CaptureMode::QuickThought,
+                                    Some(minutes_core::capture::RecordingIntent::Memo),
+                                    false,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
                                 );
                                 ri.set_text("Start Recording").ok();
                                 ri.set_enabled(true).ok();
@@ -564,14 +948,21 @@ fn main() {
                                     None,
                                     None,
                                 ) {
-                                    commands::show_user_notification("AI Assistant", &err);
+                                    commands::show_user_notification(
+                                        &app_handle,
+                                        "AI Assistant",
+                                        &err,
+                                    );
                                 }
                             });
                         }
                         "list" => {
-                            let meetings_dir =
-                                dirs::home_dir().unwrap_or_default().join("meetings");
-                            let _ = std::process::Command::new("open").arg(meetings_dir).spawn();
+                            let meetings_dir = minutes_core::config::Config::load().output_dir;
+                            if let Err(err) =
+                                commands::open_target(app, &meetings_dir.display().to_string())
+                            {
+                                commands::show_user_notification(app, "Meetings", &err);
+                            }
                         }
                         "paste-summary" | "paste-transcript" => {
                             let target_app = commands::frontmost_application_name();
@@ -587,12 +978,14 @@ fn main() {
                             ) {
                                 Ok(message) => {
                                     commands::show_user_notification(
+                                        app,
                                         &format!("Latest {}", kind),
                                         &message,
                                     );
                                 }
                                 Err(err) => {
                                     commands::show_user_notification(
+                                        app,
                                         &format!("Latest {}", kind),
                                         &err,
                                     );
@@ -619,6 +1012,12 @@ fn main() {
                             for (_, win) in app.webview_windows() {
                                 win.set_content_protected(new_state).ok();
                             }
+                        }
+                        "check-for-updates" => {
+                            let handle = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                check_for_update(&handle).await;
+                            });
                         }
                         "quit" => {
                             // Kill all PTY sessions before exiting
@@ -650,29 +1049,21 @@ fn main() {
                             stp_item.set_enabled(true).ok();
                             let app_handle = app.clone();
                             let app_done = app.clone();
-                            let rec = recording.clone();
-                            let starting = starting.clone();
-                            let sf = stop.clone();
-                            let processing = processing.clone();
-                            let processing_stage = processing_stage.clone();
-                            let latest_output = latest_output.clone();
-                            let completion_notifications_enabled =
-                                completion_notifications_enabled.clone();
                             let ri = rec_item.clone();
                             let si = stp_item.clone();
                             std::thread::spawn(move || {
-                                commands::start_recording(
-                                    app_handle,
-                                    rec,
-                                    starting,
-                                    sf,
-                                    processing,
-                                    processing_stage,
-                                    latest_output,
-                                    completion_notifications_enabled,
-                                    None,
-                                    None,
+                                let app_for_launch = app_handle.clone();
+                                let state = app_handle.state::<commands::AppState>();
+                                let _ = commands::launch_recording(
+                                    app_for_launch,
+                                    &state,
                                     minutes_core::CaptureMode::Meeting,
+                                    None,
+                                    false,
+                                    None,
+                                    None,
+                                    None,
+                                    None,
                                 );
                                 ri.set_text("Start Recording").ok();
                                 ri.set_enabled(true).ok();
@@ -689,7 +1080,7 @@ fn main() {
             update_tray_state(app.handle(), initial_recording);
 
             // Start call detection background loop
-            {
+            if commands::supports_call_detection() {
                 let config = minutes_core::config::Config::load();
                 let detector = Arc::new(call_detect::CallDetector::new(config.call_detection));
                 detector.start(
@@ -699,17 +1090,74 @@ fn main() {
                 );
             }
 
+            let app_control = app.handle().clone();
+            std::thread::spawn(move || loop {
+                let status = minutes_core::desktop_control::DesktopAppStatus {
+                    pid: std::process::id(),
+                    updated_at: chrono::Local::now(),
+                    platform: std::env::consts::OS.into(),
+                };
+                minutes_core::desktop_control::write_desktop_app_status(&status).ok();
+
+                let pending = minutes_core::desktop_control::claim_pending_requests(
+                    &std::process::id().to_string(),
+                );
+                if !pending.is_empty() {
+                    let state = app_control.state::<commands::AppState>();
+                    for claimed in pending {
+                        let response = commands::handle_desktop_control_request(
+                            app_control.clone(),
+                            &state,
+                            claimed.request.clone(),
+                        );
+                        minutes_core::desktop_control::write_response(&response).ok();
+                        minutes_core::desktop_control::finish_claimed_request(&claimed.claim_path)
+                            .ok();
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            });
+
             // Calendar items in tray menu — refresh every minute
             // Delay first refresh so the app window is interactive before
             // osascript Calendar queries block the main-thread menu updates.
-            {
+            if commands::supports_calendar_integration() && startup_config.calendar.enabled {
                 let app_cal = app.handle().clone();
                 let menu_cal = menu.clone();
                 let cal_timer = cal_state.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(3));
+                    let mut consecutive_timeouts: u32 = 0;
+                    let mut backoff_secs: u64 = 300; // starts at 5 min
                     loop {
+                        // Circuit breaker: back off with escalating delays.
+                        // Calendar.app can hang on CalDAV sync or TCC prompts.
+                        // After 2 failures, back off. Each cycle doubles the
+                        // backoff (5 min → 10 min → 20 min, capped at 30 min).
+                        if consecutive_timeouts >= 2 {
+                            eprintln!(
+                                "[calendar] {} consecutive timeouts, backing off {}s",
+                                consecutive_timeouts, backoff_secs
+                            );
+                            std::thread::sleep(std::time::Duration::from_secs(backoff_secs));
+                            backoff_secs = (backoff_secs * 2).min(1800); // cap at 30 min
+                                                                         // Don't reset counter — one more failure keeps escalating
+                        }
+
+                        let start = std::time::Instant::now();
                         refresh_calendar_items(&app_cal, &menu_cal, &cal_timer);
+                        let elapsed = start.elapsed();
+
+                        // Subprocess timeout is 3s; anything over 2s means Calendar.app
+                        // is unhealthy or hung.
+                        if elapsed >= std::time::Duration::from_secs(2) {
+                            consecutive_timeouts += 1;
+                        } else {
+                            consecutive_timeouts = 0;
+                            backoff_secs = 300; // reset backoff on success
+                        }
+
                         std::thread::sleep(std::time::Duration::from_secs(CALENDAR_REFRESH_SECS));
                     }
                 });
@@ -729,20 +1177,30 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::cmd_status,
+            commands::cmd_processing_jobs,
             commands::cmd_list_meetings,
             commands::cmd_search,
             commands::cmd_add_note,
             commands::cmd_start_recording,
             commands::cmd_stop_recording,
+            commands::cmd_extend_recording,
             commands::cmd_open_file,
             commands::cmd_clear_latest_output,
             commands::cmd_set_completion_notifications,
             commands::cmd_global_hotkey_settings,
             commands::cmd_set_global_hotkey,
+            commands::cmd_dictation_shortcut_settings,
+            commands::cmd_set_dictation_shortcut,
+            commands::cmd_desktop_capabilities,
             commands::cmd_permission_center,
             commands::cmd_recovery_items,
             commands::cmd_retry_recovery,
+            commands::cmd_retry_processing_job,
+            commands::cmd_list_devices,
+            commands::cmd_delete_meeting,
             commands::cmd_get_meeting_detail,
+            commands::cmd_list_voices,
+            commands::cmd_confirm_speaker,
             commands::cmd_needs_setup,
             commands::cmd_download_model,
             commands::cmd_upcoming_meetings,
@@ -754,6 +1212,8 @@ fn main() {
             commands::cmd_terminal_info,
             commands::cmd_get_settings,
             commands::cmd_set_setting,
+            commands::cmd_get_autostart,
+            commands::cmd_set_autostart,
             commands::cmd_get_storage_stats,
             commands::cmd_vault_status,
             commands::cmd_vault_setup,
@@ -765,6 +1225,18 @@ fn main() {
             commands::cmd_dictation_hotkey_status,
             commands::cmd_check_accessibility,
             commands::cmd_request_accessibility,
+            commands::cmd_set_shortcut,
+            commands::cmd_shortcut_status,
+            commands::cmd_suspend_shortcut,
+            commands::cmd_probe_shortcut,
+            commands::cmd_start_live_transcript,
+            commands::cmd_stop_live_transcript,
+            commands::cmd_live_transcript_status,
+            commands::cmd_live_shortcut_settings,
+            commands::cmd_set_live_shortcut,
+            commands::cmd_install_update,
+            palette_dispatch::palette_list,
+            palette_dispatch::palette_execute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running minutes app");

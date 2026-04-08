@@ -1,24 +1,42 @@
 {
   "manifest_version": "0.3",
   "name": "minutes",
-  "display_name": "Minutes — Meeting Memory for AI",
-  "description": "Record, transcribe, search, and remember every meeting and voice memo. Privacy-first, local-only transcription with whisper.cpp.",
-  "long_description": "Minutes is a conversation memory layer for AI assistants. It captures any audio (meetings, voice memos, brain dumps), transcribes locally with whisper.cpp, diarizes speakers, and outputs searchable markdown with structured action items and decisions.\n\n**Record & Transcribe:**\n• Start/stop live meeting recordings\n• Process audio files (WAV, M4A, MP3, OGG)\n• Local transcription — nothing leaves your machine\n\n**Search & Query:**\n• Full-text search across all meetings\n• Find open action items by assignee\n• Track decisions and commitments\n• Person profiles across meetings\n• Cross-meeting topic research\n\n**Agent-Friendly:**\n• MCP resources for stable context (recent meetings, action items, events)\n• JSON Schema for meeting format validation\n• Event log for reactive agent workflows\n• Structured YAML frontmatter on all output",
-  "version": "0.3.0",
+  "display_name": "Minutes \u2014 Meeting Memory for AI",
+  "description": "Record meetings and voice memos, transcribe locally with whisper.cpp, search across everything. 24 tools, fully offline — nothing leaves your machine.",
+  "long_description": "Minutes gives your AI assistant a memory of every meeting and voice memo. Record, transcribe, search, and query — all processed locally on your machine. Works with any MCP client: Claude Desktop, Claude Code, Codex, Gemini CLI, and more.\n\n24 tools \u2022 6 resources \u2022 Interactive MCP App dashboard \u2022 6 prompt templates\n\n**Setup:** `npx minutes-mcp` is all you need to start \u2014 search, browsing, and the dashboard work immediately with zero setup. For recording and transcription, the server auto-installs the CLI binary on first use (or install manually via `brew install silverstein/tap/minutes` or `cargo install minutes-cli`). Then run `minutes setup --model tiny` (75MB speech model) and optionally `minutes setup --diarization` (~34MB speaker ID models).\n\n**Record & Transcribe:**\n\u2022 Start/stop live meeting recordings\n\u2022 Process audio files (WAV, M4A, MP3, OGG)\n\u2022 Local transcription \u2014 nothing leaves your machine\n\u2022 Speaker diarization \u2014 native, no Python required\n\u2022 Language selection \u2014 force a specific language for similar-sounding languages (e.g. Urdu vs Hindi)\n\u2022 Dictation mode \u2014 speak to clipboard and daily notes\n\u2022 Live transcript \u2014 real-time transcription with delta reads for mid-meeting AI coaching\n\n**Search & Query:**\n\u2022 Full-text search across all meetings\n\u2022 Find open action items by assignee\n\u2022 Track decisions and commitments\n\u2022 Cross-meeting topic research\n\n**Relationship Intelligence:**\n\u2022 Person profiles across all meetings\n\u2022 Relationship map with losing-touch alerts\n\u2022 Commitment tracking by person\n\u2022 Consistency reports flagging conflicting decisions\n\n**Speaker Identification:**\n\u2022 Voice enrollment and speaker profiles\n\u2022 Confirm or correct speaker attribution in transcripts\n\n**Interactive Dashboard (MCP App):**\n\u2022 Visual meeting browser, detail viewer, and people dashboard\n\u2022 Renders inline in Claude conversations\n\n**Meeting Insights:**\n\u2022 Structured insight events: decisions, commitments, questions with confidence levels\n\u2022 Query insights by type, confidence, participant, and time range\n\u2022 Actionable filtering \u2014 only strong/explicit confidence triggers downstream actions\n\n**Agent-Friendly:**\n\u2022 MCP resources for stable context (recent meetings, action items, events)\n\u2022 Subscribable insight events for workflow automation\n\u2022 Structured YAML frontmatter on all output\n\n**Privacy:** All audio processing happens locally via whisper.cpp and pyannote-rs. No audio or transcripts are sent anywhere. Summarization is optional and uses your own LLM connection.",
+  "version": "0.10.4",
   "author": {
     "name": "Mat Silverstein",
-    "url": "https://github.com/matsilverstein"
+    "url": "https://github.com/silverstein"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/matsilverstein/minutes"
+    "url": "https://github.com/silverstein/minutes"
   },
-  "homepage": "https://github.com/matsilverstein/minutes",
-  "documentation": "https://github.com/matsilverstein/minutes/blob/main/README.md",
-  "support": "https://github.com/matsilverstein/minutes/issues",
+  "homepage": "https://useminutes.app",
+  "documentation": "https://github.com/silverstein/minutes/blob/main/README.md",
+  "support": "https://github.com/silverstein/minutes/issues",
   "license": "MIT",
   "icon": "icon.png",
-  "keywords": ["meetings", "transcription", "voice-memo", "whisper", "memory", "search", "action-items", "decisions"],
+  "keywords": [
+    "meetings",
+    "transcription",
+    "voice-memo",
+    "whisper",
+    "memory",
+    "search",
+    "action-items",
+    "decisions",
+    "mcp-apps",
+    "interactive",
+    "speaker-diarization",
+    "privacy",
+    "local",
+    "offline",
+    "meeting-notes",
+    "voice",
+    "relationship-intelligence"
+  ],
   "tools": [
     {
       "name": "start_recording",
@@ -31,6 +49,10 @@
     {
       "name": "get_status",
       "description": "Check if a recording is currently in progress"
+    },
+    {
+      "name": "list_processing_jobs",
+      "description": "List background processing jobs for recent recordings"
     },
     {
       "name": "list_meetings",
@@ -63,13 +85,63 @@
     {
       "name": "research_topic",
       "description": "Research a topic across meetings, decisions, and follow-ups"
+    },
+    {
+      "name": "qmd_collection_status",
+      "description": "Check if the Minutes output directory is registered as a QMD collection"
+    },
+    {
+      "name": "register_qmd_collection",
+      "description": "Register the Minutes output directory as a QMD collection"
+    },
+    {
+      "name": "start_dictation",
+      "description": "Start dictation mode — speech to clipboard and daily notes"
+    },
+    {
+      "name": "stop_dictation",
+      "description": "Stop dictation mode"
+    },
+    {
+      "name": "track_commitments",
+      "description": "List open and stale commitments, optionally filtered by person"
+    },
+    {
+      "name": "relationship_map",
+      "description": "All contacts with relationship scores and losing-touch alerts"
+    },
+    {
+      "name": "list_voices",
+      "description": "List enrolled voice profiles for speaker identification"
+    },
+    {
+      "name": "confirm_speaker",
+      "description": "Confirm or correct speaker attribution in a meeting transcript"
+    },
+    {
+      "name": "get_meeting_insights",
+      "description": "Query structured meeting insights (decisions, commitments, questions) with confidence filtering"
+    },
+    {
+      "name": "start_live_transcript",
+      "description": "Start a live transcript session for real-time meeting transcription"
+    },
+    {
+      "name": "read_live_transcript",
+      "description": "Read utterances from the active live transcript with optional cursor or time window"
+    },
+    {
+      "name": "open_dashboard",
+      "description": "Open the Meeting Intelligence Dashboard in the browser — visual overview of conversation memory"
     }
   ],
   "prompts": [
     {
       "name": "meeting_prep",
       "description": "Prepare for an upcoming meeting",
-      "arguments": ["meeting_topic"],
+      "arguments": [
+        "meeting_topic"
+      ],
       "text": "Search my past meetings about ${arguments.meeting_topic}. Find relevant decisions, open action items, and context I should review before the meeting."
     },
     {
@@ -80,25 +152,33 @@
     {
       "name": "find_action_items",
       "description": "Find action items assigned to someone",
-      "arguments": ["person"],
+      "arguments": [
+        "person"
+      ],
       "text": "Search for all open action items assigned to ${arguments.person}. Show what was committed, when, and in which meeting."
     },
     {
       "name": "person_briefing",
       "description": "Get a briefing on a person before a meeting",
-      "arguments": ["name"],
+      "arguments": [
+        "name"
+      ],
       "text": "Build a profile for ${arguments.name} across all my meetings. What topics do we discuss? What commitments are open? What decisions have we made together?"
     },
     {
       "name": "topic_research",
       "description": "Research a topic across all meetings",
-      "arguments": ["topic"],
+      "arguments": [
+        "topic"
+      ],
       "text": "Research ${arguments.topic} across all my meetings. Show related decisions, open follow-ups, and which meetings discussed it most."
     },
     {
       "name": "start_meeting",
       "description": "Start recording a meeting",
-      "arguments": ["title"],
+      "arguments": [
+        "title"
+      ],
       "text": "Start recording a meeting titled '${arguments.title}'. I'll transcribe it locally when we're done."
     }
   ],
@@ -107,7 +187,9 @@
     "entry_point": "crates/mcp/dist/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/crates/mcp/dist/index.js"],
+      "args": [
+        "${__dirname}/crates/mcp/dist/index.js"
+      ],
       "env": {
         "MINUTES_HOME": "${user_config.minutes_home}",
         "MEETINGS_DIR": "${user_config.meetings_dir}"
@@ -131,10 +213,16 @@
     }
   },
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=18.0.0"
     }
   },
-  "privacy_policies": []
+  "privacy_policies": [
+    "https://useminutes.app/privacy"
+  ]
 }

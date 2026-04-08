@@ -23,9 +23,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install ALSA dev headers (Linux)
+      - name: Install audio dev headers (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
 
       - name: Set CXXFLAGS for whisper.cpp (macOS)
         if: runner.os == 'macOS'
@@ -43,12 +43,19 @@ jobs:
       - name: Build core (no whisper)
         run: cargo build -p minutes-core --no-default-features
 
+      - name: Build core with diarization (cross-platform)
+        run: cargo build -p minutes-core --no-default-features --features diarize
+
       - name: Build full workspace (macOS only)
         if: runner.os == 'macOS'
         run: cargo build --no-default-features
 
       - name: Unit tests (no whisper)
         run: cargo test -p minutes-core --no-default-features --lib -- --test-threads=1
+        timeout-minutes: 3
+
+      - name: Diarization unit tests (cross-platform)
+        run: cargo test -p minutes-core --no-default-features --features diarize --lib -- diarize --test-threads=1
         timeout-minutes: 3
 
       - name: Integration tests (no whisper, macOS only)
@@ -78,9 +85,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install ALSA dev headers (Linux)
+      - name: Install audio dev headers (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -99,6 +106,82 @@ jobs:
 
       - name: Verify minutes --version
         run: minutes --version
+
+  linux_full_build:
+    # Catches whisper+Linux regressions at PR time instead of waiting for the
+    # release-cli.yml workflow at tag push. Builds the CLI with default features
+    # (whisper + diarize) so any libclang / cmake / pipewire-sys / whisper-rs
+    # breakage on Linux surfaces here.
+    #
+    # Uses a debug build (not --release) because optimization-only failures in
+    # whisper.cpp / ort / pyannote-rs are vanishingly rare and the time savings
+    # (~5 min vs ~15 min cold) compound across every PR. release-cli.yml still
+    # does the release build at tag time as the final gate.
+    name: Build CLI (ubuntu-latest, default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build + audio dev deps
+        # ubuntu-latest happens to ship clang preinstalled, but we declare it
+        # explicitly so this job stays portable to other Linux runner images.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang libclang-dev \
+            cmake build-essential pkg-config \
+            libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cli-fullbuild-debug-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build CLI debug (whisper + diarize)
+        run: cargo build -p minutes-cli
+
+      - name: Verify binary runs
+        run: ./target/debug/minutes --version
+
+  desktop_windows:
+    name: Desktop App Installer (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-desktop-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache ONNX Runtime binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/dfbin
+          key: ${{ runner.os }}-ort-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "2.10.1" --locked
+
+      - name: Build Windows NSIS installer (unsigned)
+        working-directory: tauri/src-tauri
+        run: cargo tauri build --ci --bundles nsis --no-sign
+        env:
+          CARGO_NET_RETRY: 3
 
   mcp:
     name: MCP Server

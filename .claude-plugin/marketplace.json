@@ -1,6 +1,5 @@
 {
-  "name": "silverstein-minutes",
-  "description": "Conversation memory for AI assistants — record meetings, capture voice memos, search everything",
+  "name": "minutes",
   "owner": {
     "name": "Mat Silverstein",
     "email": "mat@businessvacation.com"
@@ -8,16 +7,16 @@
   "plugins": [
     {
       "name": "minutes",
-      "source": "./plugin",
-      "description": "11 skills + 1 agent + 2 hooks for meeting recording, search, prep, debrief, and weekly synthesis",
-      "version": "0.5.0",
+      "source": "./.claude/plugins/minutes",
+      "description": "12 skills + 1 agent + 2 hooks for meeting recording, search, prep, debrief, weekly synthesis, and cross-device voice memo recall",
+      "version": "0.7.0",
       "author": {
         "name": "Mat Silverstein"
       },
-      "homepage": "https://useminutes.dev",
+      "homepage": "https://useminutes.app",
       "repository": "https://github.com/silverstein/minutes",
       "license": "MIT",
-      "keywords": ["meeting", "transcription", "memory", "conversation"],
+      "keywords": ["meeting", "transcription", "memory", "voice-memo", "whisper", "conversation", "ai-memory"],
       "category": "productivity"
     }
   ]
