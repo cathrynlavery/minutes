@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use minutes_core::Config;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -101,7 +102,7 @@ fn show_main_window(app: &tauri::AppHandle) {
         .inner_size(520.0, 700.0)
         .min_inner_size(420.0, 520.0)
         .transparent(true)
-        .content_protected(true)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .center()
         .focused(true)
         .build()
@@ -124,7 +125,7 @@ fn show_note_window(app: &tauri::AppHandle) {
         .title("Add Note")
         .inner_size(420.0, 260.0)
         .resizable(false)
-        .content_protected(true)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .always_on_top(true)
         .center()
         .focused(true)
@@ -153,7 +154,7 @@ pub fn show_terminal_window(app: &tauri::AppHandle, session_id: &str, title: &st
         .title(title)
         .inner_size(900.0, 600.0)
         .min_inner_size(600.0, 400.0)
-        .content_protected(true)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .center()
         .focused(true)
         .build()
@@ -193,6 +194,17 @@ pub fn update_tray_state_with_mode(app: &tauri::AppHandle, is_active: bool, is_l
         };
         tray.set_tooltip(Some(tooltip)).ok();
     }
+
+    // Notify the palette overlay that recording / live state changed
+    // so it can re-fetch its visible command list. Dictation transitions
+    // emit `palette:refresh` separately from `commands.rs`.
+    let _ = app.emit(
+        "palette:refresh",
+        serde_json::json!({
+            "source": if is_live { "live-transcript" } else { "recording" },
+            "active": is_active,
+        }),
+    );
 }
 
 // ── Auto-updater ────────────────────────────────────────────
@@ -336,6 +348,7 @@ fn show_meeting_prompt(app: &tauri::AppHandle, event: &minutes_core::calendar::C
         .position(pos_x, pos_y)
         .resizable(false)
         .decorations(false)
+        .content_protected(Config::load().privacy.hide_from_screen_share)
         .always_on_top(true)
         .focused(true)
         .skip_taskbar(true)
@@ -448,7 +461,9 @@ fn main() {
         std::process::exit(code);
     }
 
-    let startup_config_snapshot = minutes_core::config::Config::load();
+    // Load with first-run and upgrade migrations so palette defaults
+    // stay enabled across upgrades and fresh installs.
+    let startup_config_snapshot = minutes_core::config::Config::load_with_migrations();
     let recording = Arc::new(AtomicBool::new(false));
     let starting = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -465,7 +480,13 @@ fn main() {
     ));
     let hotkey_runtime = Arc::new(Mutex::new(commands::HotkeyRuntime::default()));
     let discard_short_hotkey_capture = Arc::new(AtomicBool::new(false));
-    let screen_share_hidden = Arc::new(AtomicBool::new(true));
+    let screen_share_hidden = Arc::new(AtomicBool::new(
+        startup_config_snapshot.privacy.hide_from_screen_share,
+    ));
+    let palette_shortcut_enabled = Arc::new(AtomicBool::new(false));
+    let palette_shortcut = Arc::new(Mutex::new(startup_config_snapshot.palette.shortcut.clone()));
+    let palette_lifecycle = Arc::new(Mutex::new(commands::PaletteLifecycle::default()));
+    let palette_reopen_pending = Arc::new(AtomicBool::new(false));
     let recording_clone = recording.clone();
     let recording_for_detector = recording.clone();
     let processing_clone = processing.clone();
@@ -554,11 +575,25 @@ fn main() {
                         )
                         .ok()
                         .map(|shortcut| shortcut.id());
+                    let palette_shortcut_value = state
+                        .palette_shortcut
+                        .lock()
+                        .ok()
+                        .map(|value| value.clone())
+                        .unwrap_or_else(|| "CmdOrCtrl+Shift+K".to_string());
+                    let palette_shortcut_id =
+                        <tauri_plugin_global_shortcut::Shortcut as std::str::FromStr>::from_str(
+                            palette_shortcut_value.as_str(),
+                        )
+                        .ok()
+                        .map(|shortcut| shortcut.id());
 
                     if Some(shortcut_id) == dictation_shortcut_id {
                         commands::handle_dictation_shortcut_event(app, event.state());
                     } else if Some(shortcut_id) == live_shortcut_id {
                         commands::handle_live_shortcut_event(app, event.state());
+                    } else if Some(shortcut_id) == palette_shortcut_id {
+                        commands::handle_palette_shortcut_event(app, event.state());
                     } else {
                         commands::handle_global_hotkey_event(app, event.state());
                     }
@@ -582,6 +617,7 @@ fn main() {
             latest_output: latest_output.clone(),
             call_capture_health: Arc::new(Mutex::new(None)),
             completion_notifications_enabled: completion_notifications_enabled.clone(),
+            screen_share_hidden: screen_share_hidden.clone(),
             global_hotkey_enabled: global_hotkey_enabled.clone(),
             global_hotkey_shortcut: global_hotkey_shortcut.clone(),
             dictation_shortcut_enabled: dictation_shortcut_enabled.clone(),
@@ -607,6 +643,10 @@ fn main() {
                 Arc::new(Mutex::new(s))
             },
             pending_update: Arc::new(Mutex::new(None)),
+            palette_shortcut_enabled: palette_shortcut_enabled.clone(),
+            palette_shortcut: palette_shortcut.clone(),
+            palette_lifecycle: palette_lifecycle.clone(),
+            palette_reopen_pending: palette_reopen_pending.clone(),
         })
         .manage(Arc::new(Mutex::new(
             shortcut_manager::ShortcutManager::new(),
@@ -733,6 +773,32 @@ fn main() {
                 }
             }
 
+            // Register the palette shortcut if the config opts into it.
+            if startup_config.palette.shortcut_enabled {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let shortcut = if startup_config.palette.shortcut.is_empty() {
+                    "CmdOrCtrl+Shift+K".to_string()
+                } else {
+                    startup_config.palette.shortcut.clone()
+                };
+                if let Err(e) = app.global_shortcut().register(shortcut.as_str()) {
+                    eprintln!(
+                        "[palette-shortcut] startup register failed ({}): {}",
+                        shortcut, e
+                    );
+                } else {
+                    let state = app.state::<commands::AppState>();
+                    state
+                        .palette_shortcut_enabled
+                        .store(true, Ordering::Relaxed);
+                    if let Ok(mut current) = state.palette_shortcut.lock() {
+                        *current = shortcut;
+                    };
+                }
+            }
+
+            commands::maybe_show_palette_first_run_notice(app.handle());
+
             // Calendar state for dynamic tray menu items
             let cal_state = Arc::new(std::sync::Mutex::new(CalendarMenuState {
                 items: Vec::new(),
@@ -789,7 +855,11 @@ fn main() {
             let screen_share_item = MenuItem::with_id(
                 app,
                 "screen-share-toggle",
-                "Hide from Screen Share ✓",
+                if startup_config.privacy.hide_from_screen_share {
+                    "Hide from Screen Share ✓"
+                } else {
+                    "Hide from Screen Share"
+                },
                 true,
                 None::<&str>,
             )?;
@@ -997,6 +1067,12 @@ fn main() {
                             let new_state = !currently_hidden;
                             screen_share_hidden.store(new_state, Ordering::Relaxed);
 
+                            let mut config = Config::load();
+                            config.privacy.hide_from_screen_share = new_state;
+                            if let Err(err) = config.save() {
+                                eprintln!("[privacy] failed to save screen-share setting: {}", err);
+                            }
+
                             // Update menu label
                             if new_state {
                                 screen_share_item_ref
@@ -1166,13 +1242,31 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    // Hide main window on close instead of quitting (app stays in tray)
-                    // PTY session persists — user can reopen and resume where they left off
-                    api.prevent_close();
-                    window.hide().ok();
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if window.label() == "main" {
+                        // Hide main window on close instead of quitting (app stays in tray)
+                        // PTY session persists — user can reopen and resume where they left off
+                        api.prevent_close();
+                        window.hide().ok();
+                    }
                 }
+                tauri::WindowEvent::Focused(false) => {
+                    if window.label() == "palette" {
+                        let app_handle = window.app_handle().clone();
+                        let state = app_handle.state::<commands::AppState>();
+                        let is_open = match state.palette_lifecycle.lock() {
+                            Ok(guard) => *guard == commands::PaletteLifecycle::Open,
+                            Err(poisoned) => {
+                                *poisoned.into_inner() == commands::PaletteLifecycle::Open
+                            }
+                        };
+                        if is_open {
+                            commands::close_palette_window(&app_handle);
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1212,6 +1306,7 @@ fn main() {
             commands::cmd_terminal_info,
             commands::cmd_get_settings,
             commands::cmd_set_setting,
+            commands::cmd_set_screen_share_hidden,
             commands::cmd_get_autostart,
             commands::cmd_set_autostart,
             commands::cmd_get_storage_stats,
@@ -1235,6 +1330,10 @@ fn main() {
             commands::cmd_live_shortcut_settings,
             commands::cmd_set_live_shortcut,
             commands::cmd_install_update,
+            commands::palette_close,
+            commands::palette_current_meeting,
+            commands::cmd_palette_settings,
+            commands::cmd_set_palette_shortcut,
             palette_dispatch::palette_list,
             palette_dispatch::palette_execute,
         ])

@@ -99,6 +99,13 @@ pub fn read_desktop_app_status() -> Option<DesktopAppStatus> {
         .and_then(|text| serde_json::from_str(&text).ok())
 }
 
+pub fn desktop_app_owns_pid(pid: u32) -> bool {
+    read_desktop_app_status().is_some_and(|status| {
+        status.pid == pid
+            && (chrono::Local::now() - status.updated_at) <= chrono::Duration::seconds(10)
+    })
+}
+
 pub fn request_path(id: &str) -> PathBuf {
     requests_dir().join(format!("{}.json", id))
 }
@@ -259,6 +266,52 @@ mod tests {
         for item in claimed {
             finish_claimed_request(&item.claim_path).unwrap();
         }
+
+        restore_env();
+    }
+
+    #[test]
+    fn desktop_app_owns_pid_requires_recent_matching_heartbeat() {
+        let _guard = crate::test_home_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let original_home = std::env::var_os("HOME");
+        #[cfg(windows)]
+        let original_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", dir.path());
+        #[cfg(windows)]
+        std::env::set_var("USERPROFILE", dir.path());
+
+        let restore_env = || {
+            if let Some(home) = original_home.as_ref() {
+                std::env::set_var("HOME", home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+            #[cfg(windows)]
+            if let Some(userprofile) = original_userprofile.as_ref() {
+                std::env::set_var("USERPROFILE", userprofile);
+            } else {
+                std::env::remove_var("USERPROFILE");
+            }
+        };
+
+        let current_pid = std::process::id();
+        write_desktop_app_status(&DesktopAppStatus {
+            pid: current_pid,
+            updated_at: Local::now(),
+            platform: "macos".into(),
+        })
+        .unwrap();
+        assert!(desktop_app_owns_pid(current_pid));
+        assert!(!desktop_app_owns_pid(current_pid + 1));
+
+        write_desktop_app_status(&DesktopAppStatus {
+            pid: current_pid,
+            updated_at: Local::now() - Duration::seconds(30),
+            platform: "macos".into(),
+        })
+        .unwrap();
+        assert!(!desktop_app_owns_pid(current_pid));
 
         restore_env();
     }

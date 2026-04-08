@@ -1154,14 +1154,21 @@ fn cmd_stop(config: &Config) -> Result<()> {
             // On Unix, also send SIGTERM for instant stop
             #[cfg(unix)]
             {
-                let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                if rc != 0 {
-                    let err = std::io::Error::last_os_error();
-                    tracing::warn!(
-                        "SIGTERM failed (PID {}): {} — sentinel file will stop recording",
+                if minutes_core::desktop_control::desktop_app_owns_pid(pid) {
+                    tracing::info!(
                         pid,
-                        err
+                        "recording is owned by the desktop app; using sentinel-only stop"
                     );
+                } else {
+                    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                    if rc != 0 {
+                        let err = std::io::Error::last_os_error();
+                        tracing::warn!(
+                            "SIGTERM failed (PID {}): {} — sentinel file will stop recording",
+                            pid,
+                            err
+                        );
+                    }
                 }
             }
 

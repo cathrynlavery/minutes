@@ -1474,6 +1474,35 @@
       border-color: var(--accent);
     }
 
+    .speaker-confirm-btn[disabled] {
+      opacity: 0.65;
+      cursor: wait;
+      transform: none;
+    }
+
+    .detail-feedback {
+      margin: 0 20px 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      background: var(--surface-fill);
+      color: var(--text-secondary);
+    }
+
+    .detail-feedback.success {
+      border-color: var(--green-border);
+      background: var(--green-tint-soft);
+      color: var(--green);
+    }
+
+    .detail-feedback.error {
+      border-color: var(--red-border-strong);
+      background: var(--red-tint-soft);
+      color: var(--red);
+    }
+
     .detail-section {
       padding-top: 18px;
       border-top: 1px solid var(--surface-stroke-subtle);
@@ -2562,6 +2591,7 @@
           <button class="btn btn-danger btn-sm" id="btn-delete-meeting">Delete</button>
         </div>
       </div>
+      <div class="detail-feedback" id="detail-feedback" hidden></div>
       <div class="detail-scroll" id="detail-scroll">
         <div class="detail-empty">Select a meeting to view transcript and notes.</div>
       </div>
@@ -3185,6 +3215,7 @@
     const detailOverlay = document.getElementById('detail-overlay');
     const detailTitle = document.getElementById('detail-title');
     const detailMeta = document.getElementById('detail-meta');
+    const detailFeedback = document.getElementById('detail-feedback');
     const detailScroll = document.getElementById('detail-scroll');
     const openExternalBtn = document.getElementById('btn-open-external');
     const aboutOverlay = document.getElementById('about-overlay');
@@ -3220,6 +3251,7 @@
     let activeSearchQuery = '';
     let currentSetup = null;
     let latestOutput = null;
+    let detailFeedbackTimer = null;
     let processingJobs = [];
     let readinessItems = [];
     let recoveryItems = [];
@@ -4374,10 +4406,33 @@
       detailOverlay.classList.remove('active');
       currentMeetingPath = null;
       currentMeetingDetail = null;
+      if (detailFeedbackTimer) {
+        clearTimeout(detailFeedbackTimer);
+        detailFeedbackTimer = null;
+      }
+      detailFeedback.hidden = true;
+      detailFeedback.className = 'detail-feedback';
+      detailFeedback.textContent = '';
     }
 
     function closeAbout() {
       aboutOverlay.classList.remove('active');
+    }
+
+    function showDetailFeedback(message, tone = 'success') {
+      if (detailFeedbackTimer) {
+        clearTimeout(detailFeedbackTimer);
+        detailFeedbackTimer = null;
+      }
+      detailFeedback.hidden = false;
+      detailFeedback.className = `detail-feedback ${tone}`;
+      detailFeedback.textContent = message;
+      detailFeedbackTimer = setTimeout(() => {
+        detailFeedback.hidden = true;
+        detailFeedback.className = 'detail-feedback';
+        detailFeedback.textContent = '';
+        detailFeedbackTimer = null;
+      }, 3200);
     }
 
     function renderDetailSections(detail) {
@@ -4457,16 +4512,26 @@
             btn.onclick = async () => {
               const newName = prompt(`Confirm speaker name for ${attr.speaker_label}:`, attr.name);
               if (newName) {
+                btn.disabled = true;
+                const previousLabel = btn.textContent;
+                btn.textContent = 'Saving...';
                 try {
-                  await invoke('cmd_confirm_speaker', {
+                  const result = await invoke('cmd_confirm_speaker', {
                     meetingPath: detail.path,
                     speakerLabel: attr.speaker_label,
                     name: newName,
                   });
-                  // Refresh the detail view
-                  openMeetingDetail(detail.path);
+                  showDetailFeedback(
+                    result || `Confirmed ${attr.speaker_label} as ${newName}`,
+                    'success'
+                  );
+                  await openMeetingDetail(detail.path);
                 } catch (e) {
                   console.error('Confirm speaker failed:', e);
+                  showDetailFeedback(`Could not confirm speaker: ${e}`, 'error');
+                } finally {
+                  btn.disabled = false;
+                  btn.textContent = previousLabel;
                 }
               }
             };
@@ -4934,6 +4999,7 @@
         agentCmdSel.value = currentCmd;
         document.getElementById('settings-agent-command-status').textContent = sumAgents.find(a => a.name === currentCmd) ? 'Installed' : 'Custom command';
         } catch(e) { console.error('agent command picker:', e); }
+        setSettingsToggle('settings-screen-share', Boolean(s.privacy?.hide_from_screen_share));
         setSettingsToggle('settings-screen-context', s.screen_context.enabled);
         document.getElementById('settings-screen-interval-row').classList.toggle('is-hidden', !s.screen_context.enabled);
         document.getElementById('settings-screen-interval').value = String(s.screen_context.interval_secs);
@@ -5983,9 +6049,15 @@
       }
     });
 
-    document.getElementById('settings-screen-share').addEventListener('click', () => {
-      const b = document.getElementById('settings-screen-share');
-      setSettingsToggle('settings-screen-share', b.textContent!=='On');
+    document.getElementById('settings-screen-share').addEventListener('click', async () => {
+      try {
+        const s = await invoke('cmd_get_settings');
+        const next = !Boolean(s.privacy?.hide_from_screen_share);
+        await invoke('cmd_set_screen_share_hidden', { hidden: next });
+        setSettingsToggle('settings-screen-share', next);
+      } catch (e) {
+        console.error('Set screen share privacy:', e);
+      }
     });
     notificationToggle.addEventListener('click', async () => {
       const next = !notifyOnCompletion;

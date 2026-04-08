@@ -21,6 +21,7 @@ pub struct AppState {
     pub latest_output: Arc<Mutex<Option<OutputNotice>>>,
     pub call_capture_health: Arc<Mutex<Option<crate::call_capture::CallSourceHealth>>>,
     pub completion_notifications_enabled: Arc<AtomicBool>,
+    pub screen_share_hidden: Arc<AtomicBool>,
     pub global_hotkey_enabled: Arc<AtomicBool>,
     pub global_hotkey_shortcut: Arc<Mutex<String>>,
     pub hotkey_runtime: Arc<Mutex<HotkeyRuntime>>,
@@ -35,6 +36,37 @@ pub struct AppState {
     pub live_shortcut_enabled: Arc<AtomicBool>,
     pub live_shortcut: Arc<Mutex<String>>,
     pub pending_update: Arc<Mutex<Option<PendingUpdate>>>,
+    /// Whether the palette global shortcut is currently registered.
+    pub palette_shortcut_enabled: Arc<AtomicBool>,
+    /// The shortcut string registered for the palette (e.g. "CmdOrCtrl+Shift+K").
+    pub palette_shortcut: Arc<Mutex<String>>,
+    /// Explicit lifecycle state for the palette overlay window. Tracked as a
+    /// four-state machine (Closed/Opening/Open/Closing) rather than a boolean
+    /// so fast `⌘⇧K` mashing during the close path doesn't eat keypresses.
+    /// See PLAN.md.command-palette-slice-2 D3.
+    pub palette_lifecycle: Arc<Mutex<PaletteLifecycle>>,
+    /// Set when a hotkey press lands in the `Closing` state. The close path
+    /// drains this flag on completion and re-opens the palette if it was set.
+    pub palette_reopen_pending: Arc<AtomicBool>,
+}
+
+/// Lifecycle state for the palette overlay window.
+///
+/// Transitions:
+/// ```text
+///     Closed ──hotkey──▶ Opening ──build_window──▶ Open
+///     Open   ──hotkey──▶ Closing ──close──▶ Closed
+///     Open   ──focus-lost──▶ Closing ──close──▶ Closed
+///     Opening + hotkey  ==> ignored (mid-open race)
+///     Closing + hotkey  ==> queue reopen; Closed triggers Opening again
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaletteLifecycle {
+    #[default]
+    Closed,
+    Opening,
+    Open,
+    Closing,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -246,6 +278,23 @@ const DICTATION_SHORTCUT_CHOICES: [(&str, &str); 3] = [
     ("CmdOrCtrl+Alt+Space", "Cmd/Ctrl + Option/Alt + Space"),
     ("CmdOrCtrl+Shift+D", "Cmd/Ctrl + Shift + D"),
 ];
+// Codex pass 3 + claude pass 3 P2: dropped `Cmd+Shift+P` from this
+// dropdown because it actively conflicts with VS Code's Command
+// Palette — offering it as a default-list choice would encourage
+// users to break their IDE binding. `Cmd+Alt+Space` is also removed
+// because it's the second slot in `DICTATION_SHORTCUT_CHOICES` and
+// dual-claiming would silently fail one of the two registrations.
+//
+// Choices below are checked against `HOTKEY_CHOICES` and
+// `DICTATION_SHORTCUT_CHOICES` so we don't reintroduce a collision in
+// either direction. Users who want a non-default chord can edit
+// `~/.config/minutes/config.toml` directly — the startup register path
+// accepts arbitrary accelerator strings.
+const PALETTE_SHORTCUT_CHOICES: [(&str, &str); 3] = [
+    ("CmdOrCtrl+Shift+K", "Cmd/Ctrl + Shift + K"),
+    ("CmdOrCtrl+Shift+O", "Cmd/Ctrl + Shift + O"),
+    ("CmdOrCtrl+Shift+U", "Cmd/Ctrl + Shift + U"),
+];
 const HOTKEY_HOLD_THRESHOLD_MS: u64 = 300;
 const HOTKEY_MIN_DURATION_MS: u64 = 400;
 
@@ -295,6 +344,10 @@ pub fn default_dictation_shortcut() -> &'static str {
     DICTATION_SHORTCUT_CHOICES[0].0
 }
 
+pub fn default_palette_shortcut() -> &'static str {
+    PALETTE_SHORTCUT_CHOICES[0].0
+}
+
 fn shortcut_choices(choices: &[(&str, &str)]) -> Vec<HotkeyChoice> {
     choices
         .iter()
@@ -311,6 +364,10 @@ fn hotkey_choices() -> Vec<HotkeyChoice> {
 
 fn dictation_shortcut_choices() -> Vec<HotkeyChoice> {
     shortcut_choices(&DICTATION_SHORTCUT_CHOICES)
+}
+
+fn palette_shortcut_choices() -> Vec<HotkeyChoice> {
+    shortcut_choices(&PALETTE_SHORTCUT_CHOICES)
 }
 
 fn validate_shortcut(shortcut: &str, choices: &[(&str, &str)]) -> Result<String, String> {
@@ -336,6 +393,10 @@ fn validate_hotkey_shortcut(shortcut: &str) -> Result<String, String> {
 
 fn validate_dictation_shortcut(shortcut: &str) -> Result<String, String> {
     validate_shortcut(shortcut, &DICTATION_SHORTCUT_CHOICES)
+}
+
+fn validate_palette_shortcut(shortcut: &str) -> Result<String, String> {
+    validate_shortcut(shortcut, &PALETTE_SHORTCUT_CHOICES)
 }
 
 fn current_hotkey_settings(state: &AppState) -> HotkeySettings {
@@ -490,13 +551,13 @@ fn start_native_call_recording(
 
     while !stop_flag.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
+        if let Ok(mut health) = call_capture_health.lock() {
+            *health = Some(session.source_health());
+        }
         if minutes_core::pid::check_and_clear_sentinel() {
             break;
         }
         if let Some(status) = session.try_wait()? {
-            if let Ok(mut health) = call_capture_health.lock() {
-                *health = Some(session.source_health());
-            }
             if !status.success() {
                 let preserved = preserve_failed_capture_path(&output_path, config);
                 minutes_core::pid::remove().ok();
@@ -683,13 +744,20 @@ pub fn request_stop(
 
                 #[cfg(unix)]
                 {
-                    let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                    if rc != 0 {
-                        let err = std::io::Error::last_os_error();
+                    if minutes_core::desktop_control::desktop_app_owns_pid(pid) {
                         eprintln!(
-                            "SIGTERM failed (PID {}): {} — sentinel file will stop recording",
-                            pid, err
+                            "recording PID {} is owned by the desktop app; using sentinel-only stop",
+                            pid
                         );
+                    } else {
+                        let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                        if rc != 0 {
+                            let err = std::io::Error::last_os_error();
+                            eprintln!(
+                                "SIGTERM failed (PID {}): {} — sentinel file will stop recording",
+                                pid, err
+                            );
+                        }
                     }
                 }
 
@@ -3412,6 +3480,9 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "interval_secs": config.screen_context.interval_secs,
             "keep_after_summary": config.screen_context.keep_after_summary,
         },
+        "privacy": {
+            "hide_from_screen_share": config.privacy.hide_from_screen_share,
+        },
         "assistant": {
             "agent": config.assistant.agent,
             "agent_args": config.assistant.agent_args,
@@ -3570,6 +3641,26 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         .map_err(|e| format!("Failed to save config: {}", e))?;
 
     Ok(format!("Set {}.{} = {}", section, key, value))
+}
+
+#[tauri::command]
+pub fn cmd_set_screen_share_hidden(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    hidden: bool,
+) -> Result<(), String> {
+    let mut config = Config::load();
+    config.privacy.hide_from_screen_share = hidden;
+    config
+        .save()
+        .map_err(|e| format!("Failed to save config: {}", e))?;
+
+    state.screen_share_hidden.store(hidden, Ordering::Relaxed);
+    for (_, window) in app.webview_windows() {
+        window.set_content_protected(hidden).ok();
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -3884,6 +3975,82 @@ mod tests {
     }
 
     #[test]
+    fn validate_palette_shortcut_accepts_default_choices() {
+        assert_eq!(
+            validate_palette_shortcut("CmdOrCtrl+Shift+K").unwrap(),
+            "CmdOrCtrl+Shift+K"
+        );
+        assert_eq!(
+            validate_palette_shortcut("CmdOrCtrl+Shift+O").unwrap(),
+            "CmdOrCtrl+Shift+O"
+        );
+        assert_eq!(
+            validate_palette_shortcut("CmdOrCtrl+Shift+U").unwrap(),
+            "CmdOrCtrl+Shift+U"
+        );
+    }
+
+    #[test]
+    fn validate_palette_shortcut_rejects_unknown() {
+        assert!(validate_palette_shortcut("CmdOrCtrl+Shift+Z").is_err());
+        assert!(validate_palette_shortcut("nonsense").is_err());
+        // Codex pass 3: P (VS Code Command Palette conflict) and
+        // Alt+Space (collides with DICTATION_SHORTCUT_CHOICES) were
+        // dropped on purpose. Both should be rejected.
+        assert!(validate_palette_shortcut("CmdOrCtrl+Shift+P").is_err());
+        assert!(validate_palette_shortcut("CmdOrCtrl+Alt+Space").is_err());
+    }
+
+    #[test]
+    fn palette_shortcut_choices_do_not_collide_with_other_minutes_choices() {
+        use std::collections::HashSet;
+        let palette: HashSet<&str> = PALETTE_SHORTCUT_CHOICES.iter().map(|(v, _)| *v).collect();
+        let hotkey: HashSet<&str> = HOTKEY_CHOICES.iter().map(|(v, _)| *v).collect();
+        let dictation: HashSet<&str> = DICTATION_SHORTCUT_CHOICES.iter().map(|(v, _)| *v).collect();
+        for chord in &palette {
+            assert!(
+                !hotkey.contains(chord),
+                "{} appears in both PALETTE_SHORTCUT_CHOICES and HOTKEY_CHOICES",
+                chord
+            );
+            assert!(
+                !dictation.contains(chord),
+                "{} appears in both PALETTE_SHORTCUT_CHOICES and DICTATION_SHORTCUT_CHOICES",
+                chord
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_collision_error_ignores_disabled_shortcuts() {
+        let in_use = [
+            ("dictation", false, Some("CmdOrCtrl+Shift+K".to_string())),
+            (
+                "live transcript",
+                true,
+                Some("CmdOrCtrl+Shift+O".to_string()),
+            ),
+        ];
+
+        assert!(shortcut_collision_error("CmdOrCtrl+Shift+K", &in_use).is_ok());
+        assert!(shortcut_collision_error("CmdOrCtrl+Shift+O", &in_use)
+            .unwrap_err()
+            .contains("live transcript"));
+    }
+
+    #[test]
+    fn humanize_shortcut_renders_modifiers_as_glyphs() {
+        assert_eq!(humanize_shortcut("CmdOrCtrl+Shift+K"), "⌘⇧K");
+        assert_eq!(humanize_shortcut("CmdOrCtrl+Alt+Space"), "⌘⌥Space");
+        assert_eq!(humanize_shortcut("CmdOrCtrl+Shift+O"), "⌘⇧O");
+        // Unknown pieces fall through verbatim.
+        assert_eq!(
+            humanize_shortcut("CmdOrCtrl+Shift+Backspace"),
+            "⌘⇧Backspace"
+        );
+    }
+
+    #[test]
     fn short_hotkey_capture_is_discarded() {
         let started = Instant::now() - std::time::Duration::from_millis(200);
         assert!(should_discard_hotkey_capture(Some(started), Instant::now()));
@@ -4037,6 +4204,7 @@ fn show_dictation_overlay(app: &tauri::AppHandle) {
     .decorations(false)
     .transparent(true)
     .shadow(false)
+    .content_protected(Config::load().privacy.hide_from_screen_share)
     .always_on_top(true)
     .focused(false)
     .skip_taskbar(true)
@@ -4283,6 +4451,266 @@ pub fn cmd_set_live_shortcut(
     cmd_set_setting("live_transcript".into(), "shortcut".into(), next_shortcut).ok();
 
     Ok(cmd_live_shortcut_settings(state))
+}
+
+#[tauri::command]
+pub fn cmd_palette_settings(state: tauri::State<AppState>) -> HotkeySettings {
+    let enabled = state.palette_shortcut_enabled.load(Ordering::Relaxed);
+    let shortcut = state
+        .palette_shortcut
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| default_palette_shortcut().to_string());
+    HotkeySettings {
+        enabled,
+        shortcut,
+        choices: palette_shortcut_choices(),
+    }
+}
+
+/// Reject a palette shortcut that collides with another Minutes
+/// shortcut. The other dropdowns (quick-thought hotkey, dictation,
+/// live transcript) all hand-out chord strings; if the user picks the
+/// same chord for two of them, the second `register` call will
+/// silently fail at the OS level and one of the two features stops
+/// working with no surfaced error. This helper turns that into a
+/// clear up-front rejection.
+///
+/// Codex pass 3 + claude pass 3 P2.
+fn ensure_no_palette_shortcut_collision(state: &AppState, candidate: &str) -> Result<(), String> {
+    let in_use = [
+        (
+            "dictation",
+            state.dictation_shortcut_enabled.load(Ordering::Relaxed),
+            state.dictation_shortcut.lock().ok().map(|s| s.clone()),
+        ),
+        (
+            "live transcript",
+            state.live_shortcut_enabled.load(Ordering::Relaxed),
+            state.live_shortcut.lock().ok().map(|s| s.clone()),
+        ),
+        (
+            "quick thought hotkey",
+            state.global_hotkey_enabled.load(Ordering::Relaxed),
+            state.global_hotkey_shortcut.lock().ok().map(|s| s.clone()),
+        ),
+    ];
+    shortcut_collision_error(candidate, &in_use)
+}
+
+fn shortcut_collision_error(
+    candidate: &str,
+    in_use: &[(&str, bool, Option<String>)],
+) -> Result<(), String> {
+    for (name, enabled, value) in in_use {
+        if *enabled && value.as_deref().is_some_and(|other| other == candidate) {
+            return Err(format!(
+                "{} is already used by the {} shortcut",
+                candidate, name
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cmd_set_palette_shortcut(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    enabled: bool,
+    shortcut: String,
+) -> Result<HotkeySettings, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let next_shortcut = validate_palette_shortcut(&shortcut)?;
+    if enabled {
+        ensure_no_palette_shortcut_collision(&state, &next_shortcut)?;
+    }
+    let previous = cmd_palette_settings(state.clone());
+    let manager = app.global_shortcut();
+
+    if previous.enabled {
+        // Codex pass 3 P2: treat unregister failure as fatal. The
+        // previous code logged-and-continued, which left the OLD
+        // chord still registered AND the new chord registered on top
+        // of it. Subsequent presses of the old chord no longer
+        // matched `palette_shortcut_id` (state was already updated)
+        // and fell through to `handle_global_hotkey_event` — i.e.
+        // the wrong feature fired. Better to refuse the rebind than
+        // to leave the routing inconsistent.
+        if let Err(e) = manager.unregister(previous.shortcut.as_str()) {
+            return Err(format!(
+                "Could not unregister previous palette shortcut {}: {}",
+                previous.shortcut, e
+            ));
+        }
+    }
+
+    if enabled {
+        if let Err(e) = manager.register(next_shortcut.as_str()) {
+            // The new shortcut won't register — try to restore the
+            // previous one so the user keeps a working palette
+            // toggle. If the rollback ALSO fails, force-disable the
+            // palette shortcut so the in-memory state matches the
+            // empty OS registration. Claude pass 3 P2 #8: silent
+            // dead palette is the worst failure mode.
+            let mut rollback_failed = false;
+            if previous.enabled {
+                if let Err(rollback_err) = manager.register(previous.shortcut.as_str()) {
+                    eprintln!(
+                        "[palette-shortcut] rollback re-register of {} failed: {}",
+                        previous.shortcut, rollback_err
+                    );
+                    rollback_failed = true;
+                }
+            }
+            if rollback_failed {
+                state
+                    .palette_shortcut_enabled
+                    .store(false, Ordering::Relaxed);
+                cmd_set_setting("palette".into(), "shortcut_enabled".into(), "false".into()).ok();
+                return Err(format!(
+                    "Could not register {} and could not restore the previous shortcut. \
+                     Palette shortcut is now disabled — set a different binding from \
+                     Settings to re-enable.",
+                    next_shortcut
+                ));
+            }
+            return Err(format!(
+                "Could not register {}. Another app may already be using it. ({})",
+                next_shortcut, e
+            ));
+        }
+    }
+
+    state
+        .palette_shortcut_enabled
+        .store(enabled, Ordering::Relaxed);
+    if let Ok(mut current) = state.palette_shortcut.lock() {
+        *current = next_shortcut.clone();
+    }
+
+    // Persist to config.toml so the next launch picks up the user's
+    // choice without re-running the migration.
+    cmd_set_setting(
+        "palette".into(),
+        "shortcut_enabled".into(),
+        enabled.to_string(),
+    )
+    .ok();
+    cmd_set_setting("palette".into(), "shortcut".into(), next_shortcut).ok();
+
+    Ok(cmd_palette_settings(state))
+}
+
+/// Marker file used to track whether the palette first-run notice has
+/// been shown to the user. Stored as a sibling to `palette.json` in
+/// `~/.minutes/` so it survives config rewrites and works across
+/// processes (CLI vs desktop) without a config schema dance.
+fn palette_first_run_marker() -> PathBuf {
+    Config::minutes_dir().join("palette_first_run_shown")
+}
+
+/// Fire a one-shot system notification announcing the new command
+/// palette. Called from `main.rs::setup` after the palette shortcut
+/// is registered. The marker file ensures this only happens once per
+/// machine, even across reinstalls — the only way to re-trigger it is
+/// to delete the marker file manually.
+///
+/// **Why this exists**: the upgrade migration used to default the
+/// shortcut to OFF specifically to avoid hijacking VS Code's
+/// `Delete Line` and JetBrains' `Push...` chords without consent.
+/// That made the feature undiscoverable. The current design defaults
+/// ON for both fresh installs and upgrades, but fires this
+/// notification on the first launch so users with a real conflict
+/// hear about it immediately and can disable from the settings UI in
+/// one click. See PLAN.md.command-palette-slice-2 D10 (post-fix).
+pub fn maybe_show_palette_first_run_notice(app: &tauri::AppHandle) {
+    let marker = palette_first_run_marker();
+    if marker.exists() {
+        return;
+    }
+
+    let state = app.state::<AppState>();
+    if !state.palette_shortcut_enabled.load(Ordering::Relaxed) {
+        // The user (or some other process) already opted out before
+        // the notice ran. Don't show it.
+        return;
+    }
+    let shortcut = state
+        .palette_shortcut
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| default_palette_shortcut().to_string());
+
+    let body = format!(
+        "Press {} to open the new command palette. \
+         Disable in Settings if it conflicts with your other apps.",
+        humanize_shortcut(&shortcut)
+    );
+
+    // Dispatch the notification FIRST. The marker is only written on
+    // successful delivery so the next launch retries if delivery
+    // failed (notification permission denied, Notification Center
+    // unhealthy, etc.). Codex pass 3 P1 + Claude pass 3 P1 #4: the
+    // earlier marker-before-show ordering meant a single failed
+    // dispatch permanently suppressed the only consent surface for
+    // the upgrade-on default. Retrying on every launch is mildly
+    // annoying but strictly better than silently hijacking a chord
+    // the user can't recover from.
+    let delivery_result = app
+        .notification()
+        .builder()
+        .title("Minutes command palette")
+        .body(body)
+        .show();
+
+    match delivery_result {
+        Ok(_) => {
+            if let Some(parent) = marker.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::fs::write(&marker, "shown\n") {
+                eprintln!(
+                    "[palette] could not write first-run marker {}: {}",
+                    marker.display(),
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            // Don't write the marker. The fallback consent surface is
+            // the visible "Minutes Palette" branding inside the
+            // overlay itself plus the dedicated Settings UI row that
+            // landed in this same slice. A user who hits ⌘⇧K
+            // expecting VS Code's Delete Line will at least see
+            // "Minutes Palette" in the overlay header and can find
+            // the toggle in Settings → Command Palette.
+            eprintln!(
+                "[palette] first-run notification failed: {} (will retry on next launch)",
+                e
+            );
+        }
+    }
+}
+
+/// Render an Accelerator-style shortcut string ("CmdOrCtrl+Shift+K")
+/// as a more readable form ("⌘⇧K"). Used in the first-run notice so
+/// the user can mentally match it to the symbol they'd hit on the
+/// keyboard.
+fn humanize_shortcut(shortcut: &str) -> String {
+    shortcut
+        .split('+')
+        .map(|piece| match piece {
+            "CmdOrCtrl" | "Cmd" | "Command" | "Meta" => "⌘".to_string(),
+            "Shift" => "⇧".to_string(),
+            "Alt" | "Option" | "Opt" => "⌥".to_string(),
+            "Ctrl" | "Control" => "⌃".to_string(),
+            "Space" => "Space".to_string(),
+            other => other.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool) {
@@ -5223,4 +5651,363 @@ pub async fn cmd_install_update(app: tauri::AppHandle) -> Result<serde_json::Val
 
     #[allow(unreachable_code)]
     Ok(serde_json::json!({"restarting": true}))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Command palette window management
+// ─────────────────────────────────────────────────────────────────────
+
+/// Global-shortcut handler for the palette toggle (`⌘⇧K` by default).
+///
+/// Reacts to `Pressed` only. The palette is a toggle on press, not a
+/// hold-to-talk, so `Released` is ignored. Routes through the
+/// lifecycle-aware `toggle_palette_window` helper to survive fast
+/// double-press races.
+pub fn handle_palette_shortcut_event(
+    app: &tauri::AppHandle,
+    shortcut_state: tauri_plugin_global_shortcut::ShortcutState,
+) {
+    if shortcut_state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+        return;
+    }
+    let state = app.state::<AppState>();
+    if !state.palette_shortcut_enabled.load(Ordering::Relaxed) {
+        return;
+    }
+    toggle_palette_window(app);
+}
+
+/// Toggle the palette overlay window based on the current lifecycle state.
+///
+/// The state machine:
+/// - `Closed`  → `Opening` → build window → `Open`
+/// - `Open`    → `Closing` → destroy window → `Closed`
+/// - `Opening` → ignore (duplicate press mid-create)
+/// - `Closing` → queue a reopen; when destroy completes, transition
+///   `Closed → Opening` immediately
+///
+/// All transitions happen under a `Mutex`. The window is destroyed
+/// via `WebviewWindow::destroy` (not `close`) so the tear-down is
+/// synchronous: codex pass 3 caught that `close()` only enqueues a
+/// `RunEvent::CloseRequested` message which the runtime processes on
+/// its own schedule, leaving a brief window where the OLD instance is
+/// still live and a reopen race could attach to a window that is
+/// about to disappear. `destroy()` skips the close-request event and
+/// removes the window immediately.
+pub fn toggle_palette_window(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+
+    let transition: Option<PaletteTransition> = {
+        let mut lifecycle = lock_or_recover(&state.palette_lifecycle);
+        match *lifecycle {
+            PaletteLifecycle::Closed => {
+                *lifecycle = PaletteLifecycle::Opening;
+                Some(PaletteTransition::Open)
+            }
+            PaletteLifecycle::Open => {
+                *lifecycle = PaletteLifecycle::Closing;
+                Some(PaletteTransition::Close)
+            }
+            PaletteLifecycle::Opening => None,
+            PaletteLifecycle::Closing => {
+                state.palette_reopen_pending.store(true, Ordering::Relaxed);
+                None
+            }
+        }
+    };
+
+    match transition {
+        Some(PaletteTransition::Open) => create_or_show_palette_window(app),
+        Some(PaletteTransition::Close) => close_palette_window(app),
+        None => {}
+    }
+}
+
+#[derive(Debug)]
+enum PaletteTransition {
+    Open,
+    Close,
+}
+
+/// Lock helper that recovers from a poisoned `PaletteLifecycle` mutex
+/// instead of dropping the hotkey on the floor. Codex pass 3 P2:
+/// `finalize_palette_open` and the close path were silently strand
+/// the state machine in `Opening` if any prior call panicked while
+/// holding the lock. Recovering the inner guard via `into_inner()`
+/// keeps the palette responsive even after a transient poison.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("[palette] lifecycle mutex was poisoned; recovering");
+            poisoned.into_inner()
+        }
+    }
+}
+
+/// Destroy the palette window synchronously and drain any queued
+/// reopen request. Both `palette_close` (the webview's Esc key and
+/// focus-lost paths) and the shortcut-toggle close path funnel
+/// through here. Idempotent — safe to call when no palette window
+/// exists.
+pub fn close_palette_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("palette") {
+        // `destroy()` is the synchronous tear-down. `close()` only
+        // enqueues a CloseRequested event which the runtime processes
+        // later, leaving the old window briefly alive — that's the
+        // race codex pass 3 caught. `destroy()` removes the window
+        // immediately so the next `get_webview_window("palette")`
+        // returns None.
+        if let Err(e) = win.destroy() {
+            eprintln!("[palette] failed to destroy palette window: {}", e);
+        }
+    }
+
+    let reopen = {
+        let state = app.state::<AppState>();
+        let mut lifecycle = lock_or_recover(&state.palette_lifecycle);
+        *lifecycle = PaletteLifecycle::Closed;
+        state.palette_reopen_pending.swap(false, Ordering::Relaxed)
+    };
+
+    if reopen {
+        let state = app.state::<AppState>();
+        let should_reopen = {
+            let mut lifecycle = lock_or_recover(&state.palette_lifecycle);
+            if *lifecycle == PaletteLifecycle::Closed {
+                *lifecycle = PaletteLifecycle::Opening;
+                true
+            } else {
+                false
+            }
+        };
+        if should_reopen {
+            create_or_show_palette_window(app);
+        }
+    }
+}
+
+/// Public Tauri command wrapping [`close_palette_window`]. Called from
+/// the palette frontend's Esc and focus-lost handlers so the state
+/// machine stays consistent no matter which event triggered the close.
+#[tauri::command]
+pub fn palette_close(app: tauri::AppHandle) {
+    close_palette_window(&app);
+}
+
+fn create_or_show_palette_window(app: &tauri::AppHandle) {
+    // Wrap the entire create-or-show path in `catch_unwind` so a panic
+    // inside `WebviewWindowBuilder::build()` (or any of the helper
+    // calls below) cannot leave `palette_lifecycle` stuck in `Opening`
+    // forever. This was codex pass 2 P2 #5: the only reset path used
+    // to be the explicit `Err` arm after `.build()`, so an unwinding
+    // panic would skip the reset and the user could never reopen the
+    // palette without restarting the app.
+    //
+    // **Honest caveat** (codex pass 3 P2): `AssertUnwindSafe` here is
+    // not a magic recovery story — `AppHandle` contains internal
+    // Arcs/Mutexes managed by Tauri, and a panic inside `build()`
+    // could leave Tauri's `WindowManager` in an inconsistent state.
+    // The catch_unwind only ensures our `palette_lifecycle` flag
+    // resets so the user can press the hotkey again. The "right" fix
+    // is to never panic in there, which is a deeper Tauri-runtime
+    // concern. We accept this trade-off because the alternative —
+    // stranding the user with a wedged hotkey — is strictly worse.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        create_or_show_palette_window_inner(app)
+    }));
+    if let Err(panic) = result {
+        eprintln!("[palette] window creation panicked: {:?}", panic);
+        let state = app.state::<AppState>();
+        let mut lifecycle = lock_or_recover(&state.palette_lifecycle);
+        *lifecycle = PaletteLifecycle::Closed;
+    }
+}
+
+fn create_or_show_palette_window_inner(app: &tauri::AppHandle) {
+    use tauri::WebviewUrl;
+
+    // Singleton: a stale window from a previous toggle should be reused,
+    // not duplicated. `get_webview_window` is cheap.
+    if let Some(win) = app.get_webview_window("palette") {
+        // The lifecycle says we are opening, but a window already exists.
+        // Show + focus it instead of spawning a duplicate.
+        if let Err(e) = win.show() {
+            eprintln!("[palette] show failed: {}", e);
+        }
+        if let Err(e) = win.set_focus() {
+            eprintln!("[palette] focus failed: {}", e);
+        }
+        finalize_palette_open(app);
+        return;
+    }
+
+    // Position: center of the primary monitor. Tauri's `center()` builder
+    // option handles multi-monitor setups correctly.
+    let width = 640.0_f64;
+    let height = 420.0_f64;
+
+    let build_result = tauri::WebviewWindowBuilder::new(
+        app,
+        "palette",
+        WebviewUrl::App("palette/index.html".into()),
+    )
+    .title("Minutes Palette")
+    .inner_size(width, height)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(true)
+    .always_on_top(true)
+    .center()
+    .focused(true)
+    .skip_taskbar(true)
+    .content_protected(true)
+    .build();
+
+    match build_result {
+        Ok(_) => finalize_palette_open(app),
+        Err(e) => {
+            eprintln!("[palette] failed to build palette window: {}", e);
+            let state = app.state::<AppState>();
+            let mut lifecycle = lock_or_recover(&state.palette_lifecycle);
+            *lifecycle = PaletteLifecycle::Closed;
+        }
+    }
+}
+
+fn finalize_palette_open(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let mut lifecycle = lock_or_recover(&state.palette_lifecycle);
+    *lifecycle = PaletteLifecycle::Open;
+
+    // Capability smoke test was a D4 dev affordance — kept on debug
+    // builds only so prod users don't see the green indicator and so
+    // we don't ship dev cruft. Codex pass 3 P3 + claude P3 #18 + #20
+    // both flagged this as ship-noise.
+    #[cfg(debug_assertions)]
+    {
+        let app_clone = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            if let Err(e) =
+                app_clone.emit_to("palette", "palette:ping", serde_json::json!({ "ok": true }))
+            {
+                eprintln!("[palette] palette:ping emit failed: {}", e);
+            }
+        });
+    }
+}
+
+/// Read the assistant workspace's `CURRENT_MEETING.md` breadcrumb and
+/// return the absolute path of the meeting the user is currently
+/// discussing. Returns `None` if the file is missing, unreadable, or
+/// does not reference a resolvable meeting path.
+///
+/// The palette webview calls this right before `palette_list` and
+/// `palette_execute` so `PaletteUiContext.current_meeting` can be
+/// populated for meeting-scoped commands (copy markdown, rename, etc.).
+///
+/// **Side-effect-free**: this command intentionally does NOT call
+/// `crate::context::create_workspace` because that function does
+/// `create_dir_all`, creates a `meetings` symlink, and runs `git init`.
+/// Just opening the palette must not mutate `~/.minutes/assistant`.
+/// Instead we use `workspace_dir()` (a pure path computation) and only
+/// read the marker file if the workspace already exists. See codex
+/// pass 2 P2 #3.
+#[tauri::command]
+pub fn palette_current_meeting() -> Option<PathBuf> {
+    let workspace_root = crate::context::workspace_dir();
+    if !workspace_root.exists() {
+        return None;
+    }
+    let marker = workspace_root.join(crate::context::ACTIVE_MEETING_FILE);
+    let contents = std::fs::read_to_string(&marker).ok()?;
+
+    // CURRENT_MEETING.md stores a link or raw path to the current meeting
+    // markdown. Accepted forms (pick the first matching line):
+    //   1. Markdown link: `[title](/abs/path.md)`
+    //   2. Bare path line: `/abs/path.md`
+    //   3. `path: /abs/path.md` frontmatter-ish line
+    // Anything else → `None`.
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(path) = extract_current_meeting_path(trimmed) {
+            let candidate = PathBuf::from(path);
+            if candidate.exists() && candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Parse a single line of `CURRENT_MEETING.md` looking for a path. Kept
+/// private and tested directly so the accepted forms are documented.
+fn extract_current_meeting_path(line: &str) -> Option<&str> {
+    // Markdown link form: `[label](path)`
+    if let Some(start) = line.find("](") {
+        let rest = &line[start + 2..];
+        if let Some(end) = rest.find(')') {
+            let path = &rest[..end];
+            if path.ends_with(".md") {
+                return Some(path);
+            }
+        }
+    }
+    // `path: /abs/path.md` form
+    if let Some(rest) = line.strip_prefix("path:") {
+        let trimmed = rest.trim().trim_matches('"').trim_matches('\'');
+        if trimmed.ends_with(".md") {
+            return Some(trimmed);
+        }
+    }
+    // Bare path form
+    if line.ends_with(".md") && line.starts_with('/') {
+        return Some(line);
+    }
+    None
+}
+
+#[cfg(test)]
+mod palette_window_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_markdown_link_path() {
+        assert_eq!(
+            extract_current_meeting_path("[Team Sync](/Users/x/meetings/2026-04-07-team-sync.md)"),
+            Some("/Users/x/meetings/2026-04-07-team-sync.md")
+        );
+    }
+
+    #[test]
+    fn extracts_path_prefix_form() {
+        assert_eq!(
+            extract_current_meeting_path("path: /Users/x/meetings/call.md"),
+            Some("/Users/x/meetings/call.md")
+        );
+        assert_eq!(
+            extract_current_meeting_path(r#"path: "/Users/x/meetings/call.md""#),
+            Some("/Users/x/meetings/call.md")
+        );
+    }
+
+    #[test]
+    fn extracts_bare_absolute_path() {
+        assert_eq!(
+            extract_current_meeting_path("/Users/x/meetings/call.md"),
+            Some("/Users/x/meetings/call.md")
+        );
+    }
+
+    #[test]
+    fn rejects_non_md_and_relative_paths() {
+        assert_eq!(extract_current_meeting_path("relative/path.md"), None);
+        assert_eq!(extract_current_meeting_path("/abs/path.txt"), None);
+        assert_eq!(extract_current_meeting_path("just a sentence"), None);
+    }
 }

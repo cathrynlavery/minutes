@@ -28,6 +28,7 @@ pub struct SpeakerSegment {
 pub struct DiarizationResult {
     pub segments: Vec<SpeakerSegment>,
     pub num_speakers: usize,
+    pub from_stems: bool,
     /// Per-speaker averaged embeddings (for Level 3 confirmed learning).
     /// Empty when using the Python subprocess engine.
     pub speaker_embeddings: std::collections::HashMap<String, Vec<f32>>,
@@ -275,6 +276,222 @@ fn compute_energy_windows(wav_path: &Path, window_secs: f64) -> Result<Vec<(f64,
     Ok(windows)
 }
 
+fn correlation_coefficient(xs: &[f32], ys: &[f32]) -> Option<f32> {
+    if xs.len() != ys.len() || xs.len() < 2 {
+        return None;
+    }
+
+    let n = xs.len() as f64;
+    let mean_x = xs.iter().map(|&x| x as f64).sum::<f64>() / n;
+    let mean_y = ys.iter().map(|&y| y as f64).sum::<f64>() / n;
+
+    let mut num = 0.0;
+    let mut den_x = 0.0;
+    let mut den_y = 0.0;
+    for (&x, &y) in xs.iter().zip(ys.iter()) {
+        let dx = x as f64 - mean_x;
+        let dy = y as f64 - mean_y;
+        num += dx * dy;
+        den_x += dx * dx;
+        den_y += dy * dy;
+    }
+
+    let denom = (den_x * den_y).sqrt();
+    if denom <= f64::EPSILON {
+        None
+    } else {
+        Some((num / denom) as f32)
+    }
+}
+
+fn merge_or_push_segment(segments: &mut Vec<SpeakerSegment>, speaker: &str, start: f64, end: f64) {
+    if let Some(last) = segments.last_mut() {
+        if last.speaker == speaker && (start - last.end).abs() < 0.01 {
+            last.end = end;
+            return;
+        }
+    }
+
+    segments.push(SpeakerSegment {
+        speaker: speaker.to_string(),
+        start,
+        end,
+    });
+}
+
+fn collapse_to_single_speaker_segments(
+    voice_energy: &[(f64, f32)],
+    system_energy: &[(f64, f32)],
+    window_secs: f64,
+    silence_threshold: f32,
+    speaker_label: &str,
+) -> Vec<SpeakerSegment> {
+    let mut segments = Vec::new();
+    let window_count = voice_energy.len().min(system_energy.len());
+
+    for i in 0..window_count {
+        let (start, voice_rms) = voice_energy[i];
+        let (_, system_rms) = system_energy[i];
+        let end = start + window_secs;
+        let voice_active = voice_rms > silence_threshold;
+        let system_active = system_rms > silence_threshold;
+
+        if voice_active || system_active {
+            merge_or_push_segment(&mut segments, speaker_label, start, end);
+        }
+    }
+
+    segments
+}
+
+fn maybe_relabel_single_call_speaker_to_voice(
+    segments: &mut [SpeakerSegment],
+    voice_values: &[f32],
+    system_values: &[f32],
+    silence_threshold: f32,
+) {
+    if segments.len() != 1 || segments[0].speaker != "SPEAKER_1" {
+        return;
+    }
+
+    let active_voice_windows = voice_values
+        .iter()
+        .filter(|&&rms| rms > silence_threshold)
+        .count();
+    let active_voice_ratio = active_voice_windows as f32 / voice_values.len().max(1) as f32;
+    let correlated =
+        correlation_coefficient(voice_values, system_values).is_some_and(|value| value >= 0.85);
+
+    // If the microphone stem is active for most of the recording, this is
+    // likely the local speaker bleeding into the system stem rather than a
+    // true remote-only single speaker, but only when the two stems also move
+    // together strongly. Mere mic-side noise should not relabel remote audio
+    // as the local speaker.
+    if active_voice_ratio >= 0.6 && correlated {
+        segments[0].speaker = "SPEAKER_0".into();
+    }
+}
+
+fn diarization_from_energy_windows(
+    voice_energy: &[(f64, f32)],
+    system_energy: &[(f64, f32)],
+    window_secs: f64,
+) -> Option<DiarizationResult> {
+    // Energy threshold: below this RMS, the source is considered silent.
+    // Typical speech RMS is 0.01-0.1; noise floor is <0.001.
+    let silence_threshold = 0.005_f32;
+
+    let voice_label = "SPEAKER_0";
+    let call_label = "SPEAKER_1";
+    let window_count = voice_energy.len().min(system_energy.len());
+
+    let voice_values: Vec<f32> = voice_energy
+        .iter()
+        .take(window_count)
+        .map(|(_, rms)| *rms)
+        .collect();
+    let system_values: Vec<f32> = system_energy
+        .iter()
+        .take(window_count)
+        .map(|(_, rms)| *rms)
+        .collect();
+    let active_windows = voice_values
+        .iter()
+        .zip(system_values.iter())
+        .filter(|(voice_rms, system_rms)| {
+            **voice_rms > silence_threshold || **system_rms > silence_threshold
+        })
+        .count();
+    let correlation = correlation_coefficient(&voice_values, &system_values);
+
+    // When both stems move together for most windows, we're likely seeing the
+    // same person bleeding into both sources (for example your own voice plus
+    // system echo / self-monitor). Treat that as one human, not two speakers.
+    if active_windows >= 3 && correlation.is_some_and(|value| value >= 0.85) {
+        let segments = collapse_to_single_speaker_segments(
+            voice_energy,
+            system_energy,
+            window_secs,
+            silence_threshold,
+            voice_label,
+        );
+        if segments.is_empty() {
+            return None;
+        }
+
+        tracing::info!(
+            active_windows,
+            correlation = correlation,
+            "stem energies strongly correlated — collapsing to one speaker"
+        );
+
+        return Some(DiarizationResult {
+            segments,
+            num_speakers: 1,
+            from_stems: true,
+            speaker_embeddings: std::collections::HashMap::new(),
+        });
+    }
+
+    let mut segments: Vec<SpeakerSegment> = Vec::new();
+
+    for i in 0..window_count {
+        let (start, voice_rms) = voice_energy[i];
+        let (_, system_rms) = system_energy[i];
+        let end = start + window_secs;
+
+        let voice_active = voice_rms > silence_threshold;
+        let system_active = system_rms > silence_threshold;
+
+        let speaker = if voice_active && !system_active {
+            voice_label
+        } else if system_active && !voice_active {
+            call_label
+        } else if voice_active && system_active {
+            if voice_rms >= system_rms {
+                voice_label
+            } else {
+                call_label
+            }
+        } else {
+            continue;
+        };
+
+        merge_or_push_segment(&mut segments, speaker, start, end);
+    }
+
+    let num_speakers = segments
+        .iter()
+        .map(|s| s.speaker.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    if num_speakers == 1 {
+        maybe_relabel_single_call_speaker_to_voice(
+            &mut segments,
+            &voice_values,
+            &system_values,
+            silence_threshold,
+        );
+    }
+
+    if segments.is_empty() {
+        None
+    } else {
+        let num_speakers = segments
+            .iter()
+            .map(|s| s.speaker.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        Some(DiarizationResult {
+            segments,
+            num_speakers,
+            from_stems: true,
+            speaker_embeddings: std::collections::HashMap::new(),
+        })
+    }
+}
+
 /// Speaker attribution from per-source audio stems (no ML diarization).
 /// Compares energy levels between voice and system stems per time window,
 /// assigning "SPEAKER_0" (you) or "SPEAKER_1" (remote) to each window.
@@ -296,80 +513,21 @@ pub fn diarize_from_stems(stems: &StemPaths, _config: &Config) -> Option<Diariza
         }
     };
 
-    // Energy threshold: below this RMS, the source is considered silent.
-    // Typical speech RMS is 0.01-0.1; noise floor is <0.001.
-    let silence_threshold = 0.005_f32;
-
-    let mut segments: Vec<SpeakerSegment> = Vec::new();
-    let window_count = voice_energy.len().min(system_energy.len());
-
-    // Use SPEAKER_0/SPEAKER_1 labels to match apply_speakers expectations.
-    // The attribution pipeline maps these to real names via speaker_map.
-    let voice_label = "SPEAKER_0";
-    let call_label = "SPEAKER_1";
-
-    for i in 0..window_count {
-        let (start, voice_rms) = voice_energy[i];
-        let (_, system_rms) = system_energy[i];
-        let end = start + window_secs;
-
-        let voice_active = voice_rms > silence_threshold;
-        let system_active = system_rms > silence_threshold;
-
-        let speaker = if voice_active && !system_active {
-            voice_label.to_string()
-        } else if system_active && !voice_active {
-            call_label.to_string()
-        } else if voice_active && system_active {
-            if voice_rms >= system_rms {
-                voice_label.to_string()
-            } else {
-                call_label.to_string()
-            }
-        } else {
-            continue; // Both silent, skip
-        };
-
-        // Merge with previous segment if same speaker
-        if let Some(last) = segments.last_mut() {
-            if last.speaker == speaker && (start - last.end).abs() < 0.01 {
-                last.end = end;
-                continue;
-            }
-        }
-
-        segments.push(SpeakerSegment {
-            speaker,
-            start,
-            end,
-        });
-    }
-
-    let num_speakers = segments
-        .iter()
-        .map(|s| s.speaker.as_str())
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-
-    // If no segments were produced (both stems are silent), fall back to ML
-    if segments.is_empty() {
+    let Some(result) = diarization_from_energy_windows(&voice_energy, &system_energy, window_secs)
+    else {
         tracing::warn!("stem-based diarization produced no segments (all silent), falling back");
         return None;
-    }
+    };
 
     tracing::info!(
-        speakers = num_speakers,
-        segments = segments.len(),
+        speakers = result.num_speakers,
+        segments = result.segments.len(),
         voice_stem = %stems.voice.display(),
         system_stem = %stems.system.display(),
         "stem-based diarization complete"
     );
 
-    Some(DiarizationResult {
-        segments,
-        num_speakers,
-        speaker_embeddings: std::collections::HashMap::new(),
-    })
+    Some(result)
 }
 
 /// Run speaker diarization on an audio file.
@@ -523,6 +681,8 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
         lines.push(OutputLine::Raw(line.to_string()));
     }
 
+    let dominant_speaker = dominant_speaker_label(&sorted_segments);
+
     // Hypothesis: Whisper often starts transcribing at t=0 while diarization
     // detects voice activity slightly later (VAD onset latency, mic warmup, or
     // leading silence). The first transcript segment therefore lands before the
@@ -547,6 +707,30 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
                     *speaker = resolved;
                     unknown_count = unknown_count.saturating_sub(1);
                     matched_count += 1;
+                }
+            }
+        }
+    }
+
+    // If every attributed line is still UNKNOWN but the diarization result has
+    // one clearly dominant speaker, prefer that speaker over leaving the whole
+    // clip unresolved. This is especially useful for short native-call clips
+    // where the first transcript line starts before the first diarization
+    // segment, but one speaker still dominates the clip overall.
+    let all_unknown = !lines.is_empty()
+        && lines.iter().all(|line| match line {
+            OutputLine::Attributed { speaker, .. } => speaker == "UNKNOWN",
+            OutputLine::Raw(_) => true,
+        });
+    if all_unknown {
+        if let Some(dominant) = dominant_speaker {
+            for line in &mut lines {
+                if let OutputLine::Attributed { speaker, .. } = line {
+                    if speaker == "UNKNOWN" {
+                        *speaker = dominant.clone();
+                        unknown_count = unknown_count.saturating_sub(1);
+                        matched_count += 1;
+                    }
                 }
             }
         }
@@ -578,6 +762,31 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
     }
 
     output
+}
+
+fn dominant_speaker_label(segments: &[SpeakerSegment]) -> Option<String> {
+    let mut durations: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    for seg in segments {
+        let dur = (seg.end - seg.start).max(0.0);
+        *durations.entry(seg.speaker.as_str()).or_insert(0.0) += dur;
+    }
+
+    let total: f64 = durations.values().sum();
+    if total <= f64::EPSILON {
+        return None;
+    }
+
+    let (label, duration) = durations
+        .into_iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+
+    // Require a strong majority before overriding UNKNOWN lines. This avoids
+    // inventing certainty when the clip is genuinely mixed.
+    if duration / total >= 0.6 {
+        Some(label.to_string())
+    } else {
+        None
+    }
 }
 
 /// Find which speaker is talking at a given timestamp.
@@ -937,6 +1146,7 @@ fn diarize_with_pyannote_rs(
     Ok(DiarizationResult {
         segments,
         num_speakers,
+        from_stems: false,
         speaker_embeddings,
     })
 }
@@ -1259,6 +1469,7 @@ except Exception as e:
     Ok(DiarizationResult {
         segments,
         num_speakers,
+        from_stems: false,
         speaker_embeddings: std::collections::HashMap::new(), // Python path can't extract embeddings
     })
 }
@@ -1386,6 +1597,7 @@ mod tests {
                 },
             ],
             num_speakers: 2,
+            from_stems: false,
             speaker_embeddings: std::collections::HashMap::new(),
         };
 
@@ -1413,6 +1625,7 @@ mod tests {
                 },
             ],
             num_speakers: 2,
+            from_stems: false,
             speaker_embeddings: std::collections::HashMap::new(),
         };
 
@@ -1424,6 +1637,103 @@ mod tests {
         );
         assert!(labeled.contains("[SPEAKER_0 0:03]"));
         assert!(labeled.contains("[SPEAKER_1 0:07]"));
+    }
+
+    #[test]
+    fn apply_speakers_all_unknown_prefers_dominant_speaker() {
+        let transcript = "[0:00] Short intro line\n";
+        let result = DiarizationResult {
+            segments: vec![
+                SpeakerSegment {
+                    speaker: "SPEAKER_1".into(),
+                    start: 1.0,
+                    end: 9.0,
+                },
+                SpeakerSegment {
+                    speaker: "SPEAKER_0".into(),
+                    start: 9.0,
+                    end: 10.0,
+                },
+            ],
+            num_speakers: 2,
+            from_stems: true,
+            speaker_embeddings: std::collections::HashMap::new(),
+        };
+
+        let labeled = apply_speakers(transcript, &result);
+        assert!(labeled.contains("[SPEAKER_1 0:00]"));
+    }
+
+    #[test]
+    fn dominant_speaker_requires_clear_majority() {
+        let segments = vec![
+            SpeakerSegment {
+                speaker: "SPEAKER_0".into(),
+                start: 0.0,
+                end: 5.0,
+            },
+            SpeakerSegment {
+                speaker: "SPEAKER_1".into(),
+                start: 5.0,
+                end: 9.0,
+            },
+        ];
+        assert_eq!(dominant_speaker_label(&segments), None);
+    }
+
+    #[test]
+    fn stem_energy_correlation_collapses_to_single_speaker() {
+        let voice_energy = vec![(0.0, 0.12), (1.0, 0.20), (2.0, 0.18), (3.0, 0.11)];
+        let system_energy = vec![(0.0, 0.08), (1.0, 0.14), (2.0, 0.13), (3.0, 0.07)];
+
+        let result = diarization_from_energy_windows(&voice_energy, &system_energy, 1.0)
+            .expect("correlated stems should still produce diarization");
+
+        assert_eq!(result.num_speakers, 1);
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].speaker, "SPEAKER_0");
+        assert_eq!(result.segments[0].start, 0.0);
+        assert_eq!(result.segments[0].end, 4.0);
+    }
+
+    #[test]
+    fn stem_energy_distinguishes_two_sources_when_patterns_diverge() {
+        let voice_energy = vec![(0.0, 0.16), (1.0, 0.14), (2.0, 0.0), (3.0, 0.0)];
+        let system_energy = vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.18), (3.0, 0.15)];
+
+        let result = diarization_from_energy_windows(&voice_energy, &system_energy, 1.0)
+            .expect("distinct stem patterns should produce diarization");
+
+        assert_eq!(result.num_speakers, 2);
+        assert_eq!(result.segments.len(), 2);
+        assert_eq!(result.segments[0].speaker, "SPEAKER_0");
+        assert_eq!(result.segments[1].speaker, "SPEAKER_1");
+    }
+
+    #[test]
+    fn single_system_dominant_speaker_relabels_to_voice_when_mic_is_consistently_active() {
+        let voice_energy = vec![(0.0, 0.020), (1.0, 0.024), (2.0, 0.018), (3.0, 0.022)];
+        let system_energy = vec![(0.0, 0.050), (1.0, 0.060), (2.0, 0.045), (3.0, 0.055)];
+
+        let result = diarization_from_energy_windows(&voice_energy, &system_energy, 1.0)
+            .expect("single dominant system speaker should still produce diarization");
+
+        assert_eq!(result.num_speakers, 1);
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].speaker, "SPEAKER_0");
+    }
+
+    #[test]
+    fn single_system_dominant_speaker_stays_remote_when_mic_noise_is_uncorrelated() {
+        let voice_energy = vec![(0.0, 0.020), (1.0, 0.006), (2.0, 0.019), (3.0, 0.007)];
+        let system_energy = vec![(0.0, 0.050), (1.0, 0.048), (2.0, 0.047), (3.0, 0.051)];
+
+        let result = diarization_from_energy_windows(&voice_energy, &system_energy, 1.0)
+            .expect("single dominant system speaker should still produce diarization");
+
+        assert_eq!(result.num_speakers, 1);
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].speaker, "SPEAKER_1");
     }
 
     #[test]
