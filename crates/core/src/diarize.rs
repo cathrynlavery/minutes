@@ -84,15 +84,18 @@ pub fn apply_confirmed_names(transcript: &str, attributions: &[SpeakerAttributio
                 let inside = &rest[..bracket_end];
                 if let Some(space_pos) = inside.find(' ') {
                     let label = &inside[..space_pos];
+                    let text = rest[bracket_end + 1..].trim();
                     if let Some(name) = high_map.get(label) {
-                        let after = &rest[bracket_end..];
-                        output.push_str(&format!(
-                            "[{} {}{}\n",
-                            name,
-                            &inside[space_pos + 1..],
-                            after
-                        ));
-                        replaced = true;
+                        if !is_non_lexical_event_text(text) {
+                            let after = &rest[bracket_end..];
+                            output.push_str(&format!(
+                                "[{} {}{}\n",
+                                name,
+                                &inside[space_pos + 1..],
+                                after
+                            ));
+                            replaced = true;
+                        }
                     }
                 }
             }
@@ -103,6 +106,11 @@ pub fn apply_confirmed_names(transcript: &str, attributions: &[SpeakerAttributio
         }
     }
     output
+}
+
+fn is_non_lexical_event_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with('[') && trimmed.ends_with(']')
 }
 
 /// Model filenames expected by pyannote-rs.
@@ -1799,6 +1807,25 @@ mod tests {
             }],
         );
         assert_eq!(result, transcript);
+    }
+
+    #[test]
+    fn apply_confirmed_names_keeps_non_speech_events_anonymous() {
+        let transcript =
+            "[SPEAKER_1 0:00] [beep]\n[SPEAKER_1 0:01] Hello there\n[SPEAKER_1 0:02] [typing]\n";
+        let result = apply_confirmed_names(
+            transcript,
+            &[SpeakerAttribution {
+                speaker_label: "SPEAKER_1".into(),
+                name: "Mat".into(),
+                confidence: Confidence::High,
+                source: AttributionSource::Manual,
+            }],
+        );
+
+        assert!(result.contains("[SPEAKER_1 0:00] [beep]"));
+        assert!(result.contains("[Mat 0:01] Hello there"));
+        assert!(result.contains("[SPEAKER_1 0:02] [typing]"));
     }
 
     #[test]
