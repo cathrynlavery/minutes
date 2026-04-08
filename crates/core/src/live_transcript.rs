@@ -299,7 +299,7 @@ fn run_inner(
             model_path
                 .to_str()
                 .ok_or_else(|| TranscribeError::ModelLoadError("invalid path".into()))?,
-            whisper_rs::WhisperContextParameters::default(),
+            crate::transcribe::whisper_context_params(),
         )
         .map_err(|e| TranscribeError::ModelLoadError(format!("{}", e)))?
     };
@@ -530,7 +530,7 @@ fn run_sidecar_inner_mpsc(
             model_path
                 .to_str()
                 .ok_or_else(|| TranscribeError::ModelLoadError("invalid path".into()))?,
-            whisper_rs::WhisperContextParameters::default(),
+            crate::transcribe::whisper_context_params(),
         )
         .map_err(|e| TranscribeError::ModelLoadError(format!("{}", e)))?
     };

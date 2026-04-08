@@ -54,7 +54,7 @@ pub fn preload_model(config: &Config) -> Result<(), MinutesError> {
         model_path
             .to_str()
             .ok_or_else(|| TranscribeError::ModelLoadError("invalid path".into()))?,
-        whisper_rs::WhisperContextParameters::default(),
+        crate::transcribe::whisper_context_params(),
     )
     .map_err(|e| TranscribeError::ModelLoadError(format!("{}", e)))?;
 
@@ -227,7 +227,7 @@ where
             model_path
                 .to_str()
                 .ok_or_else(|| TranscribeError::ModelLoadError("invalid path".into()))?,
-            whisper_rs::WhisperContextParameters::default(),
+            crate::transcribe::whisper_context_params(),
         )
         .map_err(|e| TranscribeError::ModelLoadError(format!("{}", e)))?;
         tracing::info!("whisper model loaded for dictation session");

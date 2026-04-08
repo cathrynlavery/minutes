@@ -268,6 +268,34 @@ fn transcribe_parakeet_dispatch(
     }
 }
 
+/// Build `WhisperContextParameters` with GPU explicitly enabled when a GPU
+/// backend (Metal / CUDA / CoreML) was compiled in. All call sites should use
+/// this instead of `WhisperContextParameters::default()`.
+#[cfg(feature = "whisper")]
+pub(crate) fn whisper_context_params() -> whisper_rs::WhisperContextParameters<'static> {
+    let mut params = whisper_rs::WhisperContextParameters::default();
+
+    let gpu_compiled = cfg!(any(feature = "metal", feature = "cuda", feature = "coreml"));
+    params.use_gpu = gpu_compiled;
+
+    let backend = if cfg!(feature = "metal") {
+        "metal"
+    } else if cfg!(feature = "cuda") {
+        "cuda"
+    } else if cfg!(feature = "coreml") {
+        "coreml"
+    } else {
+        "cpu"
+    };
+    tracing::debug!(
+        use_gpu = gpu_compiled,
+        backend = backend,
+        "whisper context params"
+    );
+
+    params
+}
+
 /// Real transcription using whisper.cpp via whisper-rs.
 ///
 /// When `force_disable_vad` is true, Silero VAD is not passed to whisper even if
@@ -288,7 +316,7 @@ fn transcribe_with_whisper(
         model_path
             .to_str()
             .ok_or_else(|| TranscribeError::ModelLoadError("invalid model path encoding".into()))?,
-        whisper_rs::WhisperContextParameters::default(),
+        whisper_context_params(),
     )
     .map_err(|e| TranscribeError::ModelLoadError(format!("{}", e)))?;
 
