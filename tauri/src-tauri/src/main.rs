@@ -98,8 +98,8 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
     if let Ok(win) = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Minutes")
-        .inner_size(480.0, 640.0)
-        .min_inner_size(380.0, 480.0)
+        .inner_size(520.0, 700.0)
+        .min_inner_size(420.0, 520.0)
         .transparent(true)
         .content_protected(true)
         .center()

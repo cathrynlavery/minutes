@@ -139,7 +139,7 @@
 
     /* Override xterm background to match app */
     .xterm { height: 100%; }
-    .xterm-viewport { overflow-y: auto !important; }
+    .xterm-viewport { overflow-y: auto; }
   </style>
 </head>
 <body>
@@ -186,7 +186,7 @@
     // Initialize xterm.js
     const term = new Terminal({
       theme: window.MINUTES_XTERM_THEME,
-      fontFamily: "'SF Mono', Menlo, monospace",
+      fontFamily: "'Geist Mono', 'SF Mono', Menlo, monospace",
       fontSize: 13,
       lineHeight: 1.2,
       cursorBlink: true,
