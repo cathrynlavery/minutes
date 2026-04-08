@@ -6,6 +6,18 @@
   <title>Add Note</title>
   <style>
     @font-face {
+      font-family: 'Instrument Serif';
+      font-style: normal;
+      font-weight: 400;
+      src: url('fonts/InstrumentSerif-Regular.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Instrument Serif';
+      font-style: italic;
+      font-weight: 400;
+      src: url('fonts/InstrumentSerif-Italic.woff2') format('woff2');
+    }
+    @font-face {
       font-family: 'Geist';
       font-style: normal;
       font-weight: 400;
@@ -32,86 +44,165 @@
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    :root {
+      --bg: #0D0D0B;
+      --bg-elevated: #141412;
+      --bg-hover: #1C1C1A;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-mid: #2A2924;
+      --text: #E8E4DA;
+      --text-secondary: #6B6760;
+      --text-tertiary: #3D3B38;
+      --accent: #30D158;
+      --accent-hover: #4ADE70;
+      --accent-soft: rgba(48, 209, 88, 0.12);
+      --red: #FF453A;
+      --shadow:
+        0 18px 34px rgba(0, 0, 0, 0.34),
+        inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+    }
+
     body {
       font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #0D0D0B;
-      color: #E8E4DA;
-      padding: 20px;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
+      background:
+        radial-gradient(circle at top left, rgba(48, 209, 88, 0.08), transparent 38%),
+        var(--bg);
+      color: var(--text);
+      padding: 14px;
       -webkit-user-select: none;
       user-select: none;
+    }
+
+    .shell {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(20, 20, 18, 0.96);
+      box-shadow: var(--shadow);
+    }
+
+    .header {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
     }
 
     .label {
       font-size: 11px;
       font-weight: 500;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
-      color: #6B6760;
-      margin-bottom: 8px;
+      color: var(--accent);
+    }
+
+    .title {
+      font-family: 'Instrument Serif', ui-serif, Georgia, serif;
+      font-size: 26px;
+      line-height: 0.95;
+      letter-spacing: -0.03em;
+      color: var(--text);
+    }
+
+    .subtitle {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--text-secondary);
+      max-width: 320px;
     }
 
     .input-wrap {
       flex: 1;
       display: flex;
       flex-direction: column;
+      min-height: 0;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--bg-elevated);
+    }
+
+    .input-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-secondary);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
     }
 
     textarea {
       flex: 1;
       width: 100%;
-      padding: 10px 12px;
-      border: 1px solid #2A2924;
-      border-radius: 8px;
-      background: #141412;
-      color: #E8E4DA;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--text);
       font-family: inherit;
       font-size: 14px;
-      line-height: 1.5;
+      line-height: 1.55;
       resize: none;
       outline: none;
-      transition: border-color 0.15s ease;
       -webkit-user-select: text;
       user-select: text;
     }
 
     textarea:focus {
-      border-color: #30D158;
-      box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.12);
+      box-shadow: none;
     }
 
     textarea::placeholder {
-      color: #3D3B38;
+      color: var(--text-tertiary);
     }
 
     .footer {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-top: 12px;
+      gap: 12px;
     }
 
     .hint {
       font-size: 11px;
-      color: #3D3B38;
+      color: var(--text-secondary);
+      line-height: 1.4;
     }
 
     .hint kbd {
       display: inline-block;
       padding: 1px 5px;
       border-radius: 4px;
-      background: #1C1C1A;
-      color: #6B6760;
+      background: var(--bg-hover);
+      color: var(--text-secondary);
       font-family: 'Geist Mono', 'SF Mono', monospace;
       font-size: 10px;
-      border: 1px solid #2A2924;
+      border: 1px solid var(--border-mid);
     }
 
     .btn {
-      padding: 6px 16px;
-      border-radius: 6px;
+      padding: 9px 16px;
+      border-radius: 8px;
       border: none;
       font-family: inherit;
       font-size: 13px;
@@ -121,27 +212,29 @@
     }
 
     .btn-primary {
-      background: #30D158;
-      color: #0D0D0B;
+      background: var(--accent);
+      color: var(--bg);
+      box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.14);
     }
 
-    .btn-primary:hover { background: #4ADE70; }
-    .btn-primary:active { background: #26B348; transform: scale(0.97); }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:active { transform: scale(0.97); }
 
     .btn-primary:disabled {
-      background: #1C1C1A;
-      color: #3D3B38;
+      background: var(--bg-hover);
+      color: var(--text-tertiary);
       cursor: default;
       transform: none;
+      box-shadow: none;
     }
 
     .toast {
       position: fixed;
-      bottom: 16px;
+      bottom: 18px;
       left: 50%;
       transform: translateX(-50%) translateY(40px);
-      background: #30D158;
-      color: #0D0D0B;
+      background: var(--accent);
+      color: var(--bg);
       font-size: 12px;
       font-weight: 600;
       padding: 6px 14px;
@@ -155,20 +248,35 @@
       opacity: 1;
       transform: translateX(-50%) translateY(0);
     }
+
+    .toast.error {
+      background: var(--red);
+      color: #fff;
+    }
   </style>
 </head>
 <body>
-  <div class="label">Note</div>
-  <div class="input-wrap">
-    <textarea
-      id="note-input"
-      placeholder="What's happening right now..."
-      autofocus
-    ></textarea>
-  </div>
-  <div class="footer">
-    <span class="hint"><kbd>&#8984;Return</kbd> to save</span>
-    <button class="btn btn-primary" id="save-btn" disabled>Save Note</button>
+  <div class="shell">
+    <div class="header">
+      <div class="label">Quick capture</div>
+      <div class="title">Add a note</div>
+      <div class="subtitle">Append context to the current session without breaking flow.</div>
+    </div>
+    <div class="input-wrap">
+      <div class="input-meta">
+        <span class="pill">Local only</span>
+        <span id="note-length">0 chars</span>
+      </div>
+      <textarea
+        id="note-input"
+        placeholder="What's happening right now..."
+        autofocus
+      ></textarea>
+    </div>
+    <div class="footer">
+      <span class="hint"><kbd>&#8984;Return</kbd> save <span style="opacity:.5">·</span> <kbd>Esc</kbd> close</span>
+      <button class="btn btn-primary" id="save-btn" disabled>Save Note</button>
+    </div>
   </div>
   <div class="toast" id="toast">Note saved</div>
 
@@ -179,10 +287,14 @@
     const input = document.getElementById('note-input');
     const btn = document.getElementById('save-btn');
     const toast = document.getElementById('toast');
+    const noteLength = document.getElementById('note-length');
 
-    input.addEventListener('input', () => {
+    function updateState() {
       btn.disabled = !input.value.trim();
-    });
+      noteLength.textContent = `${input.value.trim().length} chars`;
+    }
+
+    input.addEventListener('input', updateState);
 
     async function saveNote() {
       const text = input.value.trim();
@@ -192,8 +304,11 @@
       try {
         await invoke('cmd_add_note', { text });
         input.value = '';
+        updateState();
 
         // Flash success
+        toast.classList.remove('error');
+        toast.textContent = 'Note saved';
         toast.classList.add('show');
         setTimeout(() => {
           toast.classList.remove('show');
@@ -204,10 +319,12 @@
       } catch (e) {
         // Not recording — show inline
         toast.textContent = e;
-        toast.style.background = '#FF453A';
-        toast.style.color = '#fff';
+        toast.classList.add('error');
         toast.classList.add('show');
-        setTimeout(() => toast.classList.remove('show'), 2000);
+        setTimeout(() => {
+          toast.classList.remove('show');
+          toast.classList.remove('error');
+        }, 2000);
         btn.disabled = false;
       }
     }
@@ -227,6 +344,7 @@
 
     // Focus the textarea on window show
     input.focus();
+    updateState();
   </script>
 </body>
 </html>

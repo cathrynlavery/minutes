@@ -6,6 +6,18 @@
   <title>Upcoming Meeting</title>
   <style>
     @font-face {
+      font-family: 'Instrument Serif';
+      font-style: normal;
+      font-weight: 400;
+      src: url('fonts/InstrumentSerif-Regular.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Instrument Serif';
+      font-style: italic;
+      font-weight: 400;
+      src: url('fonts/InstrumentSerif-Italic.woff2') format('woff2');
+    }
+    @font-face {
       font-family: 'Geist';
       font-style: normal;
       font-weight: 400;
@@ -26,19 +38,52 @@
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    :root {
+      --bg: #0D0D0B;
+      --bg-elevated: #141412;
+      --bg-hover: #1C1C1A;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-mid: #2A2924;
+      --text: #E8E4DA;
+      --text-secondary: #6B6760;
+      --text-tertiary: #3D3B38;
+      --accent: #30D158;
+      --accent-hover: #4ADE70;
+      --accent-soft: rgba(48, 209, 88, 0.12);
+      --red: #FF453A;
+      --shadow:
+        0 18px 36px rgba(0, 0, 0, 0.34),
+        inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+    }
+
     body {
       font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #0D0D0B;
-      color: #E8E4DA;
-      padding: 20px;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
+      background: var(--bg);
+      color: var(--text);
+      padding: 0;
       -webkit-user-select: none;
       user-select: none;
-      border: 1px solid #2A2924;
-      border-radius: 10px;
       overflow: hidden;
+    }
+
+    .prompt {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border-mid);
+      background:
+        radial-gradient(circle at top left, rgba(48, 209, 88, 0.12), transparent 42%),
+        var(--bg);
+      box-shadow: var(--shadow);
+      animation: slideIn 220ms ease-out;
     }
 
     .header {
@@ -56,9 +101,25 @@
       flex: 1;
     }
 
+    .eyebrow {
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+
     .calendar-icon {
-      font-size: 16px;
-      line-height: 1.3;
+      width: 28px;
+      height: 28px;
+      border-radius: 9px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      background: var(--accent-soft);
+      color: var(--accent);
       flex-shrink: 0;
     }
 
@@ -67,48 +128,69 @@
     }
 
     .meeting-title {
-      font-size: 15px;
-      font-weight: 600;
-      color: #E8E4DA;
-      white-space: nowrap;
+      font-family: 'Instrument Serif', ui-serif, Georgia, serif;
+      font-size: 22px;
+      line-height: 0.95;
+      letter-spacing: -0.03em;
+      color: var(--text);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
       overflow: hidden;
-      text-overflow: ellipsis;
-      line-height: 1.3;
     }
 
     .meeting-countdown {
-      font-size: 13px;
-      color: #30D158;
-      margin-top: 2px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      width: fit-content;
+      margin-top: 8px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
     }
 
     .meeting-countdown.urgent {
-      color: #FF453A;
+      background: rgba(255, 69, 58, 0.12);
+      color: var(--red);
     }
 
     .close-btn {
-      padding: 2px 8px;
-      border-radius: 6px;
-      border: none;
-      background: transparent;
-      color: #3D3B38;
-      font-size: 14px;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-tertiary);
+      font-size: 13px;
       cursor: pointer;
       line-height: 1;
       flex-shrink: 0;
     }
 
-    .close-btn:hover { color: #6B6760; background: #1C1C1A; }
+    .close-btn:hover { color: var(--text-secondary); background: var(--bg-hover); }
+
+    .summary {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--text-secondary);
+      min-height: 34px;
+    }
 
     .actions {
       display: flex;
       gap: 8px;
-      margin-top: 16px;
+      margin-top: auto;
     }
 
     .btn {
-      padding: 8px 16px;
-      border-radius: 6px;
+      padding: 9px 14px;
+      border-radius: 8px;
       border: none;
       font-family: inherit;
       font-size: 13px;
@@ -122,29 +204,36 @@
     }
 
     .btn-primary {
-      background: #30D158;
-      color: #0D0D0B;
+      background: var(--accent);
+      color: var(--bg);
       flex: 1;
+      box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.14);
     }
 
-    .btn-primary:hover { background: #4ADE70; }
-    .btn-primary:active { background: #26B348; transform: scale(0.97); }
-    .btn-primary:disabled { background: #1C1C1A; color: #3D3B38; cursor: default; transform: none; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:active { transform: scale(0.97); }
+    .btn-primary:disabled {
+      background: var(--bg-hover);
+      color: var(--text-tertiary);
+      cursor: default;
+      transform: none;
+      box-shadow: none;
+    }
 
     .btn-secondary {
       background: transparent;
-      color: #6B6760;
-      border: 1px solid #2A2924;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-mid);
     }
 
-    .btn-secondary:hover { background: #1C1C1A; color: #E8E4DA; }
+    .btn-secondary:hover { background: var(--bg-hover); color: var(--text); }
     .btn-secondary:active { transform: scale(0.97); }
 
     .error-text {
       font-size: 12px;
-      color: #FF453A;
-      margin-top: 8px;
+      color: var(--red);
       display: none;
+      line-height: 1.4;
     }
 
     .toast {
@@ -152,8 +241,8 @@
       bottom: 12px;
       left: 50%;
       transform: translateX(-50%) translateY(30px);
-      background: #30D158;
-      color: #0D0D0B;
+      background: var(--accent);
+      color: var(--bg);
       font-size: 12px;
       font-weight: 600;
       padding: 6px 14px;
@@ -169,38 +258,39 @@
       transform: translateX(-50%) translateY(0);
     }
 
-    /* Slide-in animation */
     @keyframes slideIn {
       from { opacity: 0; transform: translateY(-12px); }
       to { opacity: 1; transform: translateY(0); }
     }
-
-    body {
-      animation: slideIn 300ms ease-out;
-    }
   </style>
 </head>
 <body role="alertdialog" aria-label="Upcoming meeting">
-  <div class="header">
-    <div class="meeting-info">
-      <span class="calendar-icon">📅</span>
-      <div class="meeting-text">
-        <div class="meeting-title" id="title"></div>
-        <div class="meeting-countdown" id="countdown"></div>
+  <div class="prompt">
+    <div class="header">
+      <div class="meeting-info">
+        <span class="calendar-icon">📅</span>
+        <div class="meeting-text">
+          <div class="eyebrow">Upcoming meeting</div>
+          <div class="meeting-title" id="title"></div>
+          <div class="meeting-countdown" id="countdown"></div>
+        </div>
       </div>
+      <button class="close-btn" id="close-btn" aria-label="Dismiss">✕</button>
     </div>
-    <button class="close-btn" id="close-btn" aria-label="Dismiss">✕</button>
+    <div class="summary" id="summary"></div>
+    <div class="actions">
+      <button class="btn btn-primary" id="primary-btn" autofocus></button>
+      <button class="btn btn-secondary" id="dismiss-btn">Dismiss</button>
+    </div>
+    <div class="error-text" id="error-text"></div>
   </div>
-  <div class="actions">
-    <button class="btn btn-primary" id="primary-btn" autofocus></button>
-    <button class="btn btn-secondary" id="dismiss-btn">Dismiss</button>
-  </div>
-  <div class="error-text" id="error-text"></div>
   <div class="toast" id="toast">Recording started ✓</div>
 
   <script>
-    const { invoke } = window.__TAURI__.core;
-    const { getCurrentWebviewWindow } = window.__TAURI__.webviewWindow;
+    const invoke = window.__TAURI__?.core?.invoke || (async () => {});
+    const getCurrentWebviewWindow =
+      window.__TAURI__?.webviewWindow?.getCurrentWebviewWindow ||
+      (() => ({ close: () => window.close() }));
 
     // Parse event data from URL fragment: title|minutesUntil|url
     const fragment = decodeURIComponent(window.location.hash.slice(1));
@@ -214,6 +304,7 @@
     const primaryBtn = document.getElementById('primary-btn');
     const errorEl = document.getElementById('error-text');
     const toast = document.getElementById('toast');
+    const summaryEl = document.getElementById('summary');
 
     titleEl.textContent = title || 'Meeting';
     titleEl.title = title || 'Meeting'; // full text on hover
@@ -228,6 +319,9 @@
     }
 
     primaryBtn.textContent = hasUrl ? 'Join & Record' : 'Record';
+    summaryEl.textContent = hasUrl
+      ? 'Minutes can open the meeting link and start a local recording before the conversation gets away from you.'
+      : 'Minutes can start a local recording now so the transcript, decisions, and action items are captured from the beginning.';
 
     // Auto-focus primary button
     primaryBtn.focus();

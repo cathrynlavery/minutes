@@ -122,7 +122,7 @@ fn show_note_window(app: &tauri::AppHandle) {
     }
     let _win = WebviewWindowBuilder::new(app, "note", WebviewUrl::App("note.html".into()))
         .title("Add Note")
-        .inner_size(360.0, 200.0)
+        .inner_size(420.0, 260.0)
         .resizable(false)
         .content_protected(true)
         .always_on_top(true)
@@ -328,11 +328,11 @@ fn show_meeting_prompt(app: &tauri::AppHandle, event: &minutes_core::calendar::C
     let url = format!("meeting-prompt.html#{}", encoded);
 
     // Position: top-right of main screen, below menu bar
-    let (pos_x, pos_y) = get_top_right_position(340.0, 140.0);
+    let (pos_x, pos_y) = get_top_right_position(380.0, 190.0);
 
     match WebviewWindowBuilder::new(app, "meeting-prompt", WebviewUrl::App(url.into()))
         .title("Upcoming Meeting")
-        .inner_size(340.0, 140.0)
+        .inner_size(380.0, 190.0)
         .position(pos_x, pos_y)
         .resizable(false)
         .decorations(false)
