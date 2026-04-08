@@ -2091,7 +2091,164 @@
       flex-shrink: 0;
       margin-left: 8px;
     }
-  </style>
+      .ui-hidden {
+        display: none;
+      }
+
+      .is-hidden {
+        display: none;
+      }
+
+      .footer-hidden {
+        display: none;
+      }
+
+      .btn {
+        transition: transform 0.17s ease, background-color 0.17s ease, border-color 0.17s ease, color 0.17s ease, opacity 0.17s ease, box-shadow 0.17s ease;
+      }
+
+      .btn-icon {
+        transition: transform 0.17s ease, background-color 0.17s ease, color 0.17s ease, box-shadow 0.17s ease;
+      }
+
+      .btn-icon:focus-visible,
+      .btn:focus-visible {
+        outline: 0;
+        box-shadow: 0 0 0 2px rgba(98, 188, 233, 0.35);
+      }
+
+      .btn:hover,
+      .btn-icon:hover {
+        transform: translateY(-1px);
+      }
+
+      .recall-panel {
+        border-radius: 16px;
+        padding: 16px;
+        gap: 12px;
+      }
+
+      .recall-header {
+        border-radius: 12px;
+      }
+
+      .recall-terminal {
+        border-radius: 14px;
+        gap: 12px;
+      }
+
+      .recall-close {
+        transition: transform 0.17s ease, background-color 0.17s ease, color 0.17s ease, box-shadow 0.17s ease;
+      }
+
+      .audio-viz .bar {
+        opacity: 0.62;
+      }
+
+      .settings-card {
+        width: min(580px, 100%);
+        max-height: calc(100vh - 40px);
+      }
+
+      .settings-title {
+        font-size: 20px;
+        font-family: var(--font-display);
+      }
+
+      .settings-section {
+        margin-bottom: 16px;
+      }
+
+      .settings-section-inline {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
+      .settings-section-inline-tight {
+        margin-top: 4px;
+      }
+
+      .settings-shortcut-key {
+        min-width: 140px;
+        font-family: var(--font-mono);
+        font-size: 12px;
+      }
+
+      .settings-hint-link {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        cursor: pointer;
+      }
+
+      .settings-field {
+        margin-top: 6px;
+        width: 100%;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: var(--text);
+        font-size: 13px;
+        box-sizing: border-box;
+      }
+
+      .settings-meta-inline {
+        margin-bottom: 6px;
+        margin-top: 4px;
+      }
+
+      .settings-compact-meta {
+        margin-top: -8px;
+        margin-bottom: 8px;
+      }
+
+      .settings-config-path {
+        font-family: var(--font-mono);
+        opacity: 0.7;
+      }
+
+      .settings-storage-meta {
+        font-size: 13px;
+        color: var(--text-secondary);
+        line-height: 1.8;
+        padding: 0 4px;
+      }
+
+      .settings-control-group {
+        flex: 1;
+      }
+
+      .settings-model-status {
+        flex: 1;
+        margin: 0;
+      }
+
+      .settings-footer {
+        padding-top: 14px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        color: var(--text-tertiary);
+        line-height: 1.45;
+      }
+
+      .about-footer-small {
+        font-size: 11px;
+      }
+
+      .settings-section-tight {
+        margin-bottom: 8px;
+      }
+
+      .download-progress {
+        display: none;
+      }
+
+      .download-progress.is-visible {
+        display: block;
+      }
+
+    </style>
 </head>
 <body>
   <div class="app-left">
@@ -2419,14 +2576,14 @@
 
   <!-- Settings -->
   <div class="about-overlay" id="settings-overlay">
-    <div class="about-card" role="dialog" aria-modal="true" aria-labelledby="settings-title" style="width: min(580px, 100%); max-height: calc(100vh - 40px);">
+    <div class="about-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <div class="about-top">
-        <h2 id="settings-title" style="font-size: 20px; font-family: var(--font-display);">Settings</h2>
+        <h2 id="settings-title" class="settings-title">Settings</h2>
         <button class="btn btn-secondary btn-sm" id="btn-settings-close">Close</button>
       </div>
 
       <!-- General -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">GENERAL</div>
         <div class="about-controls">
           <div class="about-controls-copy">Show completion alerts</div>
@@ -2444,9 +2601,9 @@
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Quick Thought shortcut</div>
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-              <button id="shortcut-recorder-quick_thought" class="btn btn-secondary btn-sm shortcut-recorder-btn" style="min-width: 140px; font-family: var(--font-mono); font-size: 12px;" data-slot="quick_thought">&#8984; Shift M</button>
-              <span class="special-key-link" style="font-size: 11px; color: var(--text-tertiary); cursor: pointer;" data-slot="quick_thought">or <u>Caps Lock</u> / <u>fn</u></span>
+            <div class="settings-section-inline">
+              <button id="shortcut-recorder-quick_thought" class="btn btn-secondary btn-sm shortcut-recorder-btn settings-shortcut-key" data-slot="quick_thought">&#8984; Shift M</button>
+              <span class="special-key-link settings-hint-link" data-slot="quick_thought">or <u>Caps Lock</u> / <u>fn</u></span>
             </div>
             <div class="about-controls-meta" id="shortcut-status-quick_thought">Hold to record a quick thought, or tap to lock and tap again to stop.</div>
           </div>
@@ -2455,15 +2612,15 @@
       </div>
 
       <!-- Dictation -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">DICTATION</div>
         <!-- Dictation shortcut (unified recorder) -->
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Dictation shortcut</div>
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-              <button id="shortcut-recorder-dictation" class="btn btn-secondary btn-sm shortcut-recorder-btn" style="min-width: 140px; font-family: var(--font-mono); font-size: 12px;" data-slot="dictation">&#8984; Shift Space</button>
-              <span class="special-key-link" style="font-size: 11px; color: var(--text-tertiary); cursor: pointer;" data-slot="dictation">or <u>Caps Lock</u> / <u>fn</u></span>
+            <div class="settings-section-inline">
+              <button id="shortcut-recorder-dictation" class="btn btn-secondary btn-sm shortcut-recorder-btn settings-shortcut-key" data-slot="dictation">&#8984; Shift Space</button>
+              <span class="special-key-link settings-hint-link" data-slot="dictation">or <u>Caps Lock</u> / <u>fn</u></span>
             </div>
             <div class="about-controls-meta" id="shortcut-status-dictation">Hold to dictate, or tap to lock and tap again to stop.</div>
           </div>
@@ -2472,7 +2629,7 @@
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Dictation whisper model</div>
-            <select id="settings-dictation-model" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <select id="settings-dictation-model" class="settings-field">
               <option value="tiny">tiny — fastest, lower quality</option>
               <option value="base">base — fast, decent quality (default)</option>
               <option value="small">small — good quality, slower</option>
@@ -2488,7 +2645,7 @@
           <div class="about-controls-group">
             <div class="about-controls-copy">Silence timeout</div>
             <div class="about-controls-meta">End dictation session after this much silence (after first speech).</div>
-            <select id="settings-dictation-silence" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <select id="settings-dictation-silence" class="settings-field">
               <option value="1000">1 second</option>
               <option value="2000">2 seconds (default)</option>
               <option value="3000">3 seconds</option>
@@ -2499,12 +2656,12 @@
       </div>
 
       <!-- Live Transcript -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">LIVE TRANSCRIPT</div>
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Keyboard shortcut</div>
-            <select class="shortcut-select" id="settings-live-shortcut-select" style="margin-top: 6px;">
+            <select class="shortcut-select settings-field" id="settings-live-shortcut-select">
               <option value="CmdOrCtrl+Shift+L">Cmd+Shift+L</option>
               <option value="CmdOrCtrl+Alt+L">Cmd+Option+L</option>
               <option value="CmdOrCtrl+Shift+T">Cmd+Shift+T</option>
@@ -2516,21 +2673,21 @@
       </div>
 
       <!-- Transcription -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">TRANSCRIPTION</div>
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Whisper model</div>
-            <select id="settings-whisper-model" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <select id="settings-whisper-model" class="settings-field">
               <option value="tiny">tiny — 75 MB, fastest, lower quality</option>
               <option value="base">base — 148 MB, fast, decent quality</option>
               <option value="small">small — 466 MB, good quality (recommended)</option>
               <option value="medium">medium — 1.5 GB, great quality</option>
               <option value="large-v3">large-v3 — 3.1 GB, best quality</option>
             </select>
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
-              <div class="about-controls-meta" id="settings-model-status" style="flex: 1; margin: 0;"></div>
-              <button class="btn btn-secondary btn-sm" id="btn-download-model" style="white-space: nowrap; display: none;">Download</button>
+            <div class="settings-section-inline settings-section-inline-tight">
+              <div class="about-controls-meta settings-model-status"></div>
+              <button class="btn btn-secondary btn-sm is-hidden" id="btn-download-model">Download</button>
             </div>
           </div>
         </div>
@@ -2538,7 +2695,7 @@
           <div class="about-controls-group">
             <div class="about-controls-copy">Transcription language</div>
             <div class="about-controls-meta">Leave this on Auto-detect for mixed or unknown audio. Pick a language only when Whisper is consistently guessing wrong.</div>
-            <select id="settings-whisper-language" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <select id="settings-whisper-language" class="settings-field">
               <option value="">Auto-detect</option>
               <option value="af">Afrikaans</option>
               <option value="am">Amharic</option>
@@ -2650,13 +2807,13 @@
       </div>
 
       <!-- Summarization -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">AUTO-SUMMARIZATION</div>
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Automatic pipeline summarization</div>
-            <div class="about-controls-meta" style="margin-bottom: 6px;">By default, Claude summarizes your meetings conversationally via MCP — no configuration needed. Turn this on only if you want summaries generated automatically in the recording pipeline.</div>
-            <select id="settings-summarization-engine" style="width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <div class="about-controls-meta settings-meta-inline">By default, Claude summarizes your meetings conversationally via MCP — no configuration needed. Turn this on only if you want summaries generated automatically in the recording pipeline.</div>
+            <select id="settings-summarization-engine" class="settings-field">
               <option value="none">Off — Claude summarizes when you ask (recommended)</option>
               <option value="agent">Agent CLI — uses your Claude Code or Codex subscription</option>
               <option value="ollama">Ollama — local, free, runs on your machine</option>
@@ -2666,10 +2823,10 @@
             <div class="about-controls-meta" id="settings-summarization-status"></div>
           </div>
         </div>
-        <div class="about-controls" id="settings-agent-command-row" style="display: none;">
+        <div class="about-controls is-hidden" id="settings-agent-command-row">
           <div class="about-controls-group">
             <div class="about-controls-copy">Agent command</div>
-            <select id="settings-agent-command" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <select id="settings-agent-command" class="settings-field">
             </select>
             <div class="about-controls-meta" id="settings-agent-command-status"></div>
           </div>
@@ -2677,7 +2834,7 @@
       </div>
 
       <!-- Call Detection -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">CALL DETECTION</div>
         <div class="about-controls">
           <div class="about-controls-copy">Detect calls automatically</div>
@@ -2687,14 +2844,14 @@
           <div class="about-controls-group">
             <div class="about-controls-copy">Polling interval</div>
             <div class="about-controls-meta">How often to check for active calls (seconds).</div>
-            <input type="number" id="settings-call-detection-polling-interval" min="1" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <input type="number" id="settings-call-detection-polling-interval" min="1" class="settings-field">
           </div>
         </div>
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Cooldown</div>
             <div class="about-controls-meta">Minutes to wait before re-triggering call detection.</div>
-            <input type="number" id="settings-call-detection-cooldown" min="0" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <input type="number" id="settings-call-detection-cooldown" min="0" class="settings-field">
           </div>
         </div>
         <div class="about-controls">
@@ -2707,7 +2864,7 @@
       </div>
 
       <!-- Privacy -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">PRIVACY</div>
         <div class="about-controls">
           <div class="about-controls-copy">Hide windows from screen sharing</div>
@@ -2720,10 +2877,10 @@
           </div>
           <button class="btn btn-secondary btn-sm toggle-btn" id="settings-screen-context">Off</button>
         </div>
-        <div class="about-controls" id="settings-screen-interval-row" style="display: none;">
+        <div class="about-controls is-hidden" id="settings-screen-interval-row">
           <div class="about-controls-group">
             <div class="about-controls-copy">Screenshot interval</div>
-            <select id="settings-screen-interval" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <select id="settings-screen-interval" class="settings-field">
               <option value="15">Every 15 seconds</option>
               <option value="30">Every 30 seconds</option>
               <option value="60">Every 60 seconds</option>
@@ -2733,28 +2890,28 @@
       </div>
 
       <!-- Vault Sync -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">VAULT SYNC</div>
         <div class="about-controls">
-          <div class="about-controls-group" style="flex: 1;">
+          <div class="about-controls-group settings-control-group">
             <div class="about-controls-copy">Connect an Obsidian or Logseq vault</div>
             <div class="about-controls-meta" id="vault-status-detail">Checking...</div>
           </div>
-          <button class="btn btn-primary btn-sm" id="btn-vault-setup" style="white-space: nowrap;">Set Up Vault</button>
+          <button class="btn btn-primary btn-sm" id="btn-vault-setup">Set Up Vault</button>
         </div>
-        <div class="about-controls" id="vault-unlink-row" style="display: none;">
-          <div class="about-controls-copy" id="vault-active-path" style="font-family: var(--font-mono); font-size: 11px; opacity: 0.7;"></div>
+        <div class="about-controls is-hidden" id="vault-unlink-row">
+          <div class="about-controls-copy settings-config-path" id="vault-active-path"></div>
           <button class="btn btn-secondary btn-sm" id="btn-vault-unlink">Unlink</button>
         </div>
       </div>
 
       <!-- Recall Agent -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">RECALL AGENT</div>
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">AI agent for the Recall panel</div>
-            <select id="settings-agent" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px;">
+            <select id="settings-agent" class="settings-field">
             </select>
             <div class="about-controls-meta" id="settings-agent-status"></div>
           </div>
@@ -2763,27 +2920,27 @@
           <div class="about-controls-copy">Auto-approve all tool calls</div>
           <button class="btn btn-secondary btn-sm toggle-btn" id="settings-skip-permissions">Off</button>
         </div>
-        <div class="about-controls-meta" id="settings-skip-permissions-hint" style="padding: 0 4px; margin-top: -8px; margin-bottom: 8px;"></div>
+        <div class="about-controls-meta settings-compact-meta" id="settings-skip-permissions-hint"></div>
         <div class="about-controls">
           <div class="about-controls-group">
             <div class="about-controls-copy">Extra launch flags</div>
             <div class="about-controls-meta">Additional CLI arguments passed when starting the agent</div>
-            <input type="text" id="settings-agent-args" placeholder="e.g. --model sonnet" style="margin-top: 6px; width: 100%; padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: var(--text); font-size: 13px; box-sizing: border-box;">
-            <div class="about-controls-meta" id="settings-agent-args-status" style="margin-top: 4px;"></div>
+            <input type="text" id="settings-agent-args" placeholder="e.g. --model sonnet" class="settings-field">
+            <div class="about-controls-meta settings-meta-inline" id="settings-agent-args-status"></div>
           </div>
         </div>
       </div>
 
       <!-- Storage -->
-      <div style="margin-bottom: 8px;">
+      <div class="settings-section settings-section-tight">
         <div class="about-item-title">STORAGE</div>
-        <div id="settings-storage-info" style="font-size: 13px; color: var(--text-secondary); line-height: 1.8; padding: 0 4px;">
+        <div id="settings-storage-info" class="settings-storage-meta">
           Loading...
         </div>
       </div>
 
       <!-- Diagnostics (Readiness + Recovery moved from header) -->
-      <div style="margin-bottom: 16px;">
+      <div class="settings-section">
         <div class="about-item-title">DIAGNOSTICS</div>
         <div class="about-controls">
           <div class="about-controls-copy">System readiness and audio permission checks</div>
@@ -2795,8 +2952,8 @@
         </div>
       </div>
 
-      <div class="about-footer" style="font-size: 11px;">
-        Config file: <span id="settings-config-path" style="font-family: var(--font-mono); opacity: 0.7;"></span>
+      <div class="about-footer settings-footer about-footer-small">
+        Config file: <span id="settings-config-path" class="settings-config-path"></span>
       </div>
     </div>
   </div>
@@ -3392,7 +3549,7 @@
           isLiveTranscript = false;
           callBanner.classList.remove('active');
           if (activeCallSession) activeCallSession.dismissed = true;
-          footer.style.display = 'none';
+          footer.classList.add('footer-hidden');
           if (status.elapsed) recordingTime.textContent = status.elapsed;
           updateViz(status.audioLevel || 0);
 
@@ -3412,7 +3569,7 @@
           liveBar.classList.remove('active'); // T4
           isLiveTranscript = false;
           callBanner.classList.remove('active');
-          footer.style.display = '';
+          footer.classList.remove('footer-hidden');
           processingStage.textContent = status.processingStage || 'Preparing transcript...';
 
           // Start elapsed timer when processing begins
@@ -3448,7 +3605,7 @@
               recordingBar.classList.remove('active');
               processingBar.classList.remove('active');
               liveBar.classList.add('active');
-              footer.style.display = 'none';
+              footer.classList.add('footer-hidden');
               const n = liveStatus.line_count || 0;
               const d = Math.round(liveStatus.duration_secs || 0);
               const min = Math.floor(d / 60);
@@ -3474,7 +3631,7 @@
           processingSummary.textContent = '';
           processingJobsEl.replaceChildren();
           quickNote.classList.remove('active');
-          footer.style.display = '';
+          footer.classList.remove('footer-hidden');
 
           if (activeCallSession && !activeCallSession.dismissed) {
             callBanner.classList.add('active');
@@ -4340,12 +4497,12 @@
       meetingsScroll.replaceChildren();
 
       if (!meetings || meetings.length === 0) {
-        footer.style.display = 'none';
+        footer.classList.add('footer-hidden');
         renderSetupEmptyState();
         return;
       }
 
-      footer.style.display = '';
+      footer.classList.remove('footer-hidden');
 
       const groups = groupByDate(meetings);
       for (const [label, items] of Object.entries(groups)) {
@@ -4469,7 +4626,7 @@
       if (hasModel) {
         root.querySelector('#step-model').classList.add('done');
         root.querySelector('#step-model-status').textContent = 'Done';
-        root.querySelector('#step-model-body').style.display = 'none';
+        root.querySelector('#step-model-body').classList.add('ui-hidden');
         root.querySelector('#step-first-artifact').classList.remove('disabled');
       }
 
@@ -4481,7 +4638,7 @@
           const progress = root.querySelector('.download-progress');
           const fill = root.querySelector('.progress-fill');
           const text = root.querySelector('.progress-text');
-          progress.style.display = 'block';
+          progress.classList.add('is-visible');
 
           // Animate progress (curl doesn't give us real progress via invoke)
           fill.style.width = '20%';
@@ -4500,7 +4657,7 @@
 
             root.querySelector('#step-model').classList.add('done');
             root.querySelector('#step-model-status').textContent = 'Done';
-            root.querySelector('#step-model-body').style.display = 'none';
+            root.querySelector('#step-model-body').classList.add('ui-hidden');
 
             currentSetup = { ...currentSetup, hasModel: true, needsSetup: false };
             root.querySelector('#step-first-artifact').classList.remove('disabled');
@@ -4544,7 +4701,7 @@
                   <button class="btn btn-primary btn-sm model-btn" data-model="base">Base (141 MB, recommended)</button>
                   <button class="btn btn-secondary btn-sm model-btn" data-model="small">Small (466 MB, best accuracy)</button>
                 </div>
-                <div class="download-progress" style="display: none;">
+                <div class="download-progress ui-hidden">
                   <div class="progress-bar"><div class="progress-fill"></div></div>
                   <span class="progress-text">Downloading...</span>
                 </div>
@@ -4659,14 +4816,14 @@
         document.getElementById('settings-model-status').textContent = isDownloaded
           ? 'Downloaded: ' + dl.join(', ')
           : dl.length ? 'Downloaded: ' + dl.join(', ') + '  •  "' + selectedModel + '" not yet downloaded' : 'No models downloaded yet.';
-        document.getElementById('btn-download-model').style.display = isDownloaded ? 'none' : '';
+        document.getElementById('btn-download-model').classList.toggle('is-hidden', isDownloaded);
         document.getElementById('settings-whisper-language').value = s.transcription.language || '';
         setSettingsToggle('settings-diarization', s.diarization.engine !== 'none'); // "auto" shows as On
         document.getElementById('settings-summarization-engine').value = s.summarization.engine;
         updateSumStatus(s);
         // Agent command picker (visible when engine = "agent")
         const agentCmdRow = document.getElementById('settings-agent-command-row');
-        agentCmdRow.style.display = s.summarization.engine === 'agent' ? '' : 'none';
+        agentCmdRow.classList.toggle('is-hidden', s.summarization.engine !== 'agent');
         try {
         const agentCmdSel = document.getElementById('settings-agent-command');
         const sumAgents = await invoke('cmd_list_agents');
@@ -4680,7 +4837,7 @@
         document.getElementById('settings-agent-command-status').textContent = sumAgents.find(a => a.name === currentCmd) ? 'Installed' : 'Custom command';
         } catch(e) { console.error('agent command picker:', e); }
         setSettingsToggle('settings-screen-context', s.screen_context.enabled);
-        document.getElementById('settings-screen-interval-row').style.display = s.screen_context.enabled ? '' : 'none';
+        document.getElementById('settings-screen-interval-row').classList.toggle('is-hidden', !s.screen_context.enabled);
         document.getElementById('settings-screen-interval').value = String(s.screen_context.interval_secs);
         try {
         const agents = await invoke('cmd_list_agents');
@@ -4703,8 +4860,8 @@
         const skipRow = document.getElementById('settings-skip-permissions-row');
         const skipHint = document.getElementById('settings-skip-permissions-hint');
         const supportsSkip = ['claude', 'codex'].includes(s.assistant.agent);
-        skipRow.style.display = supportsSkip ? '' : 'none';
-        skipHint.style.display = supportsSkip ? '' : 'none';
+        skipRow.classList.toggle('is-hidden', !supportsSkip);
+        skipHint.classList.toggle('is-hidden', !supportsSkip);
         document.getElementById('settings-agent-args').value = extraArgs.join(' ');
         document.getElementById('settings-agent-args-status').textContent = extraArgs.length ? extraArgs.length + ' flag(s)' : '';
         } catch(e) { console.error('agent flags:', e); }
@@ -4800,13 +4957,13 @@
           setupBtn.textContent = 'Reconfigure';
           setupBtn.classList.remove('btn-primary');
           setupBtn.classList.add('btn-secondary');
-          unlinkRow.style.display = '';
+          unlinkRow.classList.remove('is-hidden');
           activePath.textContent = v.strategy + ': ' + v.path;
         } else if (v.enabled) {
           detail.textContent = v.detail;
           detail.style.color = 'var(--yellow, var(--orange))';
           setupBtn.textContent = 'Fix';
-          unlinkRow.style.display = '';
+          unlinkRow.classList.remove('is-hidden');
           activePath.textContent = v.path;
         } else {
           detail.textContent = 'Not configured. Meetings stay in ~/meetings/ — connect a vault to see them in Obsidian.';
@@ -4814,7 +4971,7 @@
           setupBtn.textContent = 'Set Up Vault';
           setupBtn.classList.add('btn-primary');
           setupBtn.classList.remove('btn-secondary');
-          unlinkRow.style.display = 'none';
+          unlinkRow.classList.add('is-hidden')
         }
       } catch (e) { console.error('loadVaultStatus:', e); }
     }
@@ -4911,7 +5068,7 @@
       document.getElementById('settings-model-status').textContent = isDownloaded
         ? 'Downloaded: ' + dl.join(', ')
         : dl.length ? 'Downloaded: ' + dl.join(', ') + '  •  "' + e.target.value + '" not yet downloaded' : 'No models downloaded yet.';
-      document.getElementById('btn-download-model').style.display = isDownloaded ? 'none' : '';
+      document.getElementById('btn-download-model').classList.toggle('is-hidden', isDownloaded);
     });
     document.getElementById('btn-download-model').addEventListener('click', async () => {
       const model = document.getElementById('settings-whisper-model').value;
@@ -4923,7 +5080,7 @@
       try {
         const result = await invoke('cmd_download_model', { model });
         status.textContent = result;
-        btn.style.display = 'none';
+        btn.classList.add('is-hidden');
       } catch (e) {
         status.textContent = 'Download failed: ' + e;
       }
@@ -4942,7 +5099,7 @@
     });
     document.getElementById('settings-summarization-engine').addEventListener('change', async (e) => {
       await invoke('cmd_set_setting', {section:'summarization',key:'engine',value:e.target.value});
-      document.getElementById('settings-agent-command-row').style.display = e.target.value === 'agent' ? '' : 'none';
+      document.getElementById('settings-agent-command-row').classList.toggle('is-hidden', e.target.value !== 'agent');
       const s = await invoke('cmd_get_settings'); updateSumStatus(s);
     });
     document.getElementById('settings-agent-command').addEventListener('change', async (e) => {
@@ -4955,14 +5112,14 @@
       const next = !s.screen_context.enabled;
       await invoke('cmd_set_setting', {section:'screen_context',key:'enabled',value:String(next)});
       setSettingsToggle('settings-screen-context', next);
-      document.getElementById('settings-screen-interval-row').style.display = next ? '' : 'none';
+      document.getElementById('settings-screen-interval-row').classList.toggle('is-hidden', !next);
     });
     document.getElementById('settings-screen-interval').addEventListener('change', (e) => invoke('cmd_set_setting', {section:'screen_context',key:'interval_secs',value:e.target.value}));
     document.getElementById('settings-agent').addEventListener('change', async (e) => {
       await invoke('cmd_set_setting', {section:'assistant',key:'agent',value:e.target.value});
       const supportsSkip = ['claude', 'codex'].includes(e.target.value);
-      document.getElementById('settings-skip-permissions-row').style.display = supportsSkip ? '' : 'none';
-      document.getElementById('settings-skip-permissions-hint').style.display = supportsSkip ? '' : 'none';
+      document.getElementById('settings-skip-permissions-row').classList.toggle('is-hidden', !supportsSkip);
+      document.getElementById('settings-skip-permissions-hint').classList.toggle('is-hidden', !supportsSkip);
     });
     // Helper: rebuild agent_args from toggle + text field and save
     async function saveAgentArgs() {
@@ -6138,7 +6295,7 @@
     currentWindow.listen('live-transcript:started', () => {
       isLiveTranscript = true;
       liveBar.classList.add('active');
-      footer.style.display = 'none';
+      footer.classList.add('footer-hidden');
       statusPill.className = 'status-pill live';
       statusPill.textContent = 'live';
       startFastPoll();
@@ -6148,7 +6305,7 @@
     currentWindow.listen('live-transcript:stopped', (event) => {
       isLiveTranscript = false;
       liveBar.classList.remove('active');
-      footer.style.display = '';
+      footer.classList.remove('footer-hidden');
       statusPill.className = 'status-pill';
       statusPill.textContent = 'idle';
       stopFastPoll();
@@ -6159,7 +6316,7 @@
     currentWindow.listen('live-transcript:error', (event) => {
       isLiveTranscript = false;
       liveBar.classList.remove('active');
-      footer.style.display = '';
+      footer.classList.remove('footer-hidden');
       statusPill.className = 'status-pill';
       statusPill.textContent = 'idle';
       stopFastPoll();
