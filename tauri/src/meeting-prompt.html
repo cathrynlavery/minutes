@@ -5,19 +5,38 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Upcoming Meeting</title>
   <style>
+    @font-face {
+      font-family: 'Geist';
+      font-style: normal;
+      font-weight: 400;
+      src: url('fonts/Geist-Regular.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Geist';
+      font-style: normal;
+      font-weight: 500;
+      src: url('fonts/Geist-Medium.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Geist';
+      font-style: normal;
+      font-weight: 600;
+      src: url('fonts/Geist-SemiBold.woff2') format('woff2');
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
-      background: #1c1c1e;
-      color: #f5f5f7;
+      font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0D0D0B;
+      color: #E8E4DA;
       padding: 20px;
       height: 100vh;
       display: flex;
       flex-direction: column;
       -webkit-user-select: none;
       user-select: none;
-      border: 1px solid #38383a;
+      border: 1px solid #2A2924;
       border-radius: 10px;
       overflow: hidden;
     }
@@ -50,7 +69,7 @@
     .meeting-title {
       font-size: 15px;
       font-weight: 600;
-      color: #f5f5f7;
+      color: #E8E4DA;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -59,12 +78,12 @@
 
     .meeting-countdown {
       font-size: 13px;
-      color: #4da8d9;
+      color: #30D158;
       margin-top: 2px;
     }
 
     .meeting-countdown.urgent {
-      color: #e5534b;
+      color: #FF453A;
     }
 
     .close-btn {
@@ -72,14 +91,14 @@
       border-radius: 6px;
       border: none;
       background: transparent;
-      color: #636366;
+      color: #3D3B38;
       font-size: 14px;
       cursor: pointer;
       line-height: 1;
       flex-shrink: 0;
     }
 
-    .close-btn:hover { color: #98989d; background: #38383a; }
+    .close-btn:hover { color: #6B6760; background: #1C1C1A; }
 
     .actions {
       display: flex;
@@ -103,27 +122,27 @@
     }
 
     .btn-primary {
-      background: #4da8d9;
-      color: #fff;
+      background: #30D158;
+      color: #0D0D0B;
       flex: 1;
     }
 
-    .btn-primary:hover { background: #6bbce3; }
-    .btn-primary:active { background: #3890b8; transform: scale(0.97); }
-    .btn-primary:disabled { background: #38383a; color: #636366; cursor: default; transform: none; }
+    .btn-primary:hover { background: #4ADE70; }
+    .btn-primary:active { background: #26B348; transform: scale(0.97); }
+    .btn-primary:disabled { background: #1C1C1A; color: #3D3B38; cursor: default; transform: none; }
 
     .btn-secondary {
       background: transparent;
-      color: #98989d;
-      border: 1px solid #38383a;
+      color: #6B6760;
+      border: 1px solid #2A2924;
     }
 
-    .btn-secondary:hover { background: #38383a; color: #f5f5f7; }
+    .btn-secondary:hover { background: #1C1C1A; color: #E8E4DA; }
     .btn-secondary:active { transform: scale(0.97); }
 
     .error-text {
       font-size: 12px;
-      color: #e5534b;
+      color: #FF453A;
       margin-top: 8px;
       display: none;
     }
@@ -133,8 +152,8 @@
       bottom: 12px;
       left: 50%;
       transform: translateX(-50%) translateY(30px);
-      background: #46c072;
-      color: #000;
+      background: #30D158;
+      color: #0D0D0B;
       font-size: 12px;
       font-weight: 600;
       padding: 6px 14px;

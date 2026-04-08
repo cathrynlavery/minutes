@@ -1,188 +1,252 @@
-# DESIGN.md — Minutes Design System
+# Design System — Minutes
 
-> Design tokens, patterns, and conventions for the Minutes desktop app (Tauri).
+> Open-source conversation memory. Local, private, free forever.
 
-## Color Tokens
+## Product Context
 
-```css
-/* Backgrounds */
---bg:          #1c1c1e    /* App background */
---bg-elevated: #2c2c2e    /* Cards, panels, overlays */
---bg-hover:    #38383a    /* Hover state */
+- **What this is:** Local-first conversation memory layer for developers — captures meetings and voice memos via Whisper.cpp, makes them queryable via MCP tools for Claude, Codex, Gemini CLI
+- **Who it's for:** Developers and power users who run AI assistants and care about privacy
+- **Space:** Developer tools, AI tooling, local-first computing
+- **Project type:** Two unified surfaces — marketing landing site (Next.js) + macOS menu bar app (Tauri)
 
-/* Borders */
---border:      #38383a    /* Default border */
-/* Subtle:     rgba(255,255,255,0.1)  — form controls */
-/* Divider:    rgba(255,255,255,0.06) — section separators */
+## Aesthetic Direction
 
-/* Text */
---text:           #f5f5f7    /* Primary text */
---text-secondary: #86868b    /* Labels, metadata */
---text-tertiary:  #636366    /* Placeholders, disabled */
-
-/* Accent */
---accent:       #0a84ff    /* Links, active states, primary buttons */
---accent-hover: #409cff    /* Accent hover */
-
-/* Semantic */
---red:     #ff453a                  /* Recording, errors, destructive */
---red-bg:  rgba(255, 69, 58, 0.12) /* Red background tint */
---green:   #30d158                  /* Success, running, complete */
---purple:  #bf5af2                  /* AI responses, ghost context */
-```
-
-**Dark mode only.** No light mode. Matches macOS system dark appearance.
+- **Direction:** Terminal With a Soul — Unix precision meets editorial humanity
+- **Decoration level:** Minimal — the transcript output is the decoration
+- **Mood:** The product should feel like it was built by someone who would never ship something embarrassing. Ink & Switch energy, not Notion energy. Archival permanence, not ephemeral SaaS.
+- **Key design bet:** Light cream as the default (paper-like, archival) with warm-dark as the dark mode. Every other tool in this category defaults to dark — this is the deliberate departure.
 
 ## Typography
 
+- **Display/Hero:** Instrument Serif — literary gravitas for a product about human conversations. The italic weight is used for emphasis within headings (e.g. "conversation *memory.*"). No other tool in this category uses a serif; this is intentional.
+- **Body/UI:** Geist — Vercel's clean, technical sans-serif. Pairs naturally with Geist Mono. Used for all body text, labels, buttons, and navigation.
+- **Transcript/code/mono:** Geist Mono — for all diarized output, timestamps, speaker labels, action items, YAML frontmatter, CLI examples, keyboard shortcuts.
+- **Loading (landing site):** Google Fonts CDN for Instrument Serif + Geist + Geist Mono
+- **Loading (Tauri app):** Bundled WOFF2 files in `tauri/src/fonts/` — offline-safe, no network dependency
+
+**Scale (landing site):**
+
+| Role | Font | Size | Weight |
+|------|------|------|--------|
+| Hero heading | Instrument Serif | 56-58px | 400 |
+| Section heading | Instrument Serif | 28-32px | 400 |
+| Feature title | Instrument Serif | 18-20px | 400 |
+| Body | Geist | 15-17px | 400 |
+| UI/labels | Geist | 13-14px | 400-600 |
+| Mono labels | Geist Mono | 10-12px | 400-500 |
+| Transcript | Geist Mono | 11-12px | 400 |
+
+**Scale (Tauri app):**
+
+| Role | Font | Size | Weight |
+|------|------|------|--------|
+| Meeting titles | Geist | 14px | 600 |
+| Headings | Instrument Serif | 18-22px | 400 |
+| Body | Geist | 13px | 400 |
+| Timestamps/metadata | Geist Mono | 11-12px | 400 |
+| Transcript output | Geist Mono | 11-12px | 400 |
+
+## Color
+
+Two-mode system. Light is the default on the landing site. The Tauri app respects system preference.
+
+### Light Mode
+
 ```css
---font-sans:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif
---font-display: ui-serif, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Georgia, serif
---font-mono:    'SF Mono', 'Menlo', monospace
+--bg:             #F8F4ED;   /* warm cream, paper-like */
+--bg-elevated:    #EFEBE2;   /* card/panel lift */
+--bg-hover:       #E8E2D8;   /* deeper surface, input backgrounds */
+--border:         rgba(0,0,0,0.07);
+--border-mid:     rgba(0,0,0,0.13);   /* more visible borders */
+--text:           #1A1916;   /* near-black, warm undertone */
+--text-secondary: #8C8880;   /* labels, metadata */
+--text-tertiary:  #BDB9B0;   /* placeholders, timestamps */
+--accent:         #C96B4E;   /* coral — CTAs, links, italic heading, speaker labels */
+--accent-hover:   #B85A3E;   /* accent hover state */
+--accent-soft:    rgba(201,107,78,0.10); /* accent background tint */
+--red:            #C0392B;   /* recording indicator, errors, destructive */
+--green:          #2E7D46;   /* success, complete */
 ```
 
-| Use | Font | Size |
-|-----|------|------|
-| Body text | `--font-sans` | 13px |
-| Headings | `--font-display` | 20px (h2), 16px (h3) |
-| Code, paths, timestamps | `--font-mono` | 11-12px |
-| Meeting titles | `--font-sans` | 14px, weight 600 |
-| Metadata (date, duration) | `--font-sans` | 12px, `--text-secondary` |
+### Dark Mode
 
-**Display serif for headings** is a deliberate choice — it distinguishes Minutes from developer tools and signals "this is about human conversations."
+```css
+--bg:             #0D0D0B;   /* warm near-black, not pure #000 */
+--bg-elevated:    #141412;   /* card/panel lift (Tauri: --bg-elevated) */
+--bg-hover:       #1C1C1A;   /* elevated panels, Tauri primary surface */
+--border:         rgba(255,255,255,0.06);
+--border-mid:     #2A2924;   /* warm stone, more visible */
+--text:           #E8E4DA;   /* cream off-white */
+--text-secondary: #6B6760;   /* labels, metadata */
+--text-tertiary:  #3D3B38;   /* placeholders, timestamps */
+--accent:         #30D158;   /* green — CTAs, links, speaker labels */
+--accent-hover:   #4ADE70;   /* accent hover state */
+--accent-soft:    rgba(48,209,88,0.10);
+--red:            #FF453A;   /* recording indicator, errors, destructive */
+--red-bg:         rgba(255,69,58,0.12);
+--green:          #30D158;   /* success (doubles as accent in dark mode) */
+--live:           #30D158;   /* live transcript indicator */
+--purple:         #BF5AF2;   /* AI/assistant state */
+--orange:         #D4832A;   /* processing/pending state */
+```
 
-## Spacing & Layout
+**Accent usage — restrained.** The accent should appear only on:
+1. Italic or emphasized text in the hero heading
+2. Speaker labels in transcript output
+3. Feature/section label text (the small uppercase mono labels)
+4. CTA button fill (primary action only)
+5. Nav link hover state
+6. Active/focus states on interactive elements
+
+Never use the accent as a background for large areas or as decoration. It earns its attention by being rare.
+
+**Recording red is separate.** The red (`--red`) is strictly semantic — recording state, errors, destructive actions. Never use it as a general accent.
+
+## Spacing
+
+- **Base unit:** 8px
+- **Density:** Comfortable on landing, compact in the Tauri app
 
 | Token | Value | Use |
 |-------|-------|-----|
-| Section padding | 16px | Inside cards, panels |
-| Gap (items) | 8px | Between list items, inline elements |
-| Gap (sections) | 16px | Between sections, cards |
-| Page margin | 16px | Window edge to content |
+| 2xs | 4px | Icon gaps, inline spacing |
+| xs | 8px | Between list items, small gaps |
+| sm | 12-16px | Section padding, card interiors |
+| md | 24px | Between sections, card-to-card |
+| lg | 32-40px | Page sections |
+| xl | 56-72px | Hero spacing, major section breaks |
+| Page margin | 32px | Window/viewport edge to content |
+| Max content width | 800px | Landing site |
 
-## Radius
+## Layout
+
+- **Approach:** Grid-disciplined — single column, centered, 800px max width on the landing site. The Tauri app uses a two-panel layout (list + detail) where applicable.
+- **Composition first:** The landing page opens as a poster, not a document. Hero heading is the first thing that lands; the transcript card is the second. No above-the-fold feature grids.
+- **Transcript as hero visual:** The actual diarized output (speaker labels, timestamps, action items) rendered in Geist Mono is the primary product demo. Competitors hide raw output. Minutes celebrates it.
+
+## Border Radius
 
 | Context | Value |
 |---------|-------|
-| Default (`--radius`) | 10px |
-| Cards, panels | 12px |
-| Buttons | 8px |
+| Landing buttons | 5px — sharp, developer-coded |
+| App buttons | 8px |
+| Cards, panels | 8px (landing) / 10-12px (app) |
+| Input fields | 6-8px |
 | Pills, badges | 999px |
-| Inline code | 4px |
-| Small controls | 6px |
-| Large containers (about, settings) | 14-20px |
+| Inline code | 3px |
 
-**Consistent rounding.** 10px default. Rounder = more prominent. Never sharp corners.
+Consistent rounding. Landing is slightly sharper than the app. Never fully squared, never fully bubbly.
+
+## Motion
+
+- **Approach:** Minimal-functional — only transitions that aid comprehension
+- **Theme toggle:** 0.25s ease on background/color changes — the whole page transitions together
+- **Hover states:** 0.15-0.2s ease
+- **Panel open/close:** 0.2s ease-out
+- **Recording pulse:** 1s ease-in-out, infinite — the only animation that loops
+
+No bounces, no entrance animations, no scroll-driven effects. Utility-grade motion.
 
 ## Component Patterns
 
-### Pills / Badges
-```
-Background: rgba(accent, 0.12)
-Text: accent color
-Radius: 999px (fully round)
-Padding: 2px 8px
-Font-size: 11px
-```
-Used for: status indicators, type labels (Meeting, Memo, Dictation), counts.
-
 ### Buttons
+
 ```
-Primary:   bg: --accent, text: white, radius: 8px
-Secondary: bg: rgba(255,255,255,0.06), text: --text, border: rgba(255,255,255,0.1)
-Icon-only: 28x28px circle, hover: --bg-hover
+Primary:    bg: --accent, text: white (light) / #0D0D0B (dark), radius: 5px (landing) / 8px (app)
+Ghost:      bg: transparent, text: --text-secondary, border: --border-mid, radius: same
+Icon-only:  28×28px, hover: --bg-hover
 ```
 
-### Form Controls
+### Transcript Cards / Meeting List Items
+
 ```
-Background: rgba(255,255,255,0.06)
-Border: 1px solid rgba(255,255,255,0.1)
-Radius: 8px
-Padding: 6px 8px
-Font-size: 13px
+Container:  bg: --bg-elevated, border: 1px solid --border, radius: 8px
+Header:     padding: 12px 18px, border-bottom: 1px solid --border
+Body:       padding: 16-18px, font: Geist Mono 11-12px
+Speaker:    color: --accent
+Timestamp:  color: --text-tertiary
+Action item: ☐ glyph, color: --accent
+Divider:    1px solid --border between body and action items
 ```
 
-### Meeting List Items
+### Feature Grid
+
 ```
-Padding: 12px 16px
-Border-bottom: 1px solid --border
-Hover: --bg-hover
-Title: 14px, weight 600, --text
-Metadata: 12px, --text-secondary
-Action items badge: pill style, --accent or --red for overdue
+Grid:        2-column, 1px gap, background: --border (creates border-like lines)
+Cell:        bg: --bg, padding: 22-24px
+Label:       Geist Mono 10px uppercase, color: --accent
+Title:       Instrument Serif 18-20px, color: --text
+Description: Geist 13px, color: --text-secondary
 ```
 
-### Overlays / Panels
+### Form Controls (app)
+
 ```
-Background: --bg-elevated
-Border: 1px solid --border
+Background: --bg-hover
+Border:     1px solid --border-mid
+Radius:     6-8px
+Padding:    6px 10px
+Font:       Geist 13px
+```
+
+### Pills / Badges
+
+```
+Background: --accent-soft
+Text:       --accent
+Radius:     999px
+Padding:    2px 8px
+Font:       Geist Mono 10-11px
+```
+
+### Overlays / Panels (app)
+
+```
+Background:     --bg-hover
+Border:         1px solid --border-mid
 Backdrop-filter: blur(12px)
-Radius: 12-14px
-Box-shadow: 0 8px 32px rgba(0,0,0,0.4)
+Radius:         12-14px
+Shadow:         0 8px 32px rgba(0,0,0,0.3) — light / 0.5 — dark
 ```
-
-## Animation
-
-| Property | Duration | Easing |
-|----------|----------|--------|
-| Hover transitions | 0.15s | ease |
-| Panel open/close | 0.2s | ease-out |
-| Fade in | 0.15s | ease |
-| Recording pulse | 1s | ease-in-out (infinite) |
-
-**Subtle and fast.** No bounces, no delays. Utility-grade motion.
 
 ## Recording States
 
 ```
-IDLE         → tray icon: default
-RECORDING    → tray icon: red dot, pulsing indicator, timer
-PROCESSING   → spinner with stage label
-COMPLETE     → green check, file path
-ERROR        → red indicator, error message, preserved capture path
+IDLE        → tray icon: default
+RECORDING   → tray icon: red dot, pulsing --red indicator, timer in Geist Mono
+PROCESSING  → spinner with stage label in --text-secondary
+COMPLETE    → --green check, file path in Geist Mono
+ERROR       → --red indicator, error message, preserved capture path
 ```
 
-Every state must be visible in every surface (tray, CLI, MCP).
+Every state must be visible in every surface (tray, app, CLI output).
 
 ## Iconography
 
-- **No custom icon set.** Use system emoji for status indicators.
-- Recording: `●` (red)
-- Success: `✓` (green)
-- Error: `✗` (red)
+- No custom icon set. System emoji for status indicators.
+- Recording: `●` (--red)
+- Success: `✓` (--green)
+- Error: `✗` (--red)
 - Voice memo: `📱`
-- Ghost context: `👻`
 - Action item: `☐` / `☑`
-
-## Overlay Exceptions
-
-The dictation overlay (floating HUD) uses its own color tokens that intentionally
-diverge from the main app. A transparent, always-on-top floating surface needs
-different treatment than in-app panels.
-
-```css
-/* Dictation overlay — tauri/src/dictation-overlay.html */
---panel: rgba(28, 28, 34, 0.96);     /* warmer than --bg-elevated */
---panel-edge: rgba(255, 255, 255, 0.08);
---accent: #79a9ff;                    /* softer blue than --accent */
---text-tertiary: rgba(238, 236, 231, 0.32);
-```
+- Ghost context: `👻`
 
 ## Accessibility
 
-- All interactive elements are keyboard-accessible
-- Minimum contrast: WCAG AA (4.5:1 for text, 3:1 for large text)
-- Focus indicators: 2px solid `--accent` outline
+- Minimum contrast: WCAG AA (4.5:1 for body text, 3:1 for large text)
+- Light mode: #1A1916 on #F8F4ED = ~16:1. Coral #C96B4E on #F8F4ED = ~3.8:1 (acceptable for large text/UI elements; avoid for small body copy)
+- Dark mode: #E8E4DA on #0D0D0B = ~14:1. Green #30D158 on #0D0D0B = ~8.5:1
+- All interactive elements keyboard-accessible
+- Focus indicators: 2px solid --accent outline
 - No information conveyed by color alone — always paired with text or icon
 
-## File Conventions
+## Decisions Log
 
-| Output | Location | Naming |
-|--------|----------|--------|
-| Meeting transcripts | `~/meetings/` | `YYYY-MM-DD-{slug}.md` |
-| Voice memos | `~/meetings/memos/` | `YYYY-MM-DD-{slug}.md` |
-| Dictation files | `~/meetings/memos/` | `YYYY-MM-DD-{first-words}.md` |
-| Prep briefs | `~/.minutes/preps/` | `YYYY-MM-DD-{person}.prep.md` |
-| State/logs | `~/.minutes/` | Various |
-
-All output files: `0600` permissions (owner read/write only).
+| Date | Decision | Rationale |
+|------|----------|-----------|
+| 2026-04-08 | Light cream (#F8F4ED) as landing default | Every tool in this category defaults to dark. Cream signals archival permanence and differentiates. |
+| 2026-04-08 | Instrument Serif for headings | Only serif in the category — signals "conversations" not "code." Both voices in design consultation independently agreed. |
+| 2026-04-08 | Coral accent in light (#C96B4E), green in dark (#30D158) | Warm/human for light mode, terminal/alive for dark mode. Accent is used only in 5 specific spots — never decoratively. |
+| 2026-04-08 | Transcript output as hero visual | Real diarized output in Geist Mono replaces the existing DemoPlayer gif. The product's output is the aesthetic. |
+| 2026-04-08 | Warm near-black (#0D0D0B) not pure black | Slightly warm undertone unifies dark mode with the cream light mode surfaces. |
+| 2026-04-08 | No gradients, no glows, no illustration | Information density is the aesthetic. The only decoration is well-set type. |

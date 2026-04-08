@@ -9,18 +9,18 @@ import {
   Sequence,
 } from "remotion";
 
-const BG = "#0a0a0a";
-const FG = "#ededed";
-const DIM = "#a1a1a1";
-const DIMMER = "#666666";
-const GREEN = "#00cc88";
-const BLUE = "#0070f3";
-const PURPLE = "#a855f7";
-const ORANGE = "#eab308";
-const RED = "#ef4444";
-const BORDER = "rgba(255,255,255,0.08)";
-const TERMINAL_BG = "#0a0a0a";
-const BAR_BG = "rgba(255,255,255,0.02)";
+const BG = "#F8F4ED";
+const FG = "#1A1916";
+const DIM = "#8C8880";
+const DIMMER = "#BDB9B0";
+const GREEN = "#2E7D46";
+const ACCENT = "#C96B4E";
+const PURPLE = "#BF5AF2";
+const ORANGE = "#D4832A";
+const RED = "#C0392B";
+const BORDER = "rgba(0,0,0,0.09)";
+const TERMINAL_BG = "#EFEBE2";
+const BAR_BG = "rgba(0,0,0,0.03)";
 
 const FONT_MAIN = 15;
 const FONT_SMALL = 12;
@@ -53,15 +53,15 @@ const TerminalWindow: React.FC<{
         gap: 8,
       }}
     >
-      <div style={{ width: 12, height: 12, borderRadius: "50%", background: "#ff5f57" }} />
-      <div style={{ width: 12, height: 12, borderRadius: "50%", background: "#febc2e" }} />
-      <div style={{ width: 12, height: 12, borderRadius: "50%", background: "#28c840" }} />
+      <div style={{ width: 12, height: 12, borderRadius: "50%", background: RED }} />
+      <div style={{ width: 12, height: 12, borderRadius: "50%", background: ORANGE }} />
+      <div style={{ width: 12, height: 12, borderRadius: "50%", background: GREEN }} />
       <span
         style={{
           marginLeft: 14,
           color: DIMMER,
           fontSize: FONT_TITLE,
-          fontFamily: "var(--font-geist-mono), SF Mono, Menlo, monospace",
+          fontFamily: "var(--font-mono), SF Mono, Menlo, monospace",
         }}
       >
         {title}
@@ -71,7 +71,7 @@ const TerminalWindow: React.FC<{
       style={{
         flex: 1,
         padding: "20px 24px",
-        fontFamily: "var(--font-geist-mono), SF Mono, Menlo, Consolas, monospace",
+        fontFamily: "var(--font-mono), SF Mono, Menlo, Consolas, monospace",
         fontSize: FONT_MAIN,
         lineHeight: 1.7,
         color: FG,
@@ -231,7 +231,7 @@ const Scene2: React.FC = () => {
       {frame > 55 && (
         <FadeIn delay={55}>
           <Line mt={16}>
-            <span style={{ color: BLUE }}>Copied to clipboard</span>
+            <span style={{ color: ACCENT }}>Copied to clipboard</span>
           </Line>
         </FadeIn>
       )}
@@ -330,7 +330,7 @@ const Scene4: React.FC = () => {
   return (
     <TerminalWindow title="Claude — what was that idea?">
       <Line>
-        <span style={{ color: BLUE, fontWeight: 600 }}>you: </span>
+        <span style={{ color: ACCENT, fontWeight: 600 }}>you: </span>
         <TypedText
           text="what was that pricing idea I had while walking?"
           startFrame={8}
@@ -390,7 +390,7 @@ const Scene5: React.FC = () => {
 
   const stats = [
     { label: "binary", value: "7 MB", color: GREEN },
-    { label: "transcription", value: "local", color: BLUE },
+    { label: "transcription", value: "local", color: ACCENT },
     { label: "MCP tools", value: "13", color: PURPLE },
     { label: "license", value: "MIT", color: ORANGE },
   ];
@@ -412,7 +412,7 @@ const Scene5: React.FC = () => {
           fontSize: 52,
           fontWeight: 700,
           color: FG,
-          fontFamily: "var(--font-geist-sans), -apple-system, sans-serif",
+          fontFamily: "var(--font-sans), -apple-system, sans-serif",
           letterSpacing: -2,
         }}
       >
@@ -423,7 +423,7 @@ const Scene5: React.FC = () => {
           opacity: spring({ frame: frame - 6, fps, config: { damping: 15 } }),
           fontSize: 18,
           color: DIM,
-          fontFamily: "var(--font-geist-sans), -apple-system, sans-serif",
+          fontFamily: "var(--font-sans), -apple-system, sans-serif",
           marginTop: 10,
         }}
       >
@@ -448,7 +448,7 @@ const Scene5: React.FC = () => {
                 fontSize: 30,
                 fontWeight: 700,
                 color: s.color,
-                fontFamily: "var(--font-geist-mono), SF Mono, monospace",
+                fontFamily: "var(--font-mono), SF Mono, monospace",
               }}
             >
               {s.value}
@@ -458,7 +458,7 @@ const Scene5: React.FC = () => {
                 fontSize: 13,
                 color: DIM,
                 marginTop: 6,
-                fontFamily: "var(--font-geist-sans), -apple-system, sans-serif",
+                fontFamily: "var(--font-sans), -apple-system, sans-serif",
               }}
             >
               {s.label}
@@ -473,8 +473,8 @@ const Scene5: React.FC = () => {
             opacity: spring({ frame: frame - 45, fps, config: { damping: 15 } }),
             marginTop: 40,
             fontSize: 16,
-            color: BLUE,
-            fontFamily: "var(--font-geist-mono), SF Mono, monospace",
+            color: ACCENT,
+            fontFamily: "var(--font-mono), SF Mono, monospace",
           }}
         >
           github.com/silverstein/minutes

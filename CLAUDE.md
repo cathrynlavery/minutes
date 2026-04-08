@@ -218,6 +218,20 @@ SHA=$(gh api repos/silverstein/homebrew-tap/contents/Formula/minutes.rb --jq '.s
 ```
 Verify: `brew update && brew info silverstein/tap/minutes` should show the new version.
 
+## Design System
+
+Always read `DESIGN.md` before making any visual or UI decisions.
+All font choices, colors, spacing, border radius, and aesthetic direction are defined there.
+Do not deviate without explicit user approval.
+
+Key rules:
+- Landing site defaults to **light cream** (#F8F4ED). Dark mode is opt-in via system preference.
+- Accent: **coral** (#C96B4E) in light, **green** (#30D158) in dark. Used sparingly — 5 specific spots only.
+- Headings: **Instrument Serif**. Body: **Instrument Sans**. UI/labels/transcript: **Geist Mono**.
+- No gradients, no decorative elements, no illustrations. Information density is the aesthetic.
+- The transcript output card (diarized speaker labels + action items in Geist Mono) is the primary product demo.
+- In QA or design review: flag any code that introduces fonts, colors, or radius values not defined in DESIGN.md.
+
 ## GitHub Discussions
 
 Discussions are enabled at `silverstein/minutes` as the community Q&A surface. Issues are for bugs and feature requests; Discussions are for usage questions, setup help, and show-and-tell.

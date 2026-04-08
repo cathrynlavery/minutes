@@ -1,6 +1,4 @@
 import type { Metadata } from "next";
-import { GeistSans } from "geist/font/sans";
-import { GeistMono } from "geist/font/mono";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
@@ -29,9 +27,6 @@ export const metadata: Metadata = {
     description:
       "Record meetings, capture voice memos, ask your AI what was decided. Local, free, MIT licensed.",
   },
-  other: {
-    "theme-color": "#000000",
-  },
 };
 
 export default function RootLayout({
@@ -40,9 +35,25 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>
+    <html lang="en">
       <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap"
+        />
         <link rel="alternate" type="text/plain" href="/llms.txt" />
+        <meta
+          name="theme-color"
+          media="(prefers-color-scheme: light)"
+          content="#F8F4ED"
+        />
+        <meta
+          name="theme-color"
+          media="(prefers-color-scheme: dark)"
+          content="#0D0D0B"
+        />
       </head>
       <body className="font-sans antialiased">
         {children}
