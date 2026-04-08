@@ -27,6 +27,7 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
+      color-scheme: light dark;
       --bg-hover:       #1C1C1A;
       --border:         rgba(255, 255, 255, 0.06);
       --border-mid:     #2A2924;
@@ -36,10 +37,52 @@
       --accent:     #30D158;
       --red:        #FF453A;
       --green:      #30D158;
+      --red-border-strong: rgba(255, 69, 58, 0.45);
+      --red-ring: rgba(255, 69, 58, 0.16);
+      --red-glow: rgba(255, 69, 58, 0.28);
+      --red-outline: rgba(255, 69, 58, 0.14);
+      --red-halo: rgba(255, 69, 58, 0.08);
+      --green-ring: rgba(48, 209, 88, 0.18);
+      --green-glow: rgba(48, 209, 88, 0.28);
+      --accent-ring: rgba(48, 209, 88, 0.18);
+      --accent-glow: rgba(48, 209, 88, 0.28);
+      --spinner-track: rgba(48, 209, 88, 0.18);
+      --waveform-top: rgba(255,255,255,0.85);
+      --waveform-bottom: rgba(255,255,255,0.42);
       --shadow:
         0 14px 28px rgba(0, 0, 0, 0.35),
         0 4px 10px rgba(0, 0, 0, 0.25),
         inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg-hover:       #E8E2D8;
+        --border:         rgba(0, 0, 0, 0.07);
+        --border-mid:     rgba(0, 0, 0, 0.13);
+        --text:           #1A1916;
+        --text-secondary: #8C8880;
+        --text-tertiary:  #BDB9B0;
+        --accent:         #C96B4E;
+        --red:            #C0392B;
+        --green:          #2E7D46;
+        --red-border-strong: rgba(192, 57, 43, 0.32);
+        --red-ring: rgba(192, 57, 43, 0.12);
+        --red-glow: rgba(192, 57, 43, 0.18);
+        --red-outline: rgba(192, 57, 43, 0.12);
+        --red-halo: rgba(192, 57, 43, 0.06);
+        --green-ring: rgba(46, 125, 70, 0.14);
+        --green-glow: rgba(46, 125, 70, 0.20);
+        --accent-ring: rgba(201, 107, 78, 0.14);
+        --accent-glow: rgba(201, 107, 78, 0.20);
+        --spinner-track: rgba(201, 107, 78, 0.14);
+        --waveform-top: rgba(26, 25, 22, 0.70);
+        --waveform-bottom: rgba(26, 25, 22, 0.28);
+        --shadow:
+          0 14px 28px rgba(0, 0, 0, 0.12),
+          0 4px 10px rgba(0, 0, 0, 0.08),
+          inset 0 1px 0 rgba(0, 0, 0, 0.03);
+      }
     }
 
     html, body {
@@ -77,12 +120,12 @@
     }
 
     .pill.error {
-      border-color: rgba(255, 69, 58, 0.45);
+      border-color: var(--red-border-strong);
       box-shadow:
         0 14px 28px rgba(0, 0, 0, 0.18),
         0 4px 10px rgba(0, 0, 0, 0.14),
-        0 0 0 1px rgba(255, 69, 58, 0.14),
-        0 0 14px rgba(255, 69, 58, 0.08);
+        0 0 0 1px var(--red-outline),
+        0 0 14px var(--red-halo);
     }
 
     .pill.dismissing {
@@ -117,8 +160,8 @@
       flex-shrink: 0;
       background: var(--red);
       box-shadow:
-        0 0 0 4px rgba(255, 69, 58, 0.16),
-        0 0 16px rgba(255, 69, 58, 0.28);
+        0 0 0 4px var(--red-ring),
+        0 0 16px var(--red-glow);
     }
 
     .dot.blink {
@@ -128,14 +171,14 @@
     .dot.green {
       background: var(--green);
       box-shadow:
-        0 0 0 4px rgba(48, 209, 88, 0.18),
-        0 0 16px rgba(48, 209, 88, 0.28);
+        0 0 0 4px var(--green-ring),
+        0 0 16px var(--green-glow);
     }
     .dot.accent {
       background: var(--accent);
       box-shadow:
-        0 0 0 4px rgba(48, 209, 88, 0.18),
-        0 0 16px rgba(48, 209, 88, 0.28);
+        0 0 0 4px var(--accent-ring),
+        0 0 16px var(--accent-glow);
     }
 
     @keyframes pulse {
@@ -147,7 +190,7 @@
     .spinner {
       width: 16px;
       height: 16px;
-      border: 2px solid rgba(48, 209, 88, 0.18);
+      border: 2px solid var(--spinner-track);
       border-top-color: var(--accent);
       border-radius: 50%;
       animation: spin 1.0s linear infinite;
@@ -194,7 +237,7 @@
 
     .waveform .bar {
       width: 3px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.85), rgba(255,255,255,0.42));
+      background: linear-gradient(180deg, var(--waveform-top), var(--waveform-bottom));
       border-radius: 999px;
       transition: height 120ms ease, opacity 120ms ease;
       min-height: 5px;
@@ -210,7 +253,7 @@
     /* Text row */
     .text-row {
       padding: 0 14px 10px 14px;
-      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      border-top: 1px solid var(--border);
       margin-top: -2px;
       overflow: hidden;
       opacity: 0;

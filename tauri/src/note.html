@@ -45,6 +45,7 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
+      color-scheme: light dark;
       --bg: #0D0D0B;
       --bg-elevated: #141412;
       --bg-hover: #1C1C1A;
@@ -57,9 +58,35 @@
       --accent-hover: #4ADE70;
       --accent-soft: rgba(48, 209, 88, 0.12);
       --red: #FF453A;
+      --surface-fill: rgba(20, 20, 18, 0.96);
+      --surface-fill-soft: rgba(255, 255, 255, 0.02);
+      --inset-shadow: rgba(0, 0, 0, 0.14);
       --shadow:
         0 18px 34px rgba(0, 0, 0, 0.34),
         inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:             #F8F4ED;
+        --bg-elevated:    #EFEBE2;
+        --bg-hover:       #E8E2D8;
+        --border:         rgba(0, 0, 0, 0.07);
+        --border-mid:     rgba(0, 0, 0, 0.13);
+        --text:           #1A1916;
+        --text-secondary: #8C8880;
+        --text-tertiary:  #BDB9B0;
+        --accent:         #C96B4E;
+        --accent-hover:   #B85A3E;
+        --accent-soft:    rgba(201, 107, 78, 0.10);
+        --red:            #C0392B;
+        --surface-fill:   rgba(239, 235, 226, 0.96);
+        --surface-fill-soft: rgba(0, 0, 0, 0.03);
+        --inset-shadow:   rgba(0, 0, 0, 0.08);
+        --shadow:
+          0 18px 34px rgba(0, 0, 0, 0.12),
+          inset 0 1px 0 rgba(0, 0, 0, 0.03);
+      }
     }
 
     html, body {
@@ -69,9 +96,7 @@
 
     body {
       font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(48, 209, 88, 0.08), transparent 38%),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
       padding: 14px;
       -webkit-user-select: none;
@@ -86,7 +111,7 @@
       padding: 14px;
       border-radius: 14px;
       border: 1px solid var(--border);
-      background: rgba(20, 20, 18, 0.96);
+      background: var(--surface-fill);
       box-shadow: var(--shadow);
     }
 
@@ -127,7 +152,7 @@
       padding: 10px;
       border-radius: 12px;
       border: 1px solid var(--border);
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--bg-elevated);
+      background: var(--bg-elevated);
     }
 
     .input-meta {
@@ -214,7 +239,7 @@
     .btn-primary {
       background: var(--accent);
       color: var(--bg);
-      box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.14);
+      box-shadow: inset 0 -1px 0 var(--inset-shadow);
     }
 
     .btn-primary:hover { background: var(--accent-hover); }
@@ -251,7 +276,7 @@
 
     .toast.error {
       background: var(--red);
-      color: #fff;
+      color: var(--bg);
     }
   </style>
 </head>

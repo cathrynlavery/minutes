@@ -34,8 +34,10 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     :root {
+      color-scheme: light dark;
       --bg:          #0D0D0B;
       --bg-elevated: #141412;
+      --bg-hover:    #1C1C1A;
       --border:      #2A2924;
       --text:        #E8E4DA;
       --text-secondary: #6B6760;
@@ -45,6 +47,21 @@
       --green:       #30D158;
       --font-mono:   'Geist Mono', 'SF Mono', 'Menlo', monospace;
       --font-sans:   'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:             #F8F4ED;
+        --bg-elevated:    #EFEBE2;
+        --bg-hover:       #E8E2D8;
+        --border:         rgba(0,0,0,0.13);
+        --text:           #1A1916;
+        --text-secondary: #8C8880;
+        --text-tertiary:  #BDB9B0;
+        --accent:         #C96B4E;
+        --red:            #C0392B;
+        --green:          #2E7D46;
+      }
     }
 
     body {
@@ -112,7 +129,7 @@
       cursor: pointer;
     }
 
-    .btn:hover { background: #1C1C1A; }
+    .btn:hover { background: var(--bg-hover); }
 
     #terminal-container {
       flex: 1;
@@ -195,10 +212,17 @@
       allowProposedApi: true,
     });
 
+    const applyTerminalTheme = (isDark) => {
+      term.options.theme = window.getMinutesTheme(isDark);
+    };
+
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
     fitAddon.fit();
+    window.MINUTES_XTERM_THEME_QUERY.addEventListener('change', (event) => {
+      applyTerminalTheme(event.matches);
+    });
 
     let isAlive = true;
 
