@@ -663,7 +663,8 @@ pub fn apply_speakers(transcript: &str, result: &DiarizationResult) -> String {
                 let text = rest[bracket_end + 1..].trim();
 
                 if let Some(secs) = parse_timestamp(ts_str) {
-                    let speaker = find_speaker(secs, &sorted_segments).to_string();
+                    let speaker =
+                        find_speaker(secs, &sorted_segments, result.from_stems).to_string();
                     if speaker == "UNKNOWN" {
                         unknown_count += 1;
                     } else {
@@ -799,7 +800,7 @@ fn dominant_speaker_label(segments: &[SpeakerSegment]) -> Option<String> {
 ///    floors timestamps to segment boundaries.
 /// 3. Beyond tolerance: return "UNKNOWN" — don't fabricate attribution
 ///    for timestamps in silence.
-fn find_speaker(time_secs: f64, segments: &[SpeakerSegment]) -> &str {
+fn find_speaker(time_secs: f64, segments: &[SpeakerSegment], from_stems: bool) -> &str {
     // Exact containment (binary search since segments are sorted)
     let idx = segments.partition_point(|seg| seg.end <= time_secs);
     if idx < segments.len() && time_secs >= segments[idx].start && time_secs < segments[idx].end {
@@ -808,12 +809,13 @@ fn find_speaker(time_secs: f64, segments: &[SpeakerSegment]) -> &str {
 
     // Gap fallback: check the surrounding segments within 0.5s tolerance.
     // Prefer the next segment (speaker about to talk) over the previous one.
-    let tolerance = 0.5;
+    let next_tolerance = if from_stems { 2.0 } else { 0.5 };
+    let prev_tolerance = 0.5;
 
     // Next segment: idx (the one whose end is > time_secs)
     if idx < segments.len() {
         let gap = segments[idx].start - time_secs;
-        if gap >= 0.0 && gap <= tolerance {
+        if gap >= 0.0 && gap <= next_tolerance {
             return &segments[idx].speaker;
         }
     }
@@ -822,7 +824,7 @@ fn find_speaker(time_secs: f64, segments: &[SpeakerSegment]) -> &str {
     if idx > 0 {
         let prev = &segments[idx - 1];
         let gap = time_secs - prev.end;
-        if gap >= 0.0 && gap <= tolerance {
+        if gap >= 0.0 && gap <= prev_tolerance {
             return &prev.speaker;
         }
     }
@@ -1526,9 +1528,9 @@ mod tests {
             },
         ];
 
-        assert_eq!(find_speaker(2.5, &segments), "SPEAKER_0");
-        assert_eq!(find_speaker(7.0, &segments), "SPEAKER_1");
-        assert_eq!(find_speaker(15.0, &segments), "UNKNOWN");
+        assert_eq!(find_speaker(2.5, &segments, false), "SPEAKER_0");
+        assert_eq!(find_speaker(7.0, &segments, false), "SPEAKER_1");
+        assert_eq!(find_speaker(15.0, &segments, false), "UNKNOWN");
     }
 
     #[test]
@@ -1548,16 +1550,16 @@ mod tests {
         ];
 
         // Timestamp 0.0 falls 0.045s before first segment — within 0.5s tolerance
-        assert_eq!(find_speaker(0.0, &segments), "SPEAKER_0");
+        assert_eq!(find_speaker(0.0, &segments, false), "SPEAKER_0");
         // Timestamp 4.0 falls in gap: 0.02s from A end, 0.12s from B start
         // Prefer next speaker (B) — they're about to talk
-        assert_eq!(find_speaker(4.0, &segments), "SPEAKER_1");
+        assert_eq!(find_speaker(4.0, &segments, false), "SPEAKER_1");
         // Timestamp 8.6 is 0.1s past segment B — within 0.5s tolerance
-        assert_eq!(find_speaker(8.6, &segments), "SPEAKER_1");
+        assert_eq!(find_speaker(8.6, &segments, false), "SPEAKER_1");
         // Timestamp 10.0 is 1.5s past segment B — beyond 0.5s tolerance
-        assert_eq!(find_speaker(10.0, &segments), "UNKNOWN");
+        assert_eq!(find_speaker(10.0, &segments, false), "UNKNOWN");
         // Timestamp 15.0 is far from any segment
-        assert_eq!(find_speaker(15.0, &segments), "UNKNOWN");
+        assert_eq!(find_speaker(15.0, &segments, false), "UNKNOWN");
     }
 
     #[test]
@@ -1577,7 +1579,26 @@ mod tests {
         ];
 
         // Timestamp 7.0 is 2s from both segments — beyond tolerance
-        assert_eq!(find_speaker(7.0, &segments), "UNKNOWN");
+        assert_eq!(find_speaker(7.0, &segments, false), "UNKNOWN");
+    }
+
+    #[test]
+    fn find_speaker_from_stems_allows_larger_forward_tolerance() {
+        let segments = vec![
+            SpeakerSegment {
+                speaker: "SPEAKER_0".into(),
+                start: 0.0,
+                end: 5.0,
+            },
+            SpeakerSegment {
+                speaker: "SPEAKER_1".into(),
+                start: 8.8,
+                end: 10.0,
+            },
+        ];
+
+        assert_eq!(find_speaker(7.0, &segments, false), "UNKNOWN");
+        assert_eq!(find_speaker(7.0, &segments, true), "SPEAKER_1");
     }
 
     #[test]
