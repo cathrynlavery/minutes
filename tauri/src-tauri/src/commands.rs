@@ -1375,25 +1375,7 @@ fn prune_artifact_snapshots(
     identity: &str,
     extension: &str,
 ) -> Result<(), String> {
-    let suffix = format!("-{identity}.{extension}");
-    let mut matching = std::fs::read_dir(snapshot_root)
-        .map_err(|e| {
-            format!(
-                "Failed to read snapshot directory {}: {}",
-                snapshot_root.display(),
-                e
-            )
-        })?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(&suffix))
-        })
-        .collect::<Vec<_>>();
-
-    matching.sort();
+    let matching = matching_snapshots(snapshot_root, identity, extension)?;
     if matching.len() <= MAX_ARTIFACT_SNAPSHOTS_PER_FILE {
         return Ok(());
     }
@@ -1433,6 +1415,43 @@ fn create_text_file_snapshot(path: &Path) -> Result<(), String> {
         )
     })?;
     prune_artifact_snapshots(&snapshot_root, &identity, &extension)
+}
+
+fn latest_snapshot_for_path(path: &Path) -> Result<Option<PathBuf>, String> {
+    let snapshot_root = Config::minutes_dir().join("artifact-snapshots");
+    if !snapshot_root.exists() {
+        return Ok(None);
+    }
+    let (identity, extension) = snapshot_identity_for_path(path);
+    let mut matching = matching_snapshots(&snapshot_root, &identity, &extension)?;
+    Ok(matching.pop())
+}
+
+fn matching_snapshots(
+    snapshot_root: &Path,
+    identity: &str,
+    extension: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let suffix = format!("-{identity}.{extension}");
+    let mut matching = std::fs::read_dir(snapshot_root)
+        .map_err(|e| {
+            format!(
+                "Failed to read snapshot directory {}: {}",
+                snapshot_root.display(),
+                e
+            )
+        })?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        })
+        .collect::<Vec<_>>();
+    matching.sort();
+    Ok(matching)
 }
 
 fn write_text_file_atomic(path: &Path, content: &str) -> Result<(), String> {
@@ -3369,6 +3388,44 @@ pub fn cmd_write_text_file(path: String, content: String) -> Result<String, Stri
 }
 
 #[tauri::command]
+pub fn cmd_restore_text_file_snapshot(path: String) -> Result<String, String> {
+    let canonical = validate_text_file_path(Path::new(&path))?;
+    let Some(snapshot) = latest_snapshot_for_path(&canonical)? else {
+        return Err(format!(
+            "No snapshot available yet for {}",
+            canonical.display()
+        ));
+    };
+    let content = std::fs::read_to_string(&snapshot)
+        .map_err(|e| format!("Cannot read snapshot {}: {}", snapshot.display(), e))?;
+    let file_name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid file name: {}", canonical.display()))?;
+    let temp_path = canonical.with_file_name(format!(".{}.restore.tmp", file_name));
+    std::fs::write(&temp_path, content).map_err(|e| {
+        format!(
+            "Failed to write restore temp file {}: {}",
+            temp_path.display(),
+            e
+        )
+    })?;
+    std::fs::rename(&temp_path, &canonical).map_err(|e| {
+        format!(
+            "Failed to restore {} from snapshot {}: {}",
+            canonical.display(),
+            snapshot.display(),
+            e
+        )
+    })?;
+    Ok(format!(
+        "Restored {} from {}",
+        canonical.display(),
+        snapshot.display()
+    ))
+}
+
+#[tauri::command]
 pub fn cmd_create_artifact_from_meeting(
     meeting_path: String,
     kind: String,
@@ -4331,6 +4388,22 @@ mod tests {
 
         let remaining = std::fs::read_dir(temp.path()).unwrap().count();
         assert_eq!(remaining, MAX_ARTIFACT_SNAPSHOTS_PER_FILE);
+    }
+
+    #[test]
+    fn latest_snapshot_for_path_returns_newest_snapshot() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("artifact.md");
+        let snapshot_root = temp.path().join("snapshots");
+        std::fs::create_dir_all(&snapshot_root).unwrap();
+        let (identity, extension) = snapshot_identity_for_path(&path);
+        let older = snapshot_root.join(format!("20260409-120000-{identity}.{extension}"));
+        let newer = snapshot_root.join(format!("20260409-120100-{identity}.{extension}"));
+        std::fs::write(&older, "old").unwrap();
+        std::fs::write(&newer, "new").unwrap();
+
+        let mut matching = matching_snapshots(&snapshot_root, &identity, &extension).unwrap();
+        assert_eq!(matching.pop().unwrap(), newer);
     }
 
     #[test]

@@ -1281,6 +1281,7 @@ fn main() {
             commands::cmd_open_file,
             commands::cmd_read_text_file,
             commands::cmd_write_text_file,
+            commands::cmd_restore_text_file_snapshot,
             commands::cmd_create_artifact_from_meeting,
             commands::cmd_set_open_artifact,
             commands::cmd_clear_open_artifact,

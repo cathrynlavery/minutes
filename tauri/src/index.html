@@ -1208,6 +1208,77 @@
     .md-viewer-status.unsaved { color: var(--amber); }
     .md-viewer-status.saved { color: var(--green); }
     .md-viewer-status.warning { color: var(--red); }
+    .md-viewer-status.external { color: var(--accent); }
+    .artifact-template-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(7, 8, 10, 0.64);
+      backdrop-filter: blur(12px);
+      z-index: 90;
+      padding: 20px;
+    }
+    .artifact-template-overlay.active { display: flex; }
+    .artifact-template-card {
+      width: min(560px, 100%);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: calc(var(--radius-lg) + 2px);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.35);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .artifact-template-title {
+      font-family: var(--font-display);
+      font-size: 20px;
+      color: var(--text);
+    }
+    .artifact-template-sub {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .artifact-template-list {
+      display: grid;
+      gap: 10px;
+    }
+    .artifact-template-option {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-fill);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      cursor: pointer;
+      transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+    }
+    .artifact-template-option:hover {
+      border-color: var(--accent);
+      background: var(--surface-fill-strong);
+      transform: translateY(-1px);
+    }
+    .artifact-template-option-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .artifact-template-option-body {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      text-align: left;
+    }
+    .artifact-template-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
 
     /* Markdown rendered styles */
     .md-viewer-content h1,
@@ -2772,6 +2843,7 @@
         <button class="btn btn-secondary btn-sm md-viewer-mode-btn active" id="md-viewer-preview-btn">Preview</button>
         <button class="btn btn-secondary btn-sm md-viewer-mode-btn" id="md-viewer-source-btn">Source</button>
         <button class="btn btn-secondary btn-sm" id="md-viewer-save-btn" disabled>Save</button>
+        <button class="btn btn-secondary btn-sm" id="md-viewer-revert-btn" disabled>Revert</button>
         <span class="md-viewer-status" id="md-viewer-status">Viewing</span>
       </div>
     </div>
@@ -2860,6 +2932,30 @@
       <div class="detail-feedback" id="detail-feedback" hidden></div>
       <div class="detail-scroll" id="detail-scroll">
         <div class="detail-empty">Select a meeting to view transcript and notes.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="artifact-template-overlay" id="artifact-template-overlay">
+    <div class="artifact-template-card" role="dialog" aria-modal="true" aria-labelledby="artifact-template-title">
+      <div class="artifact-template-title" id="artifact-template-title">Create Draft</div>
+      <div class="artifact-template-sub">Pick the artifact you want Minutes to create from this conversation. It opens immediately in source mode beside Recall.</div>
+      <div class="artifact-template-list">
+        <button class="artifact-template-option" data-artifact-kind="debrief-memo">
+          <span class="artifact-template-option-title">Debrief Memo</span>
+          <span class="artifact-template-option-body">A clean internal memo with summary, decisions, action items, open questions, and the next move.</span>
+        </button>
+        <button class="artifact-template-option" data-artifact-kind="follow-up-email">
+          <span class="artifact-template-option-title">Follow-up Email</span>
+          <span class="artifact-template-option-body">An external-facing follow-up with key points, decisions, actions, and open questions already scaffolded.</span>
+        </button>
+        <button class="artifact-template-option" data-artifact-kind="meeting-brief">
+          <span class="artifact-template-option-title">Meeting Brief</span>
+          <span class="artifact-template-option-body">A prep doc for the next conversation, with context, prior decisions, open questions, and a suggested agenda.</span>
+        </button>
+      </div>
+      <div class="artifact-template-actions">
+        <button class="btn btn-secondary btn-sm" id="artifact-template-cancel">Cancel</button>
       </div>
     </div>
   </div>
@@ -7000,7 +7096,9 @@
     const mdViewerPreviewBtn = document.getElementById('md-viewer-preview-btn');
     const mdViewerSourceBtn = document.getElementById('md-viewer-source-btn');
     const mdViewerSaveBtn = document.getElementById('md-viewer-save-btn');
+    const mdViewerRevertBtn = document.getElementById('md-viewer-revert-btn');
     const mdViewerStatus = document.getElementById('md-viewer-status');
+    const artifactTemplateOverlay = document.getElementById('artifact-template-overlay');
     // meetingsScroll and footer already declared above
     const mdSearchWrap = document.querySelector('.search-wrap');
     let openArtifactPath = null;
@@ -7010,6 +7108,8 @@
     let openArtifactDirty = false;
     let openArtifactSaving = false;
     let mdViewerMode = 'preview';
+    let openArtifactExternalNotice = null;
+    let artifactTemplateResolver = null;
 
     marked.setOptions({ breaks: true });
 
@@ -7074,11 +7174,16 @@
       mdViewerContent.style.display = sourceMode ? 'none' : 'block';
       mdViewerEditor.classList.toggle('active', sourceMode);
       mdViewerSaveBtn.disabled = !openArtifactDirty || openArtifactSaving || !openArtifactPath;
+      if (mdViewerRevertBtn) {
+        mdViewerRevertBtn.disabled = openArtifactSaving || !openArtifactPath;
+      }
 
       if (openArtifactSaving) {
         setMdViewerStatus('Saving...', 'saved');
       } else if (openArtifactDirty) {
         setMdViewerStatus('Unsaved', 'unsaved');
+      } else if (openArtifactExternalNotice) {
+        setMdViewerStatus(openArtifactExternalNotice, 'external');
       } else if (sourceMode) {
         setMdViewerStatus('Editing');
       } else {
@@ -7122,6 +7227,7 @@
             mdViewerEditor.value = content;
           }
           rerenderOpenArtifact(content, { preserveScroll: true });
+          openArtifactExternalNotice = 'Updated externally';
           refreshMdViewerChrome();
         }
       } catch (e) {
@@ -7149,6 +7255,7 @@
         await invoke('cmd_write_text_file', { path: openArtifactPath, content: nextContent });
         openArtifactContent = nextContent;
         openArtifactDirty = false;
+        openArtifactExternalNotice = null;
         if (mdViewerMode === 'preview') {
           rerenderOpenArtifact(nextContent, { preserveScroll: true });
         }
@@ -7180,6 +7287,7 @@
       openArtifactLastError = null;
       openArtifactDirty = false;
       openArtifactSaving = false;
+      openArtifactExternalNotice = null;
       mdViewerMode = initialMode;
       mdViewerFilename.textContent = filename;
       rerenderOpenArtifact(markdownText);
@@ -7227,18 +7335,20 @@
       }
     }
 
-    async function requestArtifactTemplateKind(defaultKind = 'debrief-memo') {
-      const choice = window.prompt(
-        'Create draft type: debrief-memo, follow-up-email, meeting-brief',
-        defaultKind
-      );
-      if (!choice) return null;
-      const normalized = choice.trim().toLowerCase();
-      if (!['debrief-memo', 'follow-up-email', 'meeting-brief'].includes(normalized)) {
-        alert('Use one of: debrief-memo, follow-up-email, meeting-brief');
-        return null;
-      }
-      return normalized;
+    function closeArtifactTemplatePicker(result = null) {
+      artifactTemplateOverlay.classList.remove('active');
+      const resolver = artifactTemplateResolver;
+      artifactTemplateResolver = null;
+      if (resolver) resolver(result);
+    }
+
+    function requestArtifactTemplateKind(defaultKind = 'debrief-memo') {
+      return new Promise((resolve) => {
+        artifactTemplateResolver = resolve;
+        artifactTemplateOverlay.classList.add('active');
+        const preferred = artifactTemplateOverlay.querySelector(`[data-artifact-kind="${defaultKind}"]`);
+        preferred?.focus();
+      });
     }
 
     async function createArtifactFromMeetingPath(meetingPath, defaultKind = 'debrief-memo') {
@@ -7267,6 +7377,30 @@
       }
     }
 
+    async function revertOpenArtifactToSnapshot() {
+      if (!openArtifactPath || openArtifactSaving) return;
+      if (!confirm('Restore the most recent snapshot for this artifact? Your current file contents will be replaced.')) {
+        return;
+      }
+      openArtifactSaving = true;
+      refreshMdViewerChrome();
+      try {
+        await invoke('cmd_restore_text_file_snapshot', { path: openArtifactPath });
+        const content = await invoke('cmd_read_text_file', { path: openArtifactPath });
+        openArtifactContent = content;
+        openArtifactDirty = false;
+        openArtifactExternalNotice = 'Reverted to snapshot';
+        mdViewerEditor.value = content;
+        rerenderOpenArtifact(content, { preserveScroll: true });
+      } catch (e) {
+        console.error('Restore snapshot:', e);
+        setMdViewerStatus('Revert failed', 'warning');
+      } finally {
+        openArtifactSaving = false;
+        refreshMdViewerChrome();
+      }
+    }
+
     async function openMarkdownFile() {
       try {
         const { open } = window.__TAURI__.dialog;
@@ -7290,9 +7424,18 @@
     mdViewerPreviewBtn.addEventListener('click', () => setMdViewerMode('preview'));
     mdViewerSourceBtn.addEventListener('click', () => setMdViewerMode('source'));
     mdViewerSaveBtn.addEventListener('click', saveOpenArtifact);
+    mdViewerRevertBtn?.addEventListener('click', revertOpenArtifactToSnapshot);
     mdViewerEditor.addEventListener('input', () => {
       openArtifactDirty = mdViewerEditor.value !== (openArtifactContent || '');
+      if (openArtifactDirty) openArtifactExternalNotice = null;
       refreshMdViewerChrome();
+    });
+    artifactTemplateOverlay.addEventListener('click', (event) => {
+      if (event.target === artifactTemplateOverlay) closeArtifactTemplatePicker(null);
+    });
+    document.getElementById('artifact-template-cancel').addEventListener('click', () => closeArtifactTemplatePicker(null));
+    artifactTemplateOverlay.querySelectorAll('[data-artifact-kind]').forEach((button) => {
+      button.addEventListener('click', () => closeArtifactTemplatePicker(button.getAttribute('data-artifact-kind')));
     });
     mdViewerContent.addEventListener('click', async (event) => {
       const anchor = event.target.closest('a[href]');
@@ -7322,6 +7465,9 @@
         if (inTerminal) return;
         e.preventDefault();
         saveOpenArtifact();
+      }
+      if (e.key === 'Escape' && artifactTemplateOverlay.classList.contains('active')) {
+        closeArtifactTemplatePicker(null);
       }
     });
 
