@@ -579,6 +579,12 @@
       display: none;
     }
 
+    #btn-open-md {
+      background: var(--neutral-tint);
+      color: var(--text-secondary);
+    }
+    #btn-open-md:hover { background: var(--surface-fill-strong); color: var(--text); }
+
     .header-chip.dictation-shortcut {
       background: var(--accent-soft);
       color: var(--accent);
@@ -1108,6 +1114,137 @@
     }
     .meetings-scroll::-webkit-scrollbar-thumb:hover {
       background: var(--surface-fill-stronger);
+    }
+
+    /* ── Markdown viewer (replaces meeting list) ── */
+    .md-viewer {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .md-viewer.active {
+      display: flex;
+    }
+    .md-viewer-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .md-viewer-back {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1;
+    }
+    .md-viewer-back:hover { background: var(--bg-hover); color: var(--text); }
+    .md-viewer-filename {
+      font-size: 12px;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .md-viewer-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+      -webkit-user-select: text;
+      user-select: text;
+    }
+    .md-viewer-content::-webkit-scrollbar { width: 5px; }
+    .md-viewer-content::-webkit-scrollbar-track { background: transparent; }
+    .md-viewer-content::-webkit-scrollbar-thumb { background: var(--surface-fill-strong); border-radius: 999px; }
+
+    /* Markdown rendered styles */
+    .md-viewer-content h1,
+    .md-viewer-content h2,
+    .md-viewer-content h3 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      color: var(--text);
+      margin: 1.2em 0 0.4em;
+      line-height: 1.25;
+    }
+    .md-viewer-content h1 { font-size: 22px; }
+    .md-viewer-content h2 { font-size: 18px; }
+    .md-viewer-content h3 { font-size: 15px; }
+    .md-viewer-content h1:first-child,
+    .md-viewer-content h2:first-child,
+    .md-viewer-content h3:first-child { margin-top: 0; }
+    .md-viewer-content p {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+      margin: 0.6em 0;
+    }
+    .md-viewer-content ul, .md-viewer-content ol {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+      padding-left: 20px;
+      margin: 0.4em 0;
+    }
+    .md-viewer-content li { margin: 0.2em 0; }
+    .md-viewer-content code {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: var(--surface-fill-strong);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    .md-viewer-content pre {
+      background: var(--surface-fill);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      overflow-x: auto;
+      margin: 0.6em 0;
+    }
+    .md-viewer-content pre code {
+      background: none;
+      padding: 0;
+    }
+    .md-viewer-content blockquote {
+      border-left: 3px solid var(--accent);
+      padding: 4px 12px;
+      margin: 0.6em 0;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    .md-viewer-content hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 1em 0;
+    }
+    .md-viewer-content a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .md-viewer-content strong { font-weight: 600; }
+    .md-viewer-content table {
+      border-collapse: collapse;
+      font-size: 12px;
+      margin: 0.6em 0;
+      width: 100%;
+    }
+    .md-viewer-content th, .md-viewer-content td {
+      border: 1px solid var(--border);
+      padding: 5px 8px;
+      text-align: left;
+    }
+    .md-viewer-content th {
+      background: var(--surface-fill);
+      font-weight: 600;
     }
 
     .date-group {
@@ -2449,6 +2586,7 @@
       </div>
     </div>
     <div class="header-actions">
+      <button class="header-chip active" id="btn-open-md" title="Open file (⌘O)">Open</button>
       <button class="btn btn-icon" id="btn-settings" title="Settings (⌘,)">⚙</button>
       <button class="header-chip dictation-shortcut" id="dictation-shortcut-chip">Dictate</button>
       <button class="header-chip readiness" id="btn-readiness">Readiness</button>
@@ -2576,6 +2714,15 @@
       <button class="btn btn-primary btn-sm" id="btn-restart-update">Restart Now</button>
       <button class="btn btn-secondary btn-sm" id="btn-dismiss-update">Later</button>
     </div>
+  </div>
+
+  <!-- Markdown viewer (replaces meeting list when a file is open) -->
+  <div class="md-viewer" id="md-viewer">
+    <div class="md-viewer-header">
+      <button class="md-viewer-back" id="md-viewer-back" title="Back to meetings">←</button>
+      <span class="md-viewer-filename" id="md-viewer-filename"></span>
+    </div>
+    <div class="md-viewer-content" id="md-viewer-content"></div>
   </div>
 
   <!-- Meeting list -->
@@ -3249,6 +3396,7 @@
   <script src="vendor/xterm/xterm.js"></script>
   <script src="vendor/xterm/xterm-addon-fit.js"></script>
   <script src="vendor/xterm/minutes-theme.js"></script>
+  <script src="vendor/marked.min.js"></script>
 
   <script>
     const { invoke } = window.__TAURI__.core;
@@ -6771,6 +6919,185 @@
         autoExpandRecall('prep', title);
       }
     };
+
+    // ══════════════════════════════════════════════════════════════
+    // ── Markdown file viewer ──
+    // ══════════════════════════════════════════════════════════════
+    const mdViewer = document.getElementById('md-viewer');
+    const mdViewerContent = document.getElementById('md-viewer-content');
+    const mdViewerFilename = document.getElementById('md-viewer-filename');
+    // meetingsScroll already declared above
+    const mdSearchWrap = document.querySelector('.search-wrap');
+    const mdFooter = document.getElementById('footer');
+    let openArtifactPath = null;
+    let openArtifactContent = null;
+    let openArtifactPollTimer = null;
+    let openArtifactLastError = null;
+
+    marked.setOptions({ breaks: true });
+
+    function escapeHtmlForMarkdown(text) {
+      return text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function sanitizeDom(root) {
+      const dangerous = 'script,iframe,object,embed,form,input,textarea,select,button,base,meta,link,style,img,picture,source,video,audio,svg,math';
+      root.querySelectorAll(dangerous).forEach(n => n.remove());
+      root.querySelectorAll('*').forEach(el => {
+        for (const attr of [...el.attributes]) {
+          if (attr.name.startsWith('on') || attr.name === 'formaction' || attr.name === 'style') {
+            el.removeAttribute(attr.name);
+          }
+        }
+        if (el.hasAttribute('href')) {
+          const href = el.getAttribute('href') || '';
+          if (
+            /^\s*javascript:/i.test(href) ||
+            !/^\s*(https?:|mailto:|file:|\/|#)/i.test(href)
+          ) {
+            el.setAttribute('href', '#');
+          }
+        }
+        if (el.hasAttribute('src') && /^\s*javascript:/i.test(el.getAttribute('src'))) {
+          el.removeAttribute('src');
+        }
+        if (el.hasAttribute('xlink:href') && /^\s*javascript:/i.test(el.getAttribute('xlink:href'))) {
+          el.removeAttribute('xlink:href');
+        }
+      });
+    }
+
+    function renderMarkdownToElement(el, markdownText) {
+      const html = marked.parse(escapeHtmlForMarkdown(markdownText));
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      sanitizeDom(doc.body);
+      el.textContent = '';
+      while (doc.body.firstChild) {
+        el.appendChild(doc.body.firstChild);
+      }
+    }
+
+    function rerenderOpenArtifact(markdownText, { preserveScroll = false } = {}) {
+      const previousScrollTop = preserveScroll ? mdViewerContent.scrollTop : 0;
+      renderMarkdownToElement(mdViewerContent, markdownText);
+      if (preserveScroll) {
+        mdViewerContent.scrollTop = Math.min(previousScrollTop, mdViewerContent.scrollHeight);
+      } else {
+        mdViewerContent.scrollTop = 0;
+      }
+    }
+
+    async function refreshOpenArtifactIfChanged() {
+      if (!openArtifactPath || !mdViewer.classList.contains('active')) return;
+      try {
+        const content = await invoke('cmd_read_text_file', { path: openArtifactPath });
+        openArtifactLastError = null;
+        if (content !== openArtifactContent) {
+          openArtifactContent = content;
+          rerenderOpenArtifact(content, { preserveScroll: true });
+        }
+      } catch (e) {
+        const nextError = String(e);
+        if (nextError !== openArtifactLastError) {
+          console.error('Artifact refresh:', e);
+          openArtifactLastError = nextError;
+        }
+      }
+    }
+
+    function startOpenArtifactPolling() {
+      if (openArtifactPollTimer) clearInterval(openArtifactPollTimer);
+      openArtifactPollTimer = setInterval(() => {
+        refreshOpenArtifactIfChanged();
+      }, 1000);
+    }
+
+    async function showMdViewer(path, filename, markdownText) {
+      openArtifactPath = path;
+      openArtifactContent = markdownText;
+      openArtifactLastError = null;
+      mdViewerFilename.textContent = filename;
+      rerenderOpenArtifact(markdownText);
+      mdViewer.classList.add('active');
+      meetingsScroll.style.display = 'none';
+      mdSearchWrap.style.display = 'none';
+      mdFooter.style.display = 'none';
+      startOpenArtifactPolling();
+      try {
+        await invoke('cmd_set_open_artifact', { path });
+      } catch (e) {
+        console.error('Set open artifact:', e);
+      }
+    }
+
+    async function hideMdViewer() {
+      if (openArtifactPollTimer) {
+        clearInterval(openArtifactPollTimer);
+        openArtifactPollTimer = null;
+      }
+      openArtifactPath = null;
+      openArtifactContent = null;
+      openArtifactLastError = null;
+      mdViewer.classList.remove('active');
+      meetingsScroll.style.display = '';
+      mdSearchWrap.style.display = '';
+      mdFooter.style.display = '';
+      mdViewerFilename.textContent = '';
+      mdViewerContent.textContent = '';
+      try {
+        await invoke('cmd_clear_open_artifact');
+      } catch (e) {
+        console.error('Clear open artifact:', e);
+      }
+    }
+
+    async function openMarkdownFile() {
+      try {
+        const { open } = window.__TAURI__.dialog;
+        const selected = await open({
+          title: 'Open markdown file',
+          filters: [{ name: 'Markdown', extensions: ['md', 'txt', 'markdown'] }],
+        });
+        if (!selected) return;
+        const path = Array.isArray(selected) ? selected[0] : selected;
+        if (!path) return;
+        const content = await invoke('cmd_read_text_file', { path });
+        const filename = path.split(/[\\/]/).pop() || path;
+        await showMdViewer(path, filename, content);
+      } catch (e) {
+        console.error('Open markdown:', e);
+      }
+    }
+
+    document.getElementById('btn-open-md').addEventListener('click', openMarkdownFile);
+    document.getElementById('md-viewer-back').addEventListener('click', () => { hideMdViewer(); });
+    mdViewerContent.addEventListener('click', async (event) => {
+      const anchor = event.target.closest('a[href]');
+      if (!anchor) return;
+      event.preventDefault();
+      const href = anchor.getAttribute('href');
+      if (!href || href === '#') return;
+      try {
+        await invoke('cmd_open_file', { path: href });
+      } catch (e) {
+        console.error('Open markdown link:', e);
+      }
+    });
+
+    // Cmd+O shortcut — only when focus is not inside an editable context or the terminal
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'o') {
+        const tag = document.activeElement?.tagName;
+        const editable = document.activeElement?.isContentEditable;
+        const inTerminal = document.activeElement?.closest('.recall-terminal');
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || editable || inTerminal) return;
+        e.preventDefault();
+        openMarkdownFile();
+      }
+    });
 
     // ── Init ──
     const storedNotify = localStorage.getItem('minutes.notifyOnCompletion');

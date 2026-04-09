@@ -2667,6 +2667,113 @@ pub fn cmd_open_file(app: tauri::AppHandle, path: String) -> Result<(), String> 
     open_target(&app, &path)
 }
 
+fn validate_text_file_path(path: &Path) -> Result<PathBuf, String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("Cannot resolve {}: {}", path.display(), e))?;
+    let path_str = canonical.to_string_lossy();
+
+    // Only allow reads under the user's home directory
+    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
+    if !canonical.starts_with(&home) {
+        return Err(format!(
+            "Access denied: {} is outside home directory",
+            path_str
+        ));
+    }
+
+    let meta =
+        std::fs::metadata(&canonical).map_err(|e| format!("Cannot stat {}: {}", path_str, e))?;
+    if !meta.is_file() {
+        return Err(format!("Not a file: {}", path_str));
+    }
+
+    // Cap at 1MB to prevent OOM on huge files
+    if meta.len() > 1_048_576 {
+        return Err(format!(
+            "File too large: {} ({} bytes, max 1MB)",
+            path_str,
+            meta.len()
+        ));
+    }
+
+    let extension = canonical
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .ok_or_else(|| format!("Unsupported text file: {}", path_str))?;
+    if !matches!(extension.as_str(), "md" | "markdown" | "txt") {
+        return Err(format!(
+            "Unsupported text file: {} (expected .md, .markdown, or .txt)",
+            path_str
+        ));
+    }
+
+    Ok(canonical)
+}
+
+fn write_notice_prompt(command: &str, plain_text: &str) -> String {
+    if is_shell_command(command) {
+        format!("cat <<'__MINUTES__'\n{plain_text}\n__MINUTES__\n")
+    } else {
+        format!("{plain_text}\n")
+    }
+}
+
+fn artifact_switch_prompt(command: &str, artifact_name: Option<&str>) -> String {
+    let plain_text = match artifact_name {
+        Some(name) => format!(
+            "Minutes opened artifact {name}. Read CURRENT_ARTIFACT.md and CLAUDE.md. The user has this file open in the left pane and may want help editing it. If you update it on disk, the viewer will refresh live."
+        ),
+        None => "Minutes cleared the open artifact focus. Ignore CURRENT_ARTIFACT.md unless it reappears. If CURRENT_MEETING.md exists, prioritize it; otherwise continue in general assistant mode."
+            .into(),
+    };
+    write_notice_prompt(command, &plain_text)
+}
+
+fn notify_assistant_artifact_focus(
+    state: &tauri::State<AppState>,
+    artifact_name: Option<&str>,
+) -> Result<(), String> {
+    let mut manager = state
+        .pty_manager
+        .lock()
+        .map_err(|_| "PTY manager lock failed")?;
+    if manager.assistant_session_id().is_some() {
+        if let Some(command) = manager.session_command(crate::pty::ASSISTANT_SESSION_ID) {
+            let prompt = artifact_switch_prompt(&command, artifact_name);
+            manager.write_input(crate::pty::ASSISTANT_SESSION_ID, prompt.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cmd_read_text_file(path: String) -> Result<String, String> {
+    let canonical = validate_text_file_path(Path::new(&path))?;
+    let path_str = canonical.to_string_lossy();
+    std::fs::read_to_string(&canonical).map_err(|e| format!("Cannot read {}: {}", path_str, e))
+}
+
+#[tauri::command]
+pub fn cmd_set_open_artifact(state: tauri::State<AppState>, path: String) -> Result<(), String> {
+    let canonical = validate_text_file_path(Path::new(&path))?;
+    let config = Config::load();
+    let workspace = crate::context::create_workspace(&config)?;
+    crate::context::write_assistant_context(&workspace, &config)?;
+    crate::context::write_active_artifact_context(&workspace, &canonical)?;
+    let artifact_name = canonical.file_name().and_then(|name| name.to_str());
+    notify_assistant_artifact_focus(&state, artifact_name)
+}
+
+#[tauri::command]
+pub fn cmd_clear_open_artifact(state: tauri::State<AppState>) -> Result<(), String> {
+    let workspace = crate::context::workspace_dir();
+    if workspace.exists() {
+        crate::context::clear_active_artifact_context(&workspace)?;
+    }
+    notify_assistant_artifact_focus(&state, None)
+}
+
 #[tauri::command]
 pub fn cmd_clear_latest_output(state: tauri::State<AppState>) {
     set_latest_output(&state.latest_output, None);

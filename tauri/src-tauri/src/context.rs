@@ -4,6 +4,9 @@ use minutes_core::search::{self, SearchFilters};
 use std::path::{Path, PathBuf};
 
 pub const ACTIVE_MEETING_FILE: &str = "CURRENT_MEETING.md";
+pub const ACTIVE_ARTIFACT_FILE: &str = "CURRENT_ARTIFACT.md";
+
+const ARTIFACT_INSTRUCTION: &str = "If CURRENT_ARTIFACT.md exists in this directory, the user has that file open in the Minutes viewer. You can read and edit it at the path shown. Changes you make will appear in real time in the viewer.";
 
 fn intent_label(kind: IntentKind) -> &'static str {
     match kind {
@@ -268,6 +271,10 @@ pub fn generate_assistant_context(config: &Config) -> Result<String, String> {
         "If that file does not exist, operate in general assistant mode across all meetings.\n",
     );
 
+    md.push_str("\n## Open Artifact\n\n");
+    md.push_str(ARTIFACT_INSTRUCTION);
+    md.push('\n');
+
     md.push_str("\n## Instructions\n\n");
     md.push_str("- Synthesize information across multiple meetings\n");
     md.push_str("- Track decisions, action items, and commitments\n");
@@ -277,6 +284,47 @@ pub fn generate_assistant_context(config: &Config) -> Result<String, String> {
     md.push_str("- You can create files in this directory to save artifacts\n");
 
     Ok(md)
+}
+
+fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid file name: {}", path.display()))?;
+    let temp_path = path.with_file_name(format!(".{}.tmp", file_name));
+    std::fs::write(&temp_path, content)
+        .map_err(|e| format!("Failed to write temp file {}: {}", temp_path.display(), e))?;
+    std::fs::rename(&temp_path, path).map_err(|e| {
+        format!(
+            "Failed to atomically replace {} with {}: {}",
+            path.display(),
+            temp_path.display(),
+            e
+        )
+    })
+}
+
+fn ensure_agents_artifact_instruction(workspace: &Path) -> Result<(), String> {
+    let agents_path = workspace.join("AGENTS.md");
+    if !agents_path.exists() {
+        return Ok(());
+    }
+
+    let existing = std::fs::read_to_string(&agents_path)
+        .map_err(|e| format!("Failed to read {}: {}", agents_path.display(), e))?;
+    if existing.contains(ACTIVE_ARTIFACT_FILE) {
+        return Ok(());
+    }
+
+    let mut updated = existing.trim_end().to_string();
+    if !updated.is_empty() {
+        updated.push_str("\n\n");
+    }
+    updated.push_str("## Open Artifact\n\n");
+    updated.push_str(ARTIFACT_INSTRUCTION);
+    updated.push('\n');
+
+    write_atomic(&agents_path, &updated)
 }
 
 pub fn write_assistant_context(workspace: &Path, config: &Config) -> Result<(), String> {
@@ -316,8 +364,8 @@ pub fn write_assistant_context(workspace: &Path, config: &Config) -> Result<(), 
         assistant_md
     };
 
-    std::fs::write(&claude_md_path, content)
-        .map_err(|e| format!("Failed to write assistant context: {}", e))
+    write_atomic(&claude_md_path, &content)?;
+    ensure_agents_artifact_instruction(workspace)
 }
 
 pub fn write_active_meeting_context(
@@ -326,8 +374,37 @@ pub fn write_active_meeting_context(
     config: &Config,
 ) -> Result<(), String> {
     let meeting_md = generate_meeting_context(meeting_path, config)?;
-    std::fs::write(workspace.join(ACTIVE_MEETING_FILE), meeting_md)
-        .map_err(|e| format!("Failed to write meeting context: {}", e))
+    write_atomic(&workspace.join(ACTIVE_MEETING_FILE), &meeting_md)
+}
+
+pub fn write_active_artifact_context(workspace: &Path, artifact_path: &Path) -> Result<(), String> {
+    let content = std::fs::read_to_string(artifact_path)
+        .map_err(|e| format!("Cannot read artifact {}: {}", artifact_path.display(), e))?;
+    let preview = content.lines().take(200).collect::<Vec<_>>().join("\n");
+    let file_name = artifact_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Artifact");
+
+    let mut md = String::with_capacity(preview.len() + 512);
+    md.push_str("# Open Artifact\n\n");
+    md.push_str("The user currently has this artifact open in the Minutes viewer.\n\n");
+    md.push_str(&format!("- **Path**: `{}`\n", artifact_path.display()));
+    md.push_str(&format!("- **Filename**: {}\n", file_name));
+    md.push_str("- **Editable**: yes\n\n");
+    md.push_str("## Preview\n\n");
+    if preview.trim().is_empty() {
+        md.push_str("_File is empty._\n");
+    } else {
+        md.push_str("```md\n");
+        md.push_str(&preview);
+        if content.lines().count() > 200 {
+            md.push_str("\n... [preview truncated]");
+        }
+        md.push_str("\n```\n");
+    }
+
+    write_atomic(&workspace.join(ACTIVE_ARTIFACT_FILE), &md)
 }
 
 pub fn clear_active_meeting_context(workspace: &Path) -> Result<(), String> {
@@ -339,10 +416,20 @@ pub fn clear_active_meeting_context(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn clear_active_artifact_context(workspace: &Path) -> Result<(), String> {
+    let active_path = workspace.join(ACTIVE_ARTIFACT_FILE);
+    if active_path.exists() {
+        std::fs::remove_file(&active_path)
+            .map_err(|e| format!("Failed to clear artifact context: {}", e))?;
+    }
+    Ok(())
+}
+
 /// Clean transient context left behind by previous app versions or crashes.
 pub fn cleanup_stale_workspaces() {
     let workspace = workspace_dir();
     clear_active_meeting_context(&workspace).ok();
+    clear_active_artifact_context(&workspace).ok();
 
     if let Ok(entries) = std::fs::read_dir(&workspace) {
         for entry in entries.flatten() {
@@ -354,5 +441,41 @@ pub fn cleanup_stale_workspaces() {
                 std::fs::remove_dir_all(path).ok();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn assistant_context_mentions_open_artifact_contract() {
+        let config = Config::default();
+        let content = generate_assistant_context(&config).expect("assistant context");
+        assert!(content.contains(ACTIVE_ARTIFACT_FILE));
+        assert!(content.contains("Changes you make will appear in real time"));
+    }
+
+    #[test]
+    fn write_active_artifact_context_truncates_preview_after_200_lines() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("assistant");
+        fs::create_dir_all(&workspace).unwrap();
+        let artifact_path = temp.path().join("notes.md");
+        let body = (1..=205)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&artifact_path, body).unwrap();
+
+        write_active_artifact_context(&workspace, &artifact_path).expect("artifact context");
+        let written = fs::read_to_string(workspace.join(ACTIVE_ARTIFACT_FILE)).unwrap();
+
+        assert!(written.contains("`"));
+        assert!(written.contains("line 1"));
+        assert!(written.contains("line 200"));
+        assert!(!written.contains("line 205"));
+        assert!(written.contains("[preview truncated]"));
     }
 }
