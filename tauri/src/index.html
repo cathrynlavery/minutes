@@ -7163,11 +7163,13 @@
     }
 
     async function showMdViewer(path, filename, markdownText, options = {}) {
+      const confirmedDiscard = options.confirmedDiscard === true;
       if (
         mdViewer.classList.contains('active') &&
         openArtifactDirty &&
         openArtifactPath &&
         openArtifactPath !== path &&
+        !confirmedDiscard &&
         !confirm('Discard unsaved changes to the current artifact?')
       ) {
         return false;
@@ -7241,12 +7243,22 @@
 
     async function createArtifactFromMeetingPath(meetingPath, defaultKind = 'debrief-memo') {
       if (!meetingPath) return;
+      let bypassDiscardPrompt = false;
+      if (mdViewer.classList.contains('active') && openArtifactDirty && openArtifactPath) {
+        if (!confirm('Discard unsaved changes to the current artifact before creating a draft?')) {
+          return;
+        }
+        bypassDiscardPrompt = true;
+      }
       const kind = await requestArtifactTemplateKind(defaultKind);
       if (!kind) return;
       try {
         const draft = await invoke('cmd_create_artifact_from_meeting', { meetingPath, kind });
         const filename = draft.path.split(/[\\/]/).pop() || draft.path;
-        const shown = await showMdViewer(draft.path, filename, draft.content, { mode: 'source' });
+        const shown = await showMdViewer(draft.path, filename, draft.content, {
+          mode: 'source',
+          confirmedDiscard: bypassDiscardPrompt,
+        });
         if (!shown) return;
         showDetailFeedback(`Created ${draft.templateKind.replaceAll('-', ' ')} draft`, 'success');
       } catch (e) {

@@ -2,6 +2,8 @@ use crate::call_capture;
 use minutes_core::capture::RecordingIntent;
 use minutes_core::{CaptureMode, Config, ContentType};
 use std::cmp::Reverse;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1350,6 +1352,60 @@ fn artifact_directory(config: &Config) -> Result<PathBuf, String> {
     Ok(artifacts)
 }
 
+const MAX_ARTIFACT_SNAPSHOTS_PER_FILE: usize = 20;
+
+fn snapshot_identity_for_path(path: &Path) -> (String, String) {
+    let base = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("md")
+        .to_ascii_lowercase();
+    let mut hasher = DefaultHasher::new();
+    path.to_string_lossy().hash(&mut hasher);
+    let hash = format!("{:08x}", hasher.finish() as u32);
+    (format!("{base}-{hash}"), extension)
+}
+
+fn prune_artifact_snapshots(
+    snapshot_root: &Path,
+    identity: &str,
+    extension: &str,
+) -> Result<(), String> {
+    let suffix = format!("-{identity}.{extension}");
+    let mut matching = std::fs::read_dir(snapshot_root)
+        .map_err(|e| {
+            format!(
+                "Failed to read snapshot directory {}: {}",
+                snapshot_root.display(),
+                e
+            )
+        })?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        })
+        .collect::<Vec<_>>();
+
+    matching.sort();
+    if matching.len() <= MAX_ARTIFACT_SNAPSHOTS_PER_FILE {
+        return Ok(());
+    }
+
+    let remove_count = matching.len() - MAX_ARTIFACT_SNAPSHOTS_PER_FILE;
+    for path in matching.into_iter().take(remove_count) {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("Failed to prune old snapshot {}: {}", path.display(), e))?;
+    }
+    Ok(())
+}
+
 fn create_text_file_snapshot(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
@@ -1367,22 +1423,16 @@ fn create_text_file_snapshot(path: &Path) -> Result<(), String> {
     })?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let base = path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or("artifact");
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("md");
-    let snapshot_path = snapshot_root.join(format!("{timestamp}-{base}.{extension}"));
+    let (identity, extension) = snapshot_identity_for_path(path);
+    let snapshot_path = snapshot_root.join(format!("{timestamp}-{identity}.{extension}"));
     std::fs::write(&snapshot_path, original).map_err(|e| {
         format!(
             "Failed to write artifact snapshot {}: {}",
             snapshot_path.display(),
             e
         )
-    })
+    })?;
+    prune_artifact_snapshots(&snapshot_root, &identity, &extension)
 }
 
 fn write_text_file_atomic(path: &Path, content: &str) -> Result<(), String> {
@@ -4265,6 +4315,22 @@ mod tests {
         assert!(body.contains("source_meeting: /tmp/pricing-review.md"));
         assert!(body.contains("Ship the new pricing page"));
         assert!(body.contains("Mat: Send follow-up"));
+    }
+
+    #[test]
+    fn prune_artifact_snapshots_keeps_latest_per_file_identity() {
+        let temp = TempDir::new().unwrap();
+        for idx in 0..25 {
+            let path = temp
+                .path()
+                .join(format!("20260409-120{idx:02}-artifact-abcd1234.md"));
+            std::fs::write(path, "snapshot").unwrap();
+        }
+
+        prune_artifact_snapshots(temp.path(), "artifact-abcd1234", "md").unwrap();
+
+        let remaining = std::fs::read_dir(temp.path()).unwrap().count();
+        assert_eq!(remaining, MAX_ARTIFACT_SNAPSHOTS_PER_FILE);
     }
 
     #[test]
