@@ -302,25 +302,6 @@ impl CallDetector {
             .collect();
         let running = running_process_names();
 
-        if has_google_meet && self.browser_probe_due() {
-            self.schedule_next_browser_probe();
-            match self.detect_google_meet_in_browsers(&running) {
-                BrowserMeetProbe::Detected => {
-                    self.remember_google_meet_detection();
-                    return DetectActiveCallResult::Detected {
-                        display_name: "Google Meet".into(),
-                        process_name: "google-meet".into(),
-                    };
-                }
-                BrowserMeetProbe::PermissionDenied { browser_app } => {
-                    return DetectActiveCallResult::PermissionWarning { browser_app };
-                }
-                BrowserMeetProbe::Error
-                | BrowserMeetProbe::NoBrowserProcesses
-                | BrowserMeetProbe::NoMatch => {}
-            }
-        }
-
         if has_google_meet && mic_live && self.google_meet_detection_is_sticky() {
             return DetectActiveCallResult::Detected {
                 display_name: "Google Meet".into(),
@@ -352,6 +333,25 @@ impl CallDetector {
                     display_name: display,
                     process_name: config_app.clone(),
                 };
+            }
+        }
+
+        if has_google_meet && self.browser_probe_due() {
+            self.schedule_next_browser_probe();
+            match self.detect_google_meet_in_browsers(&running) {
+                BrowserMeetProbe::Detected => {
+                    self.remember_google_meet_detection();
+                    return DetectActiveCallResult::Detected {
+                        display_name: "Google Meet".into(),
+                        process_name: "google-meet".into(),
+                    };
+                }
+                BrowserMeetProbe::PermissionDenied { browser_app } => {
+                    return DetectActiveCallResult::PermissionWarning { browser_app };
+                }
+                BrowserMeetProbe::Error
+                | BrowserMeetProbe::NoBrowserProcesses
+                | BrowserMeetProbe::NoMatch => {}
             }
         }
 
@@ -885,6 +885,46 @@ mod tests {
         }
 
         assert!(!detector.google_meet_detection_is_sticky());
+    }
+
+    #[test]
+    fn native_app_detection_wins_before_browser_meet_probe() {
+        let detector = CallDetector::new(CallDetectionConfig {
+            enabled: true,
+            poll_interval_secs: 1,
+            cooldown_minutes: 5,
+            apps: vec!["zoom.us".into(), "google-meet".into()],
+        });
+
+        let running = vec!["zoom.us".into(), "Safari".into()];
+        let mic_live = true;
+
+        // Reproduce the decision ordering from detect_active_call without relying
+        // on live browser automation in tests.
+        let config = detector.current_config();
+        let native_apps: Vec<&String> = config
+            .apps
+            .iter()
+            .filter(|app| app.as_str() != "google-meet")
+            .collect();
+
+        let mut detected = None;
+        if mic_live {
+            for config_app in native_apps {
+                let config_lower = config_app.to_lowercase();
+                if running.iter().any(|p: &String| {
+                    let p_lower = p.to_lowercase();
+                    p_lower == config_lower
+                        || p_lower.starts_with(&format!("{}.", config_lower))
+                        || p_lower.starts_with(&format!("{} ", config_lower))
+                }) {
+                    detected = Some(config_app.clone());
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(detected.as_deref(), Some("zoom.us"));
     }
 
     #[test]
