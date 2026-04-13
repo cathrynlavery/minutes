@@ -486,7 +486,11 @@ mod tests {
         let mut config = Config::default();
         config.transcription.engine = "parakeet".into();
         config.transcription.model_path = tmp.path().to_path_buf();
-        config.transcription.parakeet_binary = "/usr/bin/true".into();
+        config.transcription.parakeet_binary = if cfg!(windows) {
+            "cmd".into()
+        } else {
+            "sh".into()
+        };
 
         let install_dir = crate::parakeet::install_dir(&config, "tdt-ctc-110m");
         std::fs::create_dir_all(&install_dir).unwrap();

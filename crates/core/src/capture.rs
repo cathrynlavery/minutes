@@ -825,6 +825,14 @@ fn padded_slot(samples: Option<Vec<f32>>) -> Vec<f32> {
 }
 
 #[cfg(feature = "streaming")]
+#[derive(Default)]
+struct DualSlotStats {
+    both: u64,
+    voice_only: u64,
+    system_only: u64,
+}
+
+#[cfg(feature = "streaming")]
 fn flush_dual_source_slots(
     next_slot: &mut Option<u64>,
     max_slot: Option<u64>,
@@ -832,9 +840,7 @@ fn flush_dual_source_slots(
     pending_system: &mut std::collections::BTreeMap<u64, Vec<f32>>,
     writers: &mut DualCaptureWriters,
     live_tx: &Option<std::sync::mpsc::SyncSender<Vec<f32>>>,
-    slots_both: &mut u64,
-    slots_voice_only: &mut u64,
-    slots_system_only: &mut u64,
+    slot_stats: &mut DualSlotStats,
 ) -> Result<(), CaptureError> {
     let (Some(current_slot), Some(max_slot)) = (*next_slot, max_slot) else {
         return Ok(());
@@ -848,9 +854,9 @@ fn flush_dual_source_slots(
         let has_voice = pending_voice.contains_key(&slot);
         let has_system = pending_system.contains_key(&slot);
         match (has_voice, has_system) {
-            (true, true) => *slots_both += 1,
-            (true, false) => *slots_voice_only += 1,
-            (false, true) => *slots_system_only += 1,
+            (true, true) => slot_stats.both += 1,
+            (true, false) => slot_stats.voice_only += 1,
+            (false, true) => slot_stats.system_only += 1,
             (false, false) => {} // silence slot, both padded
         }
         let voice = padded_slot(pending_voice.remove(&slot));
@@ -945,9 +951,7 @@ fn record_to_wav_dual_source(
     let mut pending_voice = std::collections::BTreeMap::<u64, Vec<f32>>::new();
     let mut pending_system = std::collections::BTreeMap::<u64, Vec<f32>>::new();
     // Mixer stats for diagnosing dual-source issues
-    let mut slots_both: u64 = 0;
-    let mut slots_voice_only: u64 = 0;
-    let mut slots_system_only: u64 = 0;
+    let mut slot_stats = DualSlotStats::default();
     let mut peak_level: u32 = 0;
 
     loop {
@@ -1110,9 +1114,7 @@ fn record_to_wav_dual_source(
             &mut pending_system,
             &mut writers,
             &live_tx,
-            &mut slots_both,
-            &mut slots_voice_only,
-            &mut slots_system_only,
+            &mut slot_stats,
         )?;
     }
 
@@ -1130,9 +1132,7 @@ fn record_to_wav_dual_source(
         &mut pending_system,
         &mut writers,
         &live_tx,
-        &mut slots_both,
-        &mut slots_voice_only,
-        &mut slots_system_only,
+        &mut slot_stats,
     )?;
 
     voice_stream.take();
@@ -1152,7 +1152,7 @@ fn record_to_wav_dual_source(
 
     let total_samples = writers.finalize()?;
     let duration_secs = total_samples as f64 / 16000.0;
-    let total_slots = slots_both + slots_voice_only + slots_system_only;
+    let total_slots = slot_stats.both + slot_stats.voice_only + slot_stats.system_only;
 
     set_capture_permissions(output_path);
     if let Some(stems) = stem_paths_for(output_path) {
@@ -1165,16 +1165,16 @@ fn record_to_wav_dual_source(
         total_samples, duration_secs, peak_level
     );
     if total_slots > 0 {
-        let pct_both = (slots_both as f64 / total_slots as f64 * 100.0) as u64;
+        let pct_both = (slot_stats.both as f64 / total_slots as f64 * 100.0) as u64;
         eprintln!(
             "[minutes] Mixer stats: {} slots total, {}% with both sources ({} both, {} voice-only, {} system-only)",
-            total_slots, pct_both, slots_both, slots_voice_only, slots_system_only
+            total_slots, pct_both, slot_stats.both, slot_stats.voice_only, slot_stats.system_only
         );
         tracing::info!(
             total_slots,
-            slots_both,
-            slots_voice_only,
-            slots_system_only,
+            slots_both = slot_stats.both,
+            slots_voice_only = slot_stats.voice_only,
+            slots_system_only = slot_stats.system_only,
             pct_both,
             "dual-source mixer stats"
         );
