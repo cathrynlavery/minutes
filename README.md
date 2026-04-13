@@ -705,6 +705,40 @@ cargo install --path crates/cli
 - **Fedora/RHEL**: `sudo dnf install -y gcc-c++ cmake pkgconf-pkg-config clang clang-devel alsa-lib-devel pipewire-devel ffmpeg-free`
 - **Arch**: `sudo pacman -S --needed base-devel cmake clang alsa-lib pipewire ffmpeg`
 
+### Chromebook (Crostini)
+
+Yes, Minutes runs on a Chromebook via the Linux development environment (Crostini). The CLI is the supported path — there's no native ChromeOS build and the Tauri desktop app isn't exercised there, but the core engine, folder watcher, and MCP server all work.
+
+**One-time ChromeOS setup:**
+
+1. **Turn on Linux.** Settings → About ChromeOS → Developers → Linux development environment → Turn on. Pick a disk size of 10 GB or more (whisper models plus build artifacts).
+2. **Grant microphone access to the Linux container.** Settings → Developers → Linux development environment → toggle **Allow Linux to access your microphone**. This is off by default and is the single most common reason `minutes record` produces silence on a Chromebook.
+3. **Open the Linux terminal** and follow the [Debian/Ubuntu](#linux) install above (`apt-get install …` + `cargo install minutes-cli`).
+
+**Verify the environment** before your first real recording:
+
+```bash
+minutes health          # confirms model, mic, disk, watcher
+minutes record          # speak for 5 seconds
+minutes stop
+```
+
+If `minutes health` flags the mic as missing, the ChromeOS mic toggle is off — not a cpal bug. Flip it on in Settings and re-run.
+
+**What works well on a Chromebook:**
+
+- `minutes watch` is the killer flow. Drop voice memos from your phone into a synced Google Drive / Dropbox folder that also mounts inside Crostini, and Minutes auto-transcribes them. No mic permission dance, no hotkey fight.
+- CLI recording and transcription with the `tiny` / `base` / `small` models. Expect CPU-only performance — Crostini doesn't expose GPU acceleration to Linux apps, so skip `--features metal/cuda/vulkan` and pick a smaller model than you would on a Mac.
+- The MCP server (`npx minutes-mcp`) for Claude Desktop or other MCP clients running inside the container.
+
+**What to expect less of:**
+
+- **No global hotkeys or tray app.** ChromeOS doesn't surface system-level shortcuts to Crostini. `minutes record` / `minutes stop` from the terminal is the intended flow.
+- **No Tauri desktop app support.** It may build, but it isn't tested and the live-coaching / AI Assistant surface assumes a macOS-style window server.
+- **Slower transcription.** A Chromebook CPU on the `small` model is usually 2–4x realtime for English. Budget accordingly, or lean on the folder watcher where latency doesn't matter.
+
+If Crostini support breaks for you, please [open an issue](https://github.com/silverstein/minutes/issues) — Chromebook isn't a first-class test target yet, so real bug reports are the fastest way to harden it.
+
 ### GPU acceleration (optional)
 
 Build with GPU support for significantly faster transcription:
@@ -774,10 +808,10 @@ brew install ffmpeg           # macOS
 # Enable speaker diarization (optional, ~34MB ONNX models)
 minutes setup --diarization
 
-# Alternative: use Parakeet engine (opt-in, lower WER than Whisper)
+# Alternative: use Parakeet engine (opt-in, local GPU via parakeet.cpp)
 # Requires parakeet.cpp installed: https://github.com/Frikallo/parakeet.cpp
 minutes setup --parakeet                          # English model (tdt-ctc-110m, ~220MB)
-minutes setup --parakeet --parakeet-model tdt-600m  # Multilingual (25 EU languages, ~1.2GB)
+minutes setup --parakeet --parakeet-model tdt-600m  # Multilingual v3 (25 EU languages, ~1.2GB)
 
 # Enroll your voice for automatic speaker identification
 minutes enroll              # Records 10s of your voice
@@ -835,6 +869,8 @@ cargo tauri build --bundles app
 # macOS — local desktop development with stable permissions
 ./scripts/install-dev-app.sh
 ```
+
+The notarized Homebrew cask/update feed currently tracks the Apple Silicon desktop build. Intel Macs on macOS 15+ can still use the desktop app by building from source with the commands above.
 
 ```powershell
 # Windows — build desktop installer from source
@@ -930,8 +966,9 @@ engine = "whisper"        # "whisper" (default) or "parakeet" (opt-in, lower WER
 model = "small"           # whisper: tiny (75MB), base, small (466MB), medium, large-v3 (3.1GB)
 # language = "ur"          # Force transcription language (ISO 639-1 code, e.g. "en", "ur", "es", "zh")
                           # Default: auto-detect. Set this for similar-sounding languages (Urdu/Hindi, etc.)
-# parakeet_model = "tdt-ctc-110m"  # parakeet: tdt-ctc-110m (English), tdt-600m (multilingual)
-# parakeet_binary = "parakeet"     # Path to parakeet.cpp binary (or name in PATH)
+# parakeet_model = "tdt-ctc-110m"                # parakeet: tdt-ctc-110m (English), tdt-600m (multilingual v3)
+# parakeet_binary = "parakeet"                   # Path to parakeet.cpp binary (or name in PATH)
+# parakeet_vocab = "tdt-ctc-110m.tokenizer.vocab"  # Safer when multiple Parakeet models are installed
 # vad_model = "silero-v6.2.0"     # Silero VAD model (auto-downloaded by setup). Empty = disable.
                                    # Prevents whisper hallucination loops on non-English/noisy audio.
 
