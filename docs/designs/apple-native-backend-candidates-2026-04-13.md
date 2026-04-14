@@ -197,3 +197,15 @@ The winner is **WhisperKit**.
 
 Follow-on implementation bead:
 - `minutes-ty6k-a`
+
+## 2026-04-14 strategic update
+
+This addendum does not replace the recommendation above. It records a revised sequencing decision so the decision history stays honest.
+
+The project's current posture is pure OSS with no revenue capture layer. Under that frame:
+
+- WhisperKit's Apple-native advantage has narrower practical ROI than the earlier comparison assumed. There is no premium UX revenue path to capture today, and the Swift sidecar integration cost is real.
+- The `whisper.cpp` CoreML path remains cheap and shippable, and is a reasonable backfill for existing Whisper users even though it is encoder-only.
+- Revised order: `minutes-i8u9` first as a one-day backfill, `minutes-ty6k-a` only if measured upside clearly justifies the added Swift integration cost.
+
+This is a sequencing override, not a correction to the earlier technical comparison. The earlier recommendation still reflects the best Apple-native backend candidate on technical merit. The revised ordering reflects current project economics and maintenance cost.
