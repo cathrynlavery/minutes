@@ -48,6 +48,31 @@ pub struct BackendWarmupResult {
     pub used_gpu: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionDiagnosticsSnapshot {
+    pub backend_id: String,
+    pub model: String,
+    pub ready: bool,
+    pub warm: bool,
+    pub used_gpu: bool,
+    pub chunking_strategy: String,
+    pub issues: Vec<String>,
+    pub metadata: Option<parakeet::ParakeetInstallMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParakeetBenchmarkReport {
+    pub backend_id: String,
+    pub model: String,
+    pub gpu: bool,
+    pub direct_elapsed_ms: u64,
+    pub direct_segments: usize,
+    pub helper_elapsed_ms: u64,
+    pub helper_segments: usize,
+}
+
 fn warmed_backends() -> &'static Mutex<std::collections::HashSet<String>> {
     static WARMED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     WARMED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
@@ -303,6 +328,20 @@ pub fn parakeet_health_item(config: &Config) -> HealthItem {
     }
 }
 
+pub fn diagnostics_snapshot(config: &Config) -> TranscriptionDiagnosticsSnapshot {
+    let status = parakeet_backend_status(config);
+    TranscriptionDiagnosticsSnapshot {
+        backend_id: status.backend_id.clone(),
+        model: status.model.clone(),
+        ready: status.ready,
+        warm: status.warm,
+        used_gpu: cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        chunking_strategy: "meeting-vad-or-45s-fixed-chunks".into(),
+        issues: status.issues.clone(),
+        metadata: status.metadata.clone(),
+    }
+}
+
 pub fn warmup_active_backend(config: &Config) -> Result<BackendWarmupResult, TranscribeError> {
     if config.transcription.engine != "parakeet" {
         return Err(TranscribeError::EngineNotAvailable(
@@ -326,4 +365,66 @@ pub fn warmup_active_backend(config: &Config) -> Result<BackendWarmupResult, Tra
     {
         Err(TranscribeError::EngineNotAvailable("parakeet".into()))
     }
+}
+
+#[cfg(feature = "parakeet")]
+pub fn benchmark_parakeet(
+    helper_binary: &Path,
+    binary: &str,
+    model_path: &Path,
+    audio_path: &Path,
+    vocab_path: &Path,
+    model_id: &str,
+    gpu: bool,
+    config: &Config,
+) -> Result<ParakeetBenchmarkReport, Box<dyn std::error::Error>> {
+    let started = std::time::Instant::now();
+    let direct = transcribe::run_parakeet_cli_structured(
+        binary, model_path, audio_path, vocab_path, model_id, gpu, config,
+    )?;
+    let direct_elapsed_ms = started.elapsed().as_millis() as u64;
+
+    let helper_started = std::time::Instant::now();
+    let helper = std::process::Command::new(helper_binary)
+        .arg("parakeet-helper")
+        .args(["--binary", binary])
+        .args([
+            "--model-path",
+            model_path.to_str().ok_or("model path is not valid UTF-8")?,
+        ])
+        .args([
+            "--audio-path",
+            audio_path.to_str().ok_or("audio path is not valid UTF-8")?,
+        ])
+        .args([
+            "--vocab-path",
+            vocab_path.to_str().ok_or("vocab path is not valid UTF-8")?,
+        ])
+        .args(["--model-id", model_id])
+        .args(if gpu { vec!["--gpu"] } else { Vec::new() })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()?;
+    if !helper.status.success() {
+        return Err(format!(
+            "helper benchmark failed: {}",
+            String::from_utf8_lossy(&helper.stderr)
+        )
+        .into());
+    }
+    let helper_json: serde_json::Value = serde_json::from_slice(&helper.stdout)?;
+
+    Ok(ParakeetBenchmarkReport {
+        backend_id: "parakeet".into(),
+        model: model_id.into(),
+        gpu,
+        direct_elapsed_ms,
+        direct_segments: direct.segments.len(),
+        helper_elapsed_ms: helper_started.elapsed().as_millis() as u64,
+        helper_segments: helper_json
+            .get("segments")
+            .and_then(|v| v.as_array())
+            .map(|v| v.len())
+            .unwrap_or(0),
+    })
 }

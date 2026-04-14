@@ -2850,57 +2850,17 @@ fn cmd_parakeet_benchmark(
     gpu: bool,
     config: &Config,
 ) -> Result<()> {
-    let started = std::time::Instant::now();
-    let direct = minutes_core::transcribe::run_parakeet_cli_structured(
-        binary, model_path, audio_path, vocab_path, model_id, gpu, config,
-    )?;
-    let direct_ms = started.elapsed().as_millis() as u64;
-
     let helper_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("minutes"));
-    let helper_started = std::time::Instant::now();
-    let helper = std::process::Command::new(helper_bin)
-        .arg("parakeet-helper")
-        .args(["--binary", binary])
-        .args([
-            "--model-path",
-            model_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8"))?,
-        ])
-        .args([
-            "--audio-path",
-            audio_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("audio path is not valid UTF-8"))?,
-        ])
-        .args([
-            "--vocab-path",
-            vocab_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("vocab path is not valid UTF-8"))?,
-        ])
-        .args(["--model-id", model_id])
-        .args(if gpu { vec!["--gpu"] } else { Vec::new() })
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()?;
-    if !helper.status.success() {
-        anyhow::bail!(
-            "helper benchmark failed: {}",
-            String::from_utf8_lossy(&helper.stderr)
-        );
-    }
-    let helper_json: serde_json::Value = serde_json::from_slice(&helper.stdout)?;
-    let helper_ms = helper_started.elapsed().as_millis() as u64;
-
-    let report = serde_json::json!({
-        "model": model_id,
-        "gpu": gpu,
-        "direct_elapsed_ms": direct_ms,
-        "direct_segments": direct.segments.len(),
-        "helper_elapsed_ms": helper_ms,
-        "helper_segments": helper_json.get("segments").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
-    });
+    let report = minutes_core::transcription_coordinator::benchmark_parakeet(
+        &helper_bin,
+        binary,
+        model_path,
+        audio_path,
+        vocab_path,
+        model_id,
+        gpu,
+        config,
+    )?;
     let envelope = json_envelope("minutes parakeet-benchmark", report);
     println!("{}", serde_json::to_string_pretty(&envelope)?);
     Ok(())
