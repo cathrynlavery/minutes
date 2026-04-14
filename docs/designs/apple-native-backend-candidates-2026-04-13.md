@@ -46,9 +46,9 @@ This matters because any winner should justify itself against a backend that is 
 
 | Candidate | Ran end-to-end here? | Cold start | Warm run | Peak RSS | Timestamp output | ANE evidence | Integration shape | Notes |
 |---|---:|---:|---:|---:|---|---|---|---|
-| WhisperKit | Yes | `71.88s` | `5.32s` | about `1.1 GB` cold, `204 MB` warm | Yes, word-level JSON/SRT | Not directly measured in this session | Swift package or local server | Strongest native Apple story and the best practical non-Swift integration path |
-| parakeet-mlx | Yes | `95.98s` | `1.37s` | about `3.2 GB` max RSS, `3.9-5.0 GB` peak footprint | Yes, JSON with sentence and token timestamps | Not verified | Python CLI via MLX | Very strong warm latency, but colder start and weaker evidence about ANE usage |
-| whisper.cpp CoreML | Not truly | N/A | N/A | N/A | Would use existing Whisper output shape | Upstream docs explicitly target ANE | Existing Rust path, but only encoder-side CoreML | The current selector here still falls back because the `.mlmodelc` asset pipeline is missing |
+| WhisperKit | Yes | `71.88s` | `5.32s` | about `1.1 GB` cold, `204 MB` warm | Yes, word-level JSON/SRT | Strongest ANE-eligible path in this set | Swift package or local server | Best Apple-native fit for a non-Swift app because it already ships a local server |
+| parakeet-mlx | Yes | `95.98s` | `1.37s` | about `3.2 GB` max RSS, `3.9-5.0 GB` peak footprint | Yes, JSON with sentence and token timestamps | **No ANE**. MLX is CPU/GPU only | Python CLI via MLX | Best Parakeet-runtime upgrade for quality and timestamps, not an ANE play |
+| whisper.cpp CoreML | Not truly | N/A | N/A | N/A | Would use existing Whisper output shape | Encoder-only ANE path | Existing Rust path, but only encoder-side CoreML | The current selector here still falls back because the `.mlmodelc` asset pipeline is missing |
 
 ## Candidate notes
 
@@ -60,6 +60,9 @@ Primary-source facts:
 - ships a CLI
 - ships a local server that implements the OpenAI Audio API
 - documents model generation/download flows and local serving
+- `ModelComputeOptions` defaults the audio encoder to `cpuAndNeuralEngine` on supported chips
+- `ModelComputeOptions` defaults the text decoder to `cpuAndNeuralEngine`
+- mel computation stays on `cpuAndGPU`
 
 What we ran:
 - `whisperkit-cli transcribe` on the same 20 second sample
@@ -78,6 +81,7 @@ What's happening Matt? How you doing Wesley? Doing good man. Right on. How have 
 Why it matters:
 - this is the only candidate here that gives us a real Apple-native stack and a realistic non-Swift integration path at the same time
 - the local server option is especially important because Minutes is not a Swift app
+- unlike `whisper.cpp` CoreML, WhisperKit is not just trying to accelerate the encoder. Both encoder and decoder are ANE-eligible by default, which is the strongest Apple Silicon story in the set
 
 Caveat:
 - we did **not** capture a privileged `powermetrics` sample during the WhisperKit run in this session, so we do not have the ANE mW number yet
@@ -89,6 +93,9 @@ Primary-source facts:
 - runs Parakeet on Apple’s MLX stack
 - exposes chunking and decoding controls directly in the CLI
 - produces structured JSON output with sentence and token timing
+- MLX itself is CPU/GPU only by design. Its `Device` enum is `cpu` and `gpu`, not ANE.
+- MLX maintainers have explicitly said they do not plan to support ANE because it is a closed API.
+- the value proposition here is not ANE. It is Parakeet quality, TDT timestamp behavior, and multilingual v3 support.
 
 What we ran:
 - `parakeet-mlx` on the same 20 second sample
@@ -108,11 +115,12 @@ What's happening Matt? How you doing, Wesley? Doing good man. Right on. How have
 Why it matters:
 - this is the most direct “keep Parakeet, upgrade runtime” path
 - the warm latency result is impressive
+- it preserves the strongest quality-related parts of the current Parakeet strategy
+- it is still **not** the answer if the optimization goal is “use the ANE properly”
 
 Caveat:
-- the user hypothesis was “MLX auto-routes to ANE/GPU”
-- I did **not** verify ANE usage from source docs or from privileged power sampling here
-- that means I am not willing to claim the ANE story is proven yet
+- MLX does **not** route to ANE. This is settled, not open.
+- if zero ANE usage on Apple Silicon is the problem we are trying to solve, `parakeet-mlx` does not solve that problem
 
 ### C. whisper.cpp CoreML
 
@@ -121,6 +129,7 @@ Primary-source facts from upstream:
 - the README explicitly says encoder inference can run on the Apple Neural Engine via Core ML
 - upstream documents `generate-coreml-model.sh`
 - the expected runtime artifact is a compiled encoder bundle like `ggml-base.en-encoder.mlmodelc`
+- the implementation path is encoder-only. The decoder remains on the ggml runtime.
 
 What we ran:
 - we exercised the current `whisper-coreml` selector shape locally
@@ -137,6 +146,7 @@ Key finding:
 Why it matters:
 - this remains the safest route from the current architecture
 - but it is also the most incremental route, and only accelerates the encoder side
+- for short clips like the 20 second benchmark sample, the decoder can still dominate end-to-end time, so the upside is capped
 
 ## Recommendation
 
@@ -155,14 +165,14 @@ Why not `whisper.cpp` CoreML:
 
 Why not `parakeet-mlx` as the winner:
 - it is the strongest direct Parakeet-upgrade candidate
-- but the ANE story is still unproven in this research pass
+- but it is not an ANE path at all
 - and the integration story for Minutes is weaker than WhisperKit’s local-server story unless we are willing to lean into Python more heavily
 
-If ANE/GPU behavior for `parakeet-mlx` is later proven to be materially better than WhisperKit on this machine, that recommendation can change. Right now, WhisperKit is the better balanced bet.
+If the product goal later shifts away from ANE and toward “best Parakeet quality/runtime path on Apple Silicon,” `parakeet-mlx` remains the most interesting alternative. For the current Apple-native optimization goal, WhisperKit is the better fit.
 
 ## What we could not fully prove
 
-- We did **not** gather privileged `powermetrics` samples for WhisperKit or `parakeet-mlx` in this session.
+- We did **not** gather privileged `powermetrics` samples for WhisperKit in this session.
 - We therefore do **not** have candidate-vs-candidate ANE mW numbers yet.
 - We did **not** run a real end-to-end `whisper.cpp` CoreML backend because the model asset pipeline for `.mlmodelc` bundles does not exist in Minutes yet.
 
