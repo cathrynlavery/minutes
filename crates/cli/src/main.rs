@@ -2828,6 +2828,7 @@ fn cmd_diagnose(path: &Path, title: Option<&str>, config: &Config) -> Result<()>
 }
 
 #[cfg(feature = "parakeet")]
+#[allow(clippy::too_many_arguments)]
 fn cmd_parakeet_helper(
     binary: &str,
     model_path: &Path,
@@ -2856,6 +2857,7 @@ fn cmd_parakeet_helper(
 }
 
 #[cfg(not(feature = "parakeet"))]
+#[allow(clippy::too_many_arguments)]
 fn cmd_parakeet_helper(
     _binary: &str,
     _model_path: &Path,
@@ -2873,6 +2875,7 @@ fn cmd_parakeet_helper(
 }
 
 #[cfg(feature = "parakeet")]
+#[allow(clippy::too_many_arguments)]
 fn cmd_parakeet_benchmark(
     binary: &str,
     model_path: &Path,
@@ -2904,6 +2907,7 @@ fn cmd_parakeet_benchmark(
 }
 
 #[cfg(not(feature = "parakeet"))]
+#[allow(clippy::too_many_arguments)]
 fn cmd_parakeet_benchmark(
     _binary: &str,
     _model_path: &Path,
@@ -3052,8 +3056,10 @@ fn cmd_setup(model: &str, list: bool, diarization: bool) -> Result<()> {
         eprintln!("  --diarization   34 MB   (pyannote-rs: segmentation + speaker embedding)");
         eprintln!();
         eprintln!("Parakeet models (alternative engine, --parakeet):");
-        eprintln!("  tdt-ctc-110m  ~220 MB   (English, fast, default)");
-        eprintln!("  tdt-600m      ~1.2 GB   (multilingual v3, 25 EU languages, best quality)");
+        eprintln!("  tdt-ctc-110m  ~220 MB   (English, fast)");
+        eprintln!(
+            "  tdt-600m      ~1.2 GB   (multilingual v3, 25 EU languages, best quality, default)"
+        );
         return Ok(());
     }
 

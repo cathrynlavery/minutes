@@ -252,7 +252,9 @@ fn normalize_boost_phrase(phrase: &str, slug: Option<&str>) -> Option<String> {
         return None;
     }
 
-    let has_signal = phrase.chars().any(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    let has_signal = phrase
+        .chars()
+        .any(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
     if !has_signal {
         return None;
     }
@@ -262,9 +264,7 @@ fn normalize_boost_phrase(phrase: &str, slug: Option<&str>) -> Option<String> {
 
 fn split_boost_title_fragments(title: &str) -> Vec<String> {
     title
-        .replace('—', "|")
-        .replace('&', "|")
-        .replace(',', "|")
+        .replace(['—', '&', ','], "|")
         .split('|')
         .flat_map(|part| part.split(" with "))
         .map(str::trim)

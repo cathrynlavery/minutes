@@ -359,12 +359,21 @@ fn process_candidate(candidate: &WatchCandidate, config: &Config) -> Result<(), 
 }
 
 #[cfg(feature = "parakeet")]
-fn process_parakeet_memo_batch(candidates: &[WatchCandidate], config: &Config) -> Result<(), WatchError> {
-    let audio_paths: Vec<PathBuf> = candidates.iter().map(|candidate| candidate.path.clone()).collect();
+fn process_parakeet_memo_batch(
+    candidates: &[WatchCandidate],
+    config: &Config,
+) -> Result<(), WatchError> {
+    let audio_paths: Vec<PathBuf> = candidates
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect();
     let batch_started = std::time::Instant::now();
-    let batch_results =
-        crate::transcribe::transcribe_parakeet_batch(&audio_paths, config).map_err(|error| {
-            WatchError::Io(std::io::Error::other(format!("parakeet batch error: {}", error)))
+    let batch_results = crate::transcribe::transcribe_parakeet_batch(&audio_paths, config)
+        .map_err(|error| {
+            WatchError::Io(std::io::Error::other(format!(
+                "parakeet batch error: {}",
+                error
+            )))
         })?;
     let per_file_transcribe_ms = (batch_started.elapsed().as_millis() as u64)
         .checked_div(candidates.len() as u64)
@@ -386,7 +395,10 @@ fn process_parakeet_memo_batch(candidates: &[WatchCandidate], config: &Config) -
 
         let context = BackgroundPipelineContext {
             sidecar: candidate.sidecar.clone(),
-            recorded_at: candidate.sidecar.as_ref().and_then(|sidecar| sidecar.captured_at),
+            recorded_at: candidate
+                .sidecar
+                .as_ref()
+                .and_then(|sidecar| sidecar.captured_at),
             ..BackgroundPipelineContext::default()
         };
 
@@ -401,15 +413,19 @@ fn process_parakeet_memo_batch(candidates: &[WatchCandidate], config: &Config) -
             transcribe_result.stats,
             per_file_transcribe_ms,
         )
-        .map_err(|error| WatchError::Io(std::io::Error::other(format!(
-            "pipeline error: {}",
-            error
-        ))))?;
-        let result = pipeline::enrich_transcript_artifact(&candidate.path, &artifact, config, &context, |_| {})
-            .map_err(|error| WatchError::Io(std::io::Error::other(format!(
-                "pipeline error: {}",
-                error
-            ))))?;
+        .map_err(|error| {
+            WatchError::Io(std::io::Error::other(format!("pipeline error: {}", error)))
+        })?;
+        let result = pipeline::enrich_transcript_artifact(
+            &candidate.path,
+            &artifact,
+            config,
+            &context,
+            |_| {},
+        )
+        .map_err(|error| {
+            WatchError::Io(std::io::Error::other(format!("pipeline error: {}", error)))
+        })?;
 
         tracing::info!(
             input = %candidate.path.display(),
@@ -483,7 +499,10 @@ fn process_candidates(candidates: Vec<WatchCandidate>, config: &Config) {
 }
 
 #[cfg(not(feature = "parakeet"))]
-fn process_parakeet_memo_batch(_candidates: &[WatchCandidate], _config: &Config) -> Result<(), WatchError> {
+fn process_parakeet_memo_batch(
+    _candidates: &[WatchCandidate],
+    _config: &Config,
+) -> Result<(), WatchError> {
     Err(WatchError::Io(std::io::Error::other(
         "parakeet batch processing requires the parakeet feature",
     )))
@@ -562,7 +581,8 @@ pub fn run(watch_dir: Option<&Path>, config: &Config) -> Result<(), WatchError> 
                 while let Ok(event) = rx.try_recv() {
                     if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
                         for path in event.paths {
-                            if let Some(candidate) = handle_file_event(&path, settle_delay, config) {
+                            if let Some(candidate) = handle_file_event(&path, settle_delay, config)
+                            {
                                 candidates.push(candidate);
                             }
                         }

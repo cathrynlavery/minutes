@@ -731,6 +731,7 @@ pub fn transcribe_to_artifact(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_transcript_artifact(
     audio_path: &Path,
     content_type: ContentType,

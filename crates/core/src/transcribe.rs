@@ -1221,9 +1221,10 @@ pub fn resolve_model_path_for_dictation(config: &Config) -> Result<PathBuf, Tran
     }
 
     Err(TranscribeError::ModelNotFound(format!(
-        "Expected model file \"ggml-{}.bin\" in {}",
+        "Expected model file \"ggml-{}.bin\" in {}.\n\nTo fix this, run:\n\n    minutes setup --model {}\n",
         model_name,
         model_dir.display(),
+        model_name,
     )))
 }
 
@@ -1264,8 +1265,8 @@ pub fn resolve_model_path_by_name(
     );
     resolve_model_path_for_dictation(config).map_err(|_| {
         TranscribeError::ModelNotFound(format!(
-            "Expected model file \"ggml-{}.bin\" in {}",
-            requested, model_dir_display,
+            "Expected model file \"ggml-{}.bin\" in {}.\n\nTo fix this, run:\n\n    minutes setup --model {}\n",
+            requested, model_dir_display, requested,
         ))
     })
 }
@@ -1296,9 +1297,10 @@ fn resolve_model_path(config: &Config) -> Result<PathBuf, TranscribeError> {
     }
 
     Err(TranscribeError::ModelNotFound(format!(
-        "Expected model file \"ggml-{}.bin\" in {}",
+        "Expected model file \"ggml-{}.bin\" in {}.\n\nTo fix this, run:\n\n    minutes setup --model {}\n",
         model_name,
         model_dir.display(),
+        model_name,
     )))
 }
 
@@ -2104,11 +2106,22 @@ fn resolve_parakeet_model_path(config: &Config) -> Result<PathBuf, TranscribeErr
         return Ok(direct);
     }
 
-    Err(TranscribeError::ModelNotFound(format!(
-        "Expected parakeet model \"{}\" in {}. Run: minutes setup --parakeet",
+    let mut message = format!(
+        "Expected parakeet model \"{}\" in {}.\n\nTo fix this, run:\n\n    minutes setup --parakeet\n",
         model_name,
         model_dir.display(),
-    )))
+    );
+    if model_name == "tdt-600m"
+        && crate::parakeet::resolve_model_file(config, "tdt-ctc-110m").is_some()
+    {
+        message.push_str(
+            "\nIt looks like you still have the older English-only `tdt-ctc-110m` model installed.\n\
+             If you want to keep using it, add this to ~/.config/minutes/config.toml:\n\n\
+                 parakeet_model = \"tdt-ctc-110m\"\n\
+                 parakeet_vocab = \"tdt-ctc-110m.tokenizer.vocab\"\n",
+        );
+    }
+    Err(TranscribeError::ModelNotFound(message))
 }
 
 /// Resolve the parakeet SentencePiece vocab file path.
@@ -2335,7 +2348,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("minutes setup --model tiny"),
+            err.contains("minutes setup --model nonexistent"),
             "error should tell user how to fix it: {}",
             err
         );
@@ -2908,6 +2921,43 @@ hello there friend
 
     #[test]
     #[cfg(feature = "parakeet")]
+    fn resolve_parakeet_model_missing_suggests_pinning_110m_when_present() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let model_dir = dir.path().join("parakeet");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join("tdt-ctc-110m.safetensors"), b"legacy").unwrap();
+        std::fs::write(
+            model_dir.join("tdt-ctc-110m.tokenizer.vocab"),
+            b"legacy-tokenizer",
+        )
+        .unwrap();
+
+        let config = Config {
+            transcription: crate::config::TranscriptionConfig {
+                model_path: dir.path().to_path_buf(),
+                parakeet_model: "tdt-600m".into(),
+                ..crate::config::TranscriptionConfig::default()
+            },
+            ..Config::default()
+        };
+
+        let err = resolve_parakeet_model_path(&config)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("tdt-ctc-110m"),
+            "should mention legacy 110m option: {}",
+            err
+        );
+        assert!(
+            err.contains("parakeet_vocab = \"tdt-ctc-110m.tokenizer.vocab\""),
+            "should show how to pin the old tokenizer too: {}",
+            err
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
     fn resolve_parakeet_vocab_prefers_model_specific_tokenizer() {
         let dir = tempfile::TempDir::new().unwrap();
         let model_dir = dir.path().join("parakeet");
@@ -3004,8 +3054,15 @@ Hello there.
 
         let parsed = parse_parakeet_batch_output(raw, 2, &config).unwrap();
         assert_eq!(parsed.len(), 2);
-        assert!(parsed[0].as_ref().unwrap().transcript.contains("Hello there."));
-        assert!(matches!(parsed[1], Err(TranscribeError::EmptyTranscript(_))));
+        assert!(parsed[0]
+            .as_ref()
+            .unwrap()
+            .transcript
+            .contains("Hello there."));
+        assert!(matches!(
+            parsed[1],
+            Err(TranscribeError::EmptyTranscript(_))
+        ));
     }
 
     #[test]
