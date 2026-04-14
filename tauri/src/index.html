@@ -4105,16 +4105,16 @@
         </div>
         <div class="about-controls is-hidden" id="settings-parakeet-section">
           <div class="about-controls-group">
-            <div class="about-controls-copy">Parakeet model</div>
+            <div class="about-controls-copy">Parakeet backend</div>
             <select id="settings-parakeet-model" class="settings-field">
               <option value="tdt-ctc-110m">tdt-ctc-110m — 110M params, English, fastest</option>
               <option value="tdt-600m">tdt-600m — 600M params, multilingual v3, best quality</option>
             </select>
             <div class="settings-section-inline settings-section-inline-tight">
-              <div class="about-controls-meta" id="settings-parakeet-status">Checking Parakeet readiness…</div>
+              <div class="about-controls-meta" id="settings-parakeet-status">Checking Parakeet backend…</div>
               <button class="btn btn-secondary btn-sm" id="btn-open-parakeet-guide">Open Setup Guide</button>
             </div>
-            <div class="about-controls-meta" id="settings-parakeet-detail">Requires parakeet.cpp installed. See <code>minutes setup --parakeet</code>.</div>
+            <div class="about-controls-meta" id="settings-parakeet-detail">Runs locally with a Parakeet backend binary plus model assets. See <code>minutes setup --parakeet</code>.</div>
           </div>
         </div>
         <div class="about-controls">
@@ -4792,25 +4792,26 @@
     function describeParakeetStatus(status) {
       if (!status) {
         return {
-          summary: 'Parakeet readiness unavailable.',
-          detail: 'Minutes could not determine whether the selected Parakeet model is usable yet.',
+          summary: 'Parakeet status unavailable.',
+          detail: 'Minutes could not determine whether the selected Parakeet backend is usable yet.',
         };
       }
 
       if (status.ready) {
         const installedAt = status.metadata?.installedAt ? ` Installed ${new Date(status.metadata.installedAt).toLocaleString()}.` : '';
         const tokenizer = status.tokenizerLabel ? ` Tokenizer: ${status.tokenizerLabel}.` : '';
+        const warm = ` Warm: ${status.warm ? 'yes' : 'no'}.`;
         return {
-          summary: `${status.model} is ready.`,
-          detail: `Binary: ${status.binary}.${tokenizer}${installedAt}`.trim(),
+          summary: `${status.model} is ready for local transcription.`,
+          detail: `Backend: Parakeet. Binary: ${status.binary}.${tokenizer}${warm}${installedAt}`.trim(),
         };
       }
 
       return {
-        summary: 'Needs setup.',
+        summary: 'Parakeet backend needs setup.',
         detail: (status.issues && status.issues.length)
           ? status.issues.join(' • ')
-          : `Run ${status.setupCommand} after installing parakeet.cpp.`,
+          : `Run ${status.setupCommand} after installing the local Parakeet backend assets.`,
       };
     }
 
@@ -6762,8 +6763,8 @@
         if (parakeetOpt) {
           parakeetOpt.disabled = !parakeetCompiled;
           parakeetOpt.textContent = parakeetCompiled
-            ? 'Parakeet — lower WER, fast on Apple Silicon'
-            : 'Parakeet — not compiled (rebuild with --features parakeet)';
+            ? 'Parakeet — local backend, best quality on Apple Silicon'
+            : 'Parakeet — unavailable in this build';
         }
         engineSelect.value = eng;
         document.getElementById('settings-whisper-section').classList.toggle('is-hidden', eng !== 'whisper');

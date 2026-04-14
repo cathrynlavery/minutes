@@ -2373,12 +2373,14 @@ fn model_status(config: &Config) -> ReadinessItem {
                     .tokenizer_label
                     .unwrap_or_else(|| "unknown".to_string());
                 format!(
-                    "Parakeet engine ({}) ready. Model: {}. Tokenizer: {}.",
-                    status.binary, status.model, tokenizer_label
+                    "Parakeet backend ready. Model: {}. Tokenizer: {}. Warm: {}.",
+                    status.model,
+                    tokenizer_label,
+                    if status.warm { "yes" } else { "no" }
                 )
             } else {
                 format!(
-                    "Parakeet not ready: {}. Run: minutes setup --parakeet",
+                    "Parakeet backend needs setup: {}. Run: minutes setup --parakeet",
                     status.issues.join(", ")
                 )
             },
