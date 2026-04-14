@@ -25,6 +25,7 @@ pub mod screen;
 pub mod search;
 pub mod summarize;
 pub mod transcribe;
+pub mod transcription_coordinator;
 pub mod vault;
 pub mod voice;
 pub mod watch;

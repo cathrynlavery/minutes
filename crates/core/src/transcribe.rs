@@ -1,5 +1,11 @@
 use crate::config::Config;
 use crate::error::TranscribeError;
+use crate::transcription_coordinator::{run_transcript_cleanup_pipeline, TranscriptCleanupStage};
+#[cfg(test)]
+use crate::transcription_coordinator::{
+    collapse_noise_markers, dedup_interleaved, dedup_segments, strip_foreign_script,
+    trim_trailing_noise,
+};
 #[cfg(feature = "parakeet")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "parakeet")]
@@ -950,106 +956,6 @@ fn decode_with_symphonia(path: &Path) -> Result<Vec<f32>, TranscribeError> {
 
 // resample() and normalize_audio() are provided by whisper_guard::audio
 // and re-exported at the top of this file.
-
-// Segment cleaning functions (dedup_segments, dedup_interleaved, trim_trailing_noise,
-// clean_transcript, CleanStats) are provided by whisper_guard::segments.
-// They are re-exported as pub use at the top of this file for API compatibility.
-// The private wrappers below delegate to whisper-guard so internal callers
-// (transcribe_with_whisper) continue working without path changes.
-use whisper_guard::segments as wg_segments;
-
-// Thin delegates to whisper-guard (used by whisper, parakeet, and tests)
-fn dedup_segments(lines: Vec<String>) -> Vec<String> {
-    wg_segments::dedup_segments(&lines)
-}
-fn dedup_interleaved(lines: Vec<String>) -> Vec<String> {
-    wg_segments::dedup_interleaved(&lines)
-}
-fn trim_trailing_noise(lines: Vec<String>) -> Vec<String> {
-    wg_segments::trim_trailing_noise(&lines)
-}
-fn strip_foreign_script(lines: Vec<String>) -> Vec<String> {
-    wg_segments::strip_foreign_script(&lines)
-}
-fn collapse_noise_markers(lines: Vec<String>) -> Vec<String> {
-    wg_segments::collapse_noise_markers(&lines)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TranscriptCleanupStage {
-    DedupSegments,
-    DedupInterleaved,
-    StripForeignScript,
-    CollapseNoiseMarkers,
-    TrimTrailingNoise,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TranscriptCleanupStageStat {
-    stage: TranscriptCleanupStage,
-    before: usize,
-    after: usize,
-}
-
-#[derive(Debug, Clone)]
-struct TranscriptCleanupResult {
-    lines: Vec<String>,
-    stats: Vec<TranscriptCleanupStageStat>,
-}
-
-type TranscriptCleanupFn = fn(Vec<String>) -> Vec<String>;
-type TranscriptCleanupStep = (TranscriptCleanupStage, TranscriptCleanupFn);
-
-impl TranscriptCleanupResult {
-    fn after(&self, stage: TranscriptCleanupStage) -> usize {
-        self.stats
-            .iter()
-            .find(|stat| stat.stage == stage)
-            .map(|stat| stat.after)
-            .unwrap_or(self.lines.len())
-    }
-}
-
-/// Shared transcript cleanup for segment-oriented backends.
-///
-/// Applies the same post-transcription cleanup stages for both Whisper and
-/// Parakeet after each backend has produced `[M:SS] text` segment lines.
-fn run_transcript_cleanup_pipeline(lines: Vec<String>) -> TranscriptCleanupResult {
-    let mut stats = Vec::new();
-    let mut current = lines;
-
-    let stages: &[TranscriptCleanupStep] = &[
-        (TranscriptCleanupStage::DedupSegments, dedup_segments),
-        (TranscriptCleanupStage::DedupInterleaved, dedup_interleaved),
-        (
-            TranscriptCleanupStage::StripForeignScript,
-            strip_foreign_script,
-        ),
-        (
-            TranscriptCleanupStage::CollapseNoiseMarkers,
-            collapse_noise_markers,
-        ),
-        (
-            TranscriptCleanupStage::TrimTrailingNoise,
-            trim_trailing_noise,
-        ),
-    ];
-
-    for (stage, apply) in stages {
-        let before = current.len();
-        current = apply(current);
-        stats.push(TranscriptCleanupStageStat {
-            stage: *stage,
-            before,
-            after: current.len(),
-        });
-    }
-
-    TranscriptCleanupResult {
-        lines: current,
-        stats,
-    }
-}
 
 fn detect_meeting_vad_chunks(samples: &[f32]) -> Vec<(usize, usize)> {
     const SAMPLE_RATE: usize = 16_000;
