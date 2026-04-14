@@ -812,6 +812,7 @@ minutes setup --diarization
 # Requires parakeet.cpp installed: https://github.com/Frikallo/parakeet.cpp
 minutes setup --parakeet                          # Multilingual v3 (tdt-600m, ~1.2GB)
 minutes setup --parakeet --parakeet-model tdt-ctc-110m  # English-only compact model (~220MB)
+# Also installs native Silero VAD weights for the parakeet.cpp --vad path
 
 # Enroll your voice for automatic speaker identification
 minutes enroll              # Records 10s of your voice

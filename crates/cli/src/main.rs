@@ -11,6 +11,10 @@ mod dashboard;
 mod demo_data;
 use std::path::{Path, PathBuf};
 
+/// Bundled native Silero VAD weights for parakeet.cpp's `--vad` path.
+const PARAKEET_NATIVE_VAD_WEIGHTS: &[u8] =
+    include_bytes!("../assets/parakeet/silero_vad_v5.safetensors");
+
 #[derive(Serialize)]
 struct AutomationRunRecord {
     kind: String,
@@ -3195,6 +3199,7 @@ fn cmd_setup_parakeet(model: &str) -> Result<()> {
     let dest_model = model_dir.join(parakeet::default_model_filename(model));
     let dest_vocab_name = parakeet::default_tokenizer_filename(model);
     let dest_vocab = model_dir.join(&dest_vocab_name);
+    let native_vad_dest = parakeet::installs_root(&config).join("silero_vad_v5.safetensors");
 
     // Map model name to HuggingFace repo
     let hf_repo = match model {
@@ -3266,6 +3271,26 @@ fn cmd_setup_parakeet(model: &str) -> Result<()> {
                 dest_vocab.display()
             );
         }
+    }
+
+    if !native_vad_dest.exists() {
+        if let Some(parent) = native_vad_dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&native_vad_dest, PARAKEET_NATIVE_VAD_WEIGHTS)?;
+        let size = std::fs::metadata(&native_vad_dest)?.len();
+        eprintln!(
+            "Installed native Parakeet VAD weights: {} ({:.1} MB)",
+            native_vad_dest.display(),
+            size as f64 / 1_048_576.0
+        );
+    } else {
+        let size = std::fs::metadata(&native_vad_dest)?.len();
+        eprintln!(
+            "Native Parakeet VAD weights already installed: {} ({:.1} MB)",
+            native_vad_dest.display(),
+            size as f64 / 1_048_576.0
+        );
     }
 
     // Verify parakeet binary is available

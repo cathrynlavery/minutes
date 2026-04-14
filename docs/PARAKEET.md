@@ -137,11 +137,12 @@ converted to safetensors format.
 
 ```bash
 # Install Python dependencies
-pip install safetensors torch huggingface_hub
+pip install safetensors torch torchaudio huggingface_hub
 
 # Option A: Use Minutes setup (recommended)
 minutes setup --parakeet                           # Multilingual v3 (tdt-600m, ~1.2 GB)
 minutes setup --parakeet --parakeet-model tdt-ctc-110m # English-only compact model (~220 MB)
+# Installs native Silero VAD weights automatically
 
 # Option B: Manual download and conversion
 hf download nvidia/parakeet-tdt-0.6b-v3 parakeet-tdt-0.6b-v3.nemo --local-dir .
@@ -149,7 +150,7 @@ cd parakeet.cpp
 mkdir -p ~/.minutes/models/parakeet/tdt-600m
 python scripts/convert_nemo.py parakeet-tdt-0.6b-v3.nemo -o ~/.minutes/models/parakeet/tdt-600m/tdt-600m.safetensors --model 600m-tdt
 
-# Also convert Silero VAD weights (for silence stripping)
+# Also convert Silero VAD weights manually only if you are not using `minutes setup`
 python scripts/convert_silero_vad.py -o ~/.minutes/models/parakeet/silero_vad_v5.safetensors
 
 # Extract the SentencePiece tokenizer vocab and store it with a model-specific name
@@ -231,8 +232,8 @@ sees.
 Only `tdt-ctc-110m` and `tdt-600m` are supported. Check your config.
 
 ### "Expected parakeet model in ~/.minutes/models/parakeet/"
-Run `minutes setup --parakeet` to download and convert the model, or follow
-the manual download steps above.
+Run `minutes setup --parakeet` to install the recommended Parakeet model plus
+native VAD weights, or follow the manual download steps above.
 
 ### CMake 4.x atomics error (build)
 Google Highway's `FindAtomics.cmake` is incompatible with CMake 4.x on Apple Silicon.
