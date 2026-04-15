@@ -315,22 +315,25 @@ fn parakeet_binary_candidates() -> Vec<PathBuf> {
 }
 
 fn verify_parakeet_binary(path: &Path) -> Result<(), ()> {
+    // Just check the file exists and is executable. Do NOT probe with
+    // `--version` — many parakeet.cpp builds print usage and exit non-zero
+    // on unknown flags, which would falsely reject a working binary.
+    // Matches how shell PATH lookup works: executable bit is the contract.
     if !path.is_file() {
         return Err(());
     }
-
-    let status = std::process::Command::new(path)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|_| ())?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(())
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|_| ())?
+            .permissions()
+            .mode();
+        if mode & 0o111 == 0 {
+            return Err(());
+        }
     }
+    Ok(())
 }
 
 fn log_auto_resolve(candidates_tried: &[String], chosen_path: &Path) {
