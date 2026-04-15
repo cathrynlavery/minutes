@@ -120,6 +120,11 @@ certificate or local notarization credentials.
 
 **Run this mental checklist before every commit from this repo.** Not every item applies to every commit — check which areas your changes touch and verify those.
 
+**CI parity note.** CI runs on `ubuntu-latest`, `macos-latest`, and `windows-latest`, and it builds `minutes-core` with `--features parakeet` on all three. The Pre-Commit Checklist is designed to catch CI failures *before* pushing. The common traps that don't surface on a local macOS build:
+- `cfg(unix)`-gated code paths: macOS has `unix=true`, so unix-only imports/methods appear to work locally even when they'd break on Windows. Any `use std::os::unix::...`, `PermissionsExt::set_mode`, `UnixStream`, or similar must be inside `#[cfg(unix)]`.
+- `cfg(all(feature = "parakeet", unix))` stubs: when a module has both a real unix impl and a non-unix stub, any struct or function the caller accesses must exist in *both* variants with compatible shape. Callers that do `result.some_field` need `some_field` on the stub too.
+- Generated/sync'd files: `site/lib/release.ts` is generated from `manifest.json` by `scripts/sync_site_release_version.mjs`. Version bumps in `manifest.json` require running that script — CI's `Site Release Link Consistency` job will fail otherwise.
+
 | Area | When to check | How to verify |
 |------|---------------|---------------|
 | **Manifest tools sync** | Any new/renamed/removed MCP tool | Compare `manifest.json` tools array against `server.tool()` and `registerAppTool()` calls in `crates/mcp/src/index.ts` |
@@ -128,6 +133,10 @@ certificate or local notarization credentials.
 | **MCP server rebuild** | Any change to `crates/mcp/src/` or `crates/mcp/ui/` | `cd crates/mcp && npm run build` |
 | **cargo fmt** | Any Rust change | `cargo fmt --all -- --check` |
 | **cargo clippy** | Any Rust change | `cargo clippy --all --no-default-features -- -D warnings` |
+| **cargo test** | Any Rust change | `cargo test -p minutes-core --no-default-features --lib` — CI runs the full suite; the local no-default-features run catches most regressions without needing the whisper model. |
+| **Unix-only APIs behind cfg** | Any new `use std::os::unix::*`, `PermissionsExt`, `UnixStream`, `set_mode(0o...)`, or similar | Wrap the import AND every call site in `#[cfg(unix)]`. Also gate any test that shells out to a POSIX script or uses chmod semantics. CI's `Test (windows-latest)` fails otherwise; `cargo check --no-default-features` on macOS won't catch this because `cfg(unix)` is true locally. |
+| **Feature-gated stub struct parity** | Any change to `parakeet_sidecar.rs` or similar file with an `imp` + `imp_stub` split | When the unix imp exposes a struct with fields that callers read (`result.transcript`, `result.elapsed_ms`, etc.), the stub struct in the `not(unix)` branch must declare the same fields (even though the stub function always returns `Err` and the match arm is unreachable at runtime). Without this, Windows + `--features parakeet` fails with E0609 "no field" errors. |
+| **Site release constants** | Any bump to `manifest.json` version | `node scripts/sync_site_release_version.mjs` regenerates `site/lib/release.ts` to match. CI's `Site Release Link Consistency` job fails otherwise. Treat this like the other version-sync sites in the Release Checklist. |
 | **SDK rebuild** | Any change to `crates/sdk/src/` | `cd crates/sdk && npm run build` |
 | **Mutual exclusion** | Any change to recording/dictation/live transcript start paths | Verify all three modes check each other's PID/state: `live_transcript::run` checks recording+dictation PIDs, `cmd_record`/`capture::record_to_wav` checks live PID, `dictation::run` checks live PID, Tauri `cmd_start_*` checks `live_transcript_active`+`recording`+`dictation_active` |
 | **Tauri command duplication** | Changes to live transcript start/stop logic | Both `cmd_start_live_transcript` and `handle_live_shortcut_event` must use the shared `try_acquire_live` + `run_live_session` functions. Do NOT duplicate logic. |
