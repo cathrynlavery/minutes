@@ -1551,6 +1551,21 @@ mod imp_stub {
     #[derive(Debug, Clone)]
     pub struct SidecarRequest;
 
+    // Stub shape mirrors the real `SidecarTranscriptResult` from the unix
+    // imp module so non-unix builds (e.g. Windows with `--features parakeet`)
+    // type-check the match arm at the call site. The stub
+    // `transcribe_via_global_sidecar` always returns Err, so this branch is
+    // unreachable at runtime on these platforms.
+    #[cfg(feature = "parakeet")]
+    #[derive(Debug, Clone)]
+    pub struct SidecarTranscriptResult {
+        pub transcript: crate::transcribe::ParakeetCliTranscript,
+        pub elapsed_ms: u64,
+        pub first_request_on_process: bool,
+        pub effective_fp16: bool,
+    }
+
+    #[cfg(not(feature = "parakeet"))]
     #[derive(Debug, Clone)]
     pub struct SidecarTranscriptResult;
 
