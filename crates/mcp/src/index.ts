@@ -754,7 +754,7 @@ registerAppResource(
 
 registerTool(
  "start_recording",
-  "Start recording audio with call-aware preflight. When a known call app is active, Minutes can infer call intent and block silent mic-only call captures unless explicitly allowed.",
+  "Start recording audio with call-aware preflight. When a known call app is active, Minutes can infer call intent and block silent mic-only call captures unless explicitly allowed. Note: this server does not listen to audio content. Recordings are stopped by invoking stop_recording after the user types a request in chat — never promise the user they can speak a 'stop recording' voice command.",
   {
     title: z.string().optional().describe("Optional title for this recording"),
     mode: z
@@ -844,7 +844,7 @@ registerTool(
             {
               type: "text" as const,
               text: result.recording
-                ? `Recording started in the running Minutes desktop app (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${desktopLiveMsg} Say "stop recording" when done.`
+                ? `Recording started in the running Minutes desktop app (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${desktopLiveMsg} When the user asks to finish (typed in chat), invoke stop_recording to process the transcript and summary. This server does not listen to audio content, so do not tell the user they can speak a stop command.`
                 : response.detail,
             },
           ],
@@ -923,7 +923,7 @@ registerTool(
         {
           type: "text" as const,
           text: result.recording
-            ? `${result.recording_mode === "quick-thought" ? "Quick thought" : "Recording"} started (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${liveMsg} Say "stop recording" when done.`
+            ? `${result.recording_mode === "quick-thought" ? "Quick thought" : "Recording"} started (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${liveMsg} When the user asks to finish (typed in chat), invoke stop_recording to process the transcript and summary. This server does not listen to audio content, so do not tell the user they can speak a stop command.`
             : "Recording failed to start. Check `minutes logs` for details.",
         },
       ],
