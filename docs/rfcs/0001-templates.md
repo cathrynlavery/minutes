@@ -19,9 +19,9 @@ The straightforward reading of that ask is "add `--prompt` / `--prompt-file` fla
 
 Templates solve the underlying problem (domain customization without recompile) while preserving the structured-extraction contract, and they unlock three things a prompt flag cannot:
 
-1. **Vertical product surfaces** — per-template landing pages, SEO-indexable, each with a working example
-2. **Community contribution** — medical, legal, therapy, and sales verticals need domain expertise Minutes will never have internally; templates let that expertise live in community-PRable markdown files
-3. **Agent-aware domain semantics** — templates carry `agent_context` that informs Claude/Codex/Gemini/OpenCode when working with template-tagged meetings, without prompting users to re-explain context
+1. **Vertical product surfaces**: per-template landing pages, SEO-indexable, each with a working example
+2. **Community contribution**: medical, legal, therapy, and sales verticals need domain expertise Minutes will never have internally; templates let that expertise live in community-PRable markdown files
+3. **Agent-aware domain semantics**: templates carry `agent_context` that informs Claude/Codex/Gemini/OpenCode when working with template-tagged meetings, without prompting users to re-explain context
 
 ## Non-goals
 
@@ -32,11 +32,11 @@ Templates solve the underlying problem (domain customization without recompile) 
 
 ## Prior art
 
-- **Granola templates** — closed-source, opaque dropdown, single-vendor. The closest functional analog, and their moat. Minutes can do better by being markdown-native and community-driven.
-- **Fathom AI Summary Templates** — similar dropdown UX
-- **Fireflies SmartMatch** — keyword-triggered templates
-- **Obsidian templates** — variable substitution, no LLM awareness
-- **Rust RFCs / Python PEPs** — the RFC process itself; structured proposals with implementation phases
+- **Granola templates**: closed-source, opaque dropdown, single-vendor. The closest functional analog, and their moat. Minutes can do better by being markdown-native and community-driven.
+- **Fathom AI Summary Templates**: similar dropdown UX
+- **Fireflies SmartMatch**: keyword-triggered templates
+- **Obsidian templates**: variable substitution, no LLM awareness
+- **Rust RFCs / Python PEPs**: the RFC process itself; structured proposals with implementation phases
 
 ## Design
 
@@ -299,7 +299,7 @@ post_record_skill: minutes-soap-review
 
 ## Implementation phases
 
-### Phase 1 — shippable, resolves #143
+### Phase 1: shippable, resolves #143
 - `crates/core/src/template.rs`: Template struct, loader, resolver (project > user > bundled)
 - `additional_instructions` appended to `build_system_prompt` (base prompt preserved)
 - `--template <slug>` flag in CLI
@@ -307,7 +307,7 @@ post_record_skill: minutes-soap-review
 - CLI: `minutes template list`, `show`, `validate`
 - Tests: loader, resolver, prompt composition, schema validation
 
-### Phase 2 — custom extract fields
+### Phase 2: custom extract fields
 - Summarizer reads `extract:` from active template, requests structured output from LLM
 - Nested objects supported (max 3 levels)
 - YAML frontmatter writer extends output with custom fields
@@ -315,14 +315,14 @@ post_record_skill: minutes-soap-review
 - MCP tools expose custom fields in responses
 - Ship: `interview`, `sales-discovery`, `lecture`
 
-### Phase 3 — compliance + post_record_skill
+### Phase 3: compliance + post_record_skill
 - Compliance rules enforced pre-persistence (redaction, validation)
 - `post_record_skill` wired into post-record hook
 - `agent_context` injected into MCP responses
 - Ship regulated verticals: `soap`, `medical-fr-base`, `consultation-fr`, `soap-fr`, `therapy-intake`, `legal-consult`
 - Audit log infrastructure
 
-### Phase 4 — calendar routing, community gallery, inheritance
+### Phase 4: calendar routing, community gallery, inheritance
 - Calendar keyword auto-selection
 - `templates/` dir in repo accepting community PRs
 - Template validation in CI (schema + smoke test against `example.md`)
@@ -330,7 +330,7 @@ post_record_skill: minutes-soap-review
 - `extends:` inheritance resolution
 - Gallery landing page on useminutes.app
 
-### Phase 5 — graph schema extensions
+### Phase 5: graph schema extensions
 - Custom extract fields flow into `graph.db`
 - Domain-aware MCP graph tools (query across medical, legal, sales templates)
 - Cross-template queries ("all SOAP notes where diagnosis includes X")
