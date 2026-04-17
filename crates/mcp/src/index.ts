@@ -267,7 +267,7 @@ function findMinutesBinary(): string {
 let MINUTES_BIN = findMinutesBinary();
 
 // ── Expected CLI version (must match this MCP server release) ──
-const MCP_SERVER_VERSION = "0.12.2";
+const MCP_SERVER_VERSION = "0.13.0";
 const EXPECTED_CLI_VERSION = MCP_SERVER_VERSION;
 
 export function parseKnowledgeConfig(configContent: string): KnowledgeConfigStatus | null {
