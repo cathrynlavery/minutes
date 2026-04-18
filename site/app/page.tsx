@@ -235,7 +235,7 @@ export default function Home() {
           Open-source conversation memory
         </p>
         <p className="mx-auto mb-5 max-w-[720px] font-mono text-[12px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-          v0.14.0 • 26 MCP tools • 45 CLI commands • 620 tests
+          v0.13.2 • 26 MCP tools • 45 CLI commands • 620 tests
         </p>
         <h1 className="mx-auto max-w-[720px] font-serif text-[40px] leading-[0.98] tracking-[-0.045em] text-[var(--text)] sm:text-[58px]">
           Every meeting, memo, and voice note,
