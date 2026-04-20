@@ -45,7 +45,7 @@ import {
 import { z } from "zod";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
-import { existsSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { mkdir, readFile, rm, writeFile } from "fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -60,6 +60,86 @@ import {
 } from "./paths.js";
 
 crashTrace("imports-complete");
+
+// ── Demo mode (--demo flag) ────────────────────────────────
+// `npx minutes-mcp --demo` is a one-shot setup: copies bundled fixture
+// meetings to ~/.minutes/demo/, prints the MCP config snippet with an explicit
+// MEETINGS_DIR env override, prints suggested questions, and exits 0.
+//
+// The printed config uses env:{ MEETINGS_DIR } pointing at the demo dir. No
+// separate --demo flag at runtime. The MCP host just launches standard
+// `minutes-mcp`; the env override is what routes it at the demo corpus. This
+// avoids the TTY-detection ambiguity that an earlier dual-mode design had.
+//
+// Guarded on `--demo` AND on being the actual entry point so importers don't
+// trigger disk side effects by mistake.
+const IS_ENTRY_POINT = Boolean(
+  process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+);
+if (IS_ENTRY_POINT && process.argv.includes("--demo")) {
+  handleDemoSetup();
+}
+
+function handleDemoSetup(): void {
+  const demoDir = join(homedir(), ".minutes", "demo");
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Package layout after build: dist/index.js; fixtures live at
+  // <pkg>/fixtures/demo/ next to dist/.
+  const fixturesSrc = resolve(here, "..", "fixtures", "demo");
+
+  if (!existsSync(fixturesSrc)) {
+    console.error(
+      `[minutes-mcp --demo] bundled fixtures not found at ${fixturesSrc}. ` +
+        `This build of minutes-mcp is missing the demo corpus. ` +
+        `Try upgrading with: npm install -g minutes-mcp@latest`
+    );
+    process.exit(1);
+  }
+
+  mkdirSync(demoDir, { recursive: true });
+  for (const entry of readdirSync(fixturesSrc)) {
+    if (!entry.endsWith(".md")) continue;
+    copyFileSync(join(fixturesSrc, entry), join(demoDir, entry));
+  }
+
+  // The config snippet embeds the fully-resolved demoDir so users don't have
+  // to fill it in manually. MCP hosts inject this env when launching the
+  // server; the server's existing MEETINGS_DIR logic (line ~800) picks it up.
+  const configSnippet = JSON.stringify(
+    {
+      mcpServers: {
+        "minutes-demo": {
+          command: "npx",
+          args: ["minutes-mcp"],
+          env: {
+            MEETINGS_DIR: demoDir,
+          },
+        },
+      },
+    },
+    null,
+    2
+  );
+
+  console.log("");
+  console.log("Demo corpus ready at: " + demoDir);
+  console.log("5 fixture meetings with a pricing reversal, a customer commitment that slips, and a feature cut.");
+  console.log("");
+  console.log("═══ MCP config (paste into Claude Desktop, Cursor, Claude Code, or any MCP client) ═══");
+  console.log(configSnippet);
+  console.log("");
+  console.log("═══ Try asking your agent ═══");
+  console.log("  • List the meetings in this corpus.");
+  console.log("  • What did we decide about pricing? Which decision is current?");
+  console.log("  • What got killed in the last product prioritization meeting?");
+  console.log("  • What action items are still open, and who owns each?");
+  console.log("  • Summarize the Northwind customer thread.");
+  console.log("");
+  console.log("Note: some structured tools (consistency report, person profile) auto-install the Minutes CLI on first use.");
+  console.log("Full setup (real audio capture, transcription, real meetings): https://useminutes.app");
+  console.log("");
+  process.exit(0);
+}
 
 const UI_RESOURCE_URI = "ui://minutes/dashboard";
 const MCP_TOOLS_DOCS_BASE_URL = "https://useminutes.app/docs/mcp/tools";
