@@ -1,6 +1,9 @@
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { MEETING_INSIGHT_KINDS, parseKnowledgeConfig } from "./index.js";
+import { MEETING_INSIGHT_KINDS, parseKnowledgeConfig, shouldRunMainEntry } from "./index.js";
 
 describe("meeting insight contract", () => {
   it("exports only the insight kinds the pipeline emits today", () => {
@@ -42,5 +45,39 @@ engine = "agent"
       adapter: "para",
       engine: "agent",
     });
+  });
+});
+
+describe("shouldRunMainEntry", () => {
+  it("accepts npm .bin shims that realpath to the module file", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "minutes-mcp-entry-"));
+    const packageDir = join(tempRoot, "node_modules", "minutes-mcp", "dist");
+    const binDir = join(tempRoot, "node_modules", ".bin");
+    const modulePath = join(packageDir, "index.js");
+    const shimPath = join(binDir, "minutes-mcp");
+
+    mkdirSync(packageDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(modulePath, "export {};\n");
+    symlinkSync(modulePath, shimPath);
+
+    try {
+      expect(shouldRunMainEntry(shimPath, modulePath)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts equivalent paths once symlinks are resolved", () => {
+    expect(shouldRunMainEntry(import.meta.filename, import.meta.filename)).toBe(true);
+  });
+
+  it("rejects unrelated worker entrypoints", () => {
+    expect(
+      shouldRunMainEntry(
+        "/Users/dev/project/node_modules/vitest/dist/workers/forks.js",
+        "/Users/dev/project/crates/mcp/src/index.ts"
+      )
+    ).toBe(false);
   });
 });

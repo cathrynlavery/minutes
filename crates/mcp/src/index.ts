@@ -45,7 +45,7 @@ import {
 import { z } from "zod";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from "fs";
 import { mkdir, readFile, rm, writeFile } from "fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -291,6 +291,25 @@ async function triggerQmdIndex(): Promise<void> {
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+function canonicalEntrypointPath(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+
+  const resolved = resolve(filePath);
+
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export function shouldRunMainEntry(argv1: string | null | undefined, moduleFilename: string): boolean {
+  const entryPath = canonicalEntrypointPath(argv1);
+  const modulePath = canonicalEntrypointPath(moduleFilename);
+
+  return !!entryPath && !!modulePath && entryPath === modulePath;
+}
 
 // ── Extension runtime detection ───────────────────────────────
 // When running as a Claude Desktop extension (.mcpb), Claude uses its built-in
@@ -2711,10 +2730,10 @@ crashTrace("pre-main-guard", {
   argv1: process.argv[1] ?? null,
   resolvedArgv1: process.argv[1] ? resolve(process.argv[1]) : null,
   __filename,
-  match: process.argv[1] ? resolve(process.argv[1]) === __filename : false,
+  match: shouldRunMainEntry(process.argv[1], __filename),
 });
 
-if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+if (shouldRunMainEntry(process.argv[1], __filename)) {
   main().catch((error) => {
     crashTrace("main-rejected", error);
     console.error("Fatal error:", error);

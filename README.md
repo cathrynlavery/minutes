@@ -447,6 +447,13 @@ Choose a local stdio server and point it at:
 npx minutes-mcp
 ```
 
+If you're wiring OpenCode against this repo before the next npm release is cut,
+point it at the repo-local entrypoint instead:
+
+```bash
+npm --prefix /absolute/path/to/minutes/crates/mcp exec tsx src/index.ts
+```
+
 For the native skill/command workflow, just launch OpenCode in this repo:
 
 ```bash
