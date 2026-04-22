@@ -1,6 +1,7 @@
 ---
 name: minutes-ideas
 description: Surface recent voice memos and ideas captured from any device. Use when the user asks "what ideas did I have?", "what were my recent memos?", "what did I record while walking?", or wants to recall a captured thought.
+user_invocable: true
 allowed-tools:
   - Bash
   - Read

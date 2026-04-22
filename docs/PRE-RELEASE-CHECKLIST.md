@@ -294,7 +294,8 @@ This means two things, both critical:
 node --check .claude/plugins/minutes/hooks/*.mjs          # JS hooks parse
 python3 -m py_compile .claude/plugins/minutes/skills/*/scripts/*.py   # Python helpers compile
 npm --prefix tooling/skills run build                     # skill compiler builds
-npm --prefix tooling/skills run check                     # plugin + portable skill pack + website skill catalog stay in sync
+npm --prefix tooling/skills run check                     # plugin + portable skill pack + website skill catalog + surface audits stay in sync
+npm --prefix tooling/skills run skill-audit -- --json    # every canonical skill has metadata / routing / host coverage
 cd tooling/skills && node dist/compiler/compile.js --dry-run --host claude --host codex --host opencode
 ```
 
@@ -303,6 +304,24 @@ If any skill has a new CLI command dependency, verify the command exists in the 
 ```bash
 minutes <subcommand> --help
 ```
+
+**Optional but recommended live smoke for routing-sensitive releases**
+
+When the release meaningfully changes trigger wording, skill descriptions, or
+packaging around agent-facing routing, run one or both of these local smokes:
+
+```bash
+npm --prefix tooling/skills run routing:agents -- --agent codex --limit 5
+npm --prefix tooling/skills run routing:agents -- --agent gemini --limit 1
+```
+
+Interpretation:
+
+- `codex` should usually pass if the local CLI is authenticated.
+- `gemini` or `claude` may legitimately report `unavailable` because of local
+  rate limits, capacity exhaustion, or MCP/auth noise. That is acceptable.
+- The unacceptable states are `mismatch`, `parse_error`, or `command_error`
+  when the CLI is otherwise available.
 
 **P2. Version bump (all three version surfaces must match).** This is the single most important step and also the one most likely to get half-done.
 
@@ -362,6 +381,16 @@ jq -r '.[] | "\(.category)\t\(.name)"' site/lib/skills-catalog.json | sort
 ```
 
 `site/lib/skills-catalog.json` is generated from canonical skill frontmatter — do not hand-edit. The `/for-agents` page reads it for both the rendered skill cards and the JSON-LD `ItemList` structured data. New skills require `metadata.site_category`, `metadata.site_example`, and `metadata.site_best_for` in the skill source frontmatter; the compiler throws on any missing field.
+
+Also verify the Claude-specific non-portable surfaces if they changed:
+
+```bash
+npm --prefix tooling/skills run surface-audit
+```
+
+This validates the current hook files, the `meeting-analyst` agent surface, and
+the skill-pack JSONs against the live canonical skill IDs so pack/agent/hook
+references do not silently drift.
 
 **P5. Commit, push.** Push to `main`. Users pull the new plugin state when they run the two-command marketplace refresh (see P6 / P7).
 

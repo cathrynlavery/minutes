@@ -5,6 +5,7 @@ triggers:
   - what ideas did I have?
   - what were my recent memos?
   - what did I record while walking?
+user_invocable: true
 allowed_tools:
   - Bash
   - Read
