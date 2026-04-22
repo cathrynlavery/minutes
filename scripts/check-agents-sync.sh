@@ -2,9 +2,11 @@
 #
 # check-agents-sync.sh — verify .agents/ tree stays in sync with .claude/plugins/minutes/
 #
-# Checks two categories:
+# Checks four categories:
 #   1. Runtime hooks (must be byte-identical)
 #   2. SKILL.md files (must be content-equivalent after normalizing known path/platform diffs)
+#   3. Bundled scripts (byte-identical where mirrored)
+#   4. Generated agent docs (llms.txt / llms-full.txt) must be current when agent surfaces change
 #
 # Exit 0 = in sync, Exit 1 = drift detected (with details on stderr)
 #
@@ -160,11 +162,29 @@ if should_check_scripts; then
   done
 fi
 
+# ── 4. Generated agent docs must be current ──
+
+should_check_agent_docs() {
+  if [[ "$staged_only" == "false" ]]; then return 0; fi
+  git diff --cached --name-only 2>/dev/null | grep -qE \
+    '(^|/)(tooling/skills/|\.claude/plugins/minutes/|\.agents/skills/minutes/|\.opencode/(skills|commands)/|site/lib/skills-catalog\.json|scripts/generate_llms_txt\.mjs)' \
+    && return 0
+  return 1
+}
+
+if should_check_agent_docs; then
+  if ! node "$REPO_ROOT/scripts/generate_llms_txt.mjs" --check >/dev/null 2>&1; then
+    echo "DRIFT: generated agent docs (llms.txt / llms-full.txt / related surfaces) are stale" >&2
+    echo "  Fix: node scripts/generate_llms_txt.mjs" >&2
+    errors=$((errors + 1))
+  fi
+fi
+
 # ── Result ──
 
 if [[ "$errors" -gt 0 ]]; then
   echo "" >&2
-  echo "Found $errors sync issue(s) between .claude/plugins/minutes/ and .agents/skills/minutes/" >&2
+  echo "Found $errors agent-surface sync/doc issue(s)." >&2
   echo "Run: ./scripts/check-agents-sync.sh (without --staged) to see all drift" >&2
   exit 1
 fi
