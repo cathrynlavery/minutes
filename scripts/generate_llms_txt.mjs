@@ -197,7 +197,15 @@ function classifyErrorEntry(entry) {
 function categorizeTool(name) {
   const groups = {
     Recording: new Set(["start_recording", "stop_recording", "get_status", "list_processing_jobs"]),
-    "Search and recall": new Set(["list_meetings", "get_meeting", "search_meetings", "research_topic"]),
+    "Search and recall": new Set([
+      "list_meetings",
+      "get_meeting",
+      "search_meetings",
+      "activity_summary",
+      "search_context",
+      "get_moment",
+      "research_topic",
+    ]),
     "People and relationships": new Set(["get_person_profile", "relationship_map", "track_commitments", "consistency_report"]),
     Insights: new Set(["get_meeting_insights", "ingest_meeting", "knowledge_status"]),
     "Live and dictation": new Set(["start_live_transcript", "read_live_transcript", "start_dictation", "stop_dictation"]),

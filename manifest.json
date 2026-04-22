@@ -156,43 +156,6 @@
       "description": "Show the current state of the knowledge base — configuration, adapter, people count, log entries"
     }
   ],
-  "resources": [
-    {
-      "name": "Minutes Dashboard",
-      "uri": "ui://minutes/dashboard",
-      "description": "Interactive meeting dashboard and detail viewer"
-    },
-    {
-      "name": "recent_meetings",
-      "uri": "minutes://meetings/recent",
-      "description": "List of recent meetings and memos"
-    },
-    {
-      "name": "recording_status",
-      "uri": "minutes://status",
-      "description": "Current recording status"
-    },
-    {
-      "name": "open_actions",
-      "uri": "minutes://actions/open",
-      "description": "All open action items across meetings"
-    },
-    {
-      "name": "recent_events",
-      "uri": "minutes://events/recent",
-      "description": "Recent pipeline events (recordings, processing, notes)"
-    },
-    {
-      "name": "meeting",
-      "uri": "minutes://meetings/{slug}",
-      "description": "Get a specific meeting by its filename slug"
-    },
-    {
-      "name": "recent-ideas",
-      "uri": "minutes://ideas/recent",
-      "description": "Recent voice memos and ideas captured from any device (last 14 days)"
-    }
-  ],
   "prompts": [
     {
       "name": "meeting_prep",

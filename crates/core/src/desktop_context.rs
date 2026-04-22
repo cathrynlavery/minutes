@@ -329,9 +329,6 @@ mod platform {
 
         #[link(name = "ApplicationServices", kind = "framework")]
         extern "C" {
-            pub static kAXFocusedWindowAttribute: CFStringRef;
-            pub static kAXTitleAttribute: CFStringRef;
-
             pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
             pub fn AXUIElementCopyAttributeValue(
                 element: AXUIElementRef,
@@ -348,6 +345,11 @@ mod platform {
                 length: CFIndex,
                 encoding: CFStringEncoding,
             ) -> CFIndex;
+            pub fn CFStringCreateWithCString(
+                alloc: *const c_void,
+                c_str: *const i8,
+                encoding: CFStringEncoding,
+            ) -> CFStringRef;
             pub fn CFStringGetCString(
                 the_string: CFStringRef,
                 buffer: *mut i8,
@@ -409,23 +411,46 @@ mod platform {
             return None;
         }
 
+        // AX attribute "constants" are CFSTR() macros in Apple's headers, not exported symbols.
+        let focused_window_attribute = ffi::CFStringCreateWithCString(
+            std::ptr::null(),
+            c"AXFocusedWindow".as_ptr(),
+            ffi::kCFStringEncodingUTF8,
+        );
+        if focused_window_attribute.is_null() {
+            ffi::CFRelease(app.cast());
+            return None;
+        }
+
         let mut focused_window: ffi::CFTypeRef = std::ptr::null();
         let focused_window_result = ffi::AXUIElementCopyAttributeValue(
             app,
-            ffi::kAXFocusedWindowAttribute,
+            focused_window_attribute,
             &mut focused_window,
         );
+        ffi::CFRelease(focused_window_attribute.cast());
         ffi::CFRelease(app.cast());
         if focused_window_result != ffi::kAXErrorSuccess || focused_window.is_null() {
+            return None;
+        }
+
+        let title_attribute = ffi::CFStringCreateWithCString(
+            std::ptr::null(),
+            c"AXTitle".as_ptr(),
+            ffi::kCFStringEncodingUTF8,
+        );
+        if title_attribute.is_null() {
+            ffi::CFRelease(focused_window.cast());
             return None;
         }
 
         let mut title: ffi::CFTypeRef = std::ptr::null();
         let title_result = ffi::AXUIElementCopyAttributeValue(
             focused_window.cast(),
-            ffi::kAXTitleAttribute,
+            title_attribute,
             &mut title,
         );
+        ffi::CFRelease(title_attribute.cast());
         ffi::CFRelease(focused_window.cast());
         if title_result != ffi::kAXErrorSuccess || title.is_null() {
             return None;
@@ -776,9 +801,13 @@ mod platform {
             proxy.get_property::<i32>("Id").ok()
         }
 
-        fn accessible_proxy(&self, service: &str, path: &str) -> Result<Proxy<'_>, String> {
+        fn accessible_proxy<'a>(
+            &self,
+            service: &'a str,
+            path: &'a str,
+        ) -> Result<Proxy<'a>, String> {
             Proxy::new(&self.connection, service, path, ATSPI_ACCESSIBLE_INTERFACE)
-                .map_err(|error| error.to_string())
+                .map_err(move |error| error.to_string())
         }
     }
 }
