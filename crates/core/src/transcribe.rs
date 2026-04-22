@@ -301,6 +301,8 @@ fn normalize_decode_hint_candidate(
 /// Dispatches to the engine configured in `config.transcription.engine`:
 /// - `"whisper"` (default): whisper.cpp via whisper-rs
 /// - `"parakeet"`: parakeet.cpp via subprocess
+/// - `"apple-speech"`: currently live-transcript-only; batch/default paths
+///   fall back to whisper until the experiment graduates
 ///
 /// Handles format conversion (m4a/mp3/ogg → PCM) automatically via symphonia.
 /// Both engines produce identical output format: `[M:SS] text` lines.
@@ -324,6 +326,12 @@ fn transcribe_dispatch(
     match config.transcription.engine.as_str() {
         "whisper" => transcribe_whisper_dispatch(audio_path, config, hints),
         "parakeet" => transcribe_parakeet_dispatch(audio_path, config, hints),
+        "apple-speech" => {
+            tracing::warn!(
+                "apple-speech is experimental and live-transcript-only today — falling back to whisper for batch/default transcription"
+            );
+            transcribe_whisper_dispatch(audio_path, config, hints)
+        }
         other => {
             tracing::warn!(
                 engine = other,

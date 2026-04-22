@@ -86,12 +86,20 @@ pub const PARAKEET_LIVE_SCOPE_WARNING: &str =
 pub const PARAKEET_LIVE_FALLBACK_WARNING: &str =
     "parakeet live transcription failed; falling back to whisper for this session (see docs/PARAKEET.md#scope)";
 
+pub const APPLE_SPEECH_SCOPE_DOC_REF: &str = "docs/designs/apple-speech-benchmark-2026-04-22.md";
+pub const APPLE_SPEECH_LIVE_SCOPE_WARNING: &str =
+    "apple-speech live transcript is unavailable on this machine; falling back to whisper for this session";
+pub const APPLE_SPEECH_LIVE_FALLBACK_WARNING: &str =
+    "apple-speech live transcription failed; falling back to whisper for this session";
+
 /// True iff this build can route `engine = "parakeet"` to the parakeet path.
 /// Used at session start to decide between scope-warning (compile-time gap)
 /// and the real parakeet dispatch.
 fn live_engine_scope_warning(engine: &str) -> Option<&'static str> {
     if engine.eq_ignore_ascii_case("parakeet") && !live_supports_parakeet(engine) {
         Some(PARAKEET_LIVE_SCOPE_WARNING)
+    } else if engine.eq_ignore_ascii_case("apple-speech") && !live_supports_apple_speech() {
+        Some(APPLE_SPEECH_LIVE_SCOPE_WARNING)
     } else {
         None
     }
@@ -106,6 +114,33 @@ fn live_supports_parakeet(engine: &str) -> bool {
     #[cfg(not(feature = "parakeet"))]
     {
         let _ = engine;
+        false
+    }
+}
+
+fn live_supports_apple_speech() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        match crate::apple_speech::probe_capabilities() {
+            Ok(report) => {
+                report.runtime_supported
+                    && report
+                        .speech_transcriber
+                        .is_available
+                        .unwrap_or(false)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "apple-speech capability probe failed during live transcript startup"
+                );
+                false
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
         false
     }
 }
@@ -157,6 +192,27 @@ fn emit_live_engine_fallback_warning(source: &'static str, detail: &str) {
             "source": source,
             "detail": detail,
             "doc_ref": PARAKEET_SCOPE_DOC_REF,
+        }
+    }))
+    .ok();
+}
+
+fn emit_apple_speech_fallback_warning(source: &'static str, detail: &str) {
+    eprintln!(
+        "[minutes] {} (detail: {})",
+        APPLE_SPEECH_LIVE_FALLBACK_WARNING, detail
+    );
+    tracing::warn!(source, detail, "{}", APPLE_SPEECH_LIVE_FALLBACK_WARNING);
+    crate::logging::append_log(&serde_json::json!({
+        "ts": Local::now().to_rfc3339(),
+        "level": "warn",
+        "step": "live_transcript_apple_fallback",
+        "file": "",
+        "message": APPLE_SPEECH_LIVE_FALLBACK_WARNING,
+        "extra": {
+            "source": source,
+            "detail": detail,
+            "doc_ref": APPLE_SPEECH_SCOPE_DOC_REF,
         }
     }))
     .ok();
@@ -455,15 +511,30 @@ pub fn run(
     config: &Config,
     existing_context_session_id: Option<String>,
 ) -> Result<(usize, f64, PathBuf), MinutesError> {
+    let mark_precreated_session_failed = |error: &MinutesError| {
+        if let Some(session_id) = existing_context_session_id.as_deref() {
+            crate::context_store::mark_live_transcript_failed(
+                session_id,
+                Some(Local::now()),
+                &error.to_string(),
+            )
+            .ok();
+        }
+    };
+
     // Check conflicts: recording must not be active
     if let Ok(Some(_)) = pid::check_recording() {
-        return Err(LiveTranscriptError::RecordingActive.into());
+        let error: MinutesError = LiveTranscriptError::RecordingActive.into();
+        mark_precreated_session_failed(&error);
+        return Err(error);
     }
 
     // Check conflicts: dictation must not be active
     let dict_pid = pid::dictation_pid_path();
     if let Ok(Some(_)) = pid::check_pid_file(&dict_pid) {
-        return Err(LiveTranscriptError::DictationActive.into());
+        let error: MinutesError = LiveTranscriptError::DictationActive.into();
+        mark_precreated_session_failed(&error);
+        return Err(error);
     }
 
     // Clear any stale stop sentinel from a previous session
@@ -471,25 +542,29 @@ pub fn run(
 
     // Acquire PID with flock held for session lifetime (prevents concurrent starts)
     let lt_pid = pid::live_transcript_pid_path();
-    let _pid_guard = pid::create_pid_guard(&lt_pid).map_err(|e| match e {
-        crate::error::PidError::AlreadyRecording(pid) => {
-            MinutesError::LiveTranscript(LiveTranscriptError::AlreadyActive(pid))
+    let _pid_guard = match pid::create_pid_guard(&lt_pid) {
+        Ok(pid_guard) => pid_guard,
+        Err(e) => {
+            let error = match e {
+                crate::error::PidError::AlreadyRecording(pid) => {
+                    MinutesError::LiveTranscript(LiveTranscriptError::AlreadyActive(pid))
+                }
+                other => MinutesError::Pid(other),
+            };
+            mark_precreated_session_failed(&error);
+            return Err(error);
         }
-        other => MinutesError::Pid(other),
-    })?;
+    };
 
     // Guard holds the flock — dropped when this function returns, cleaning up the PID file
     write_live_status_transition(LiveStatusState::Starting, None);
     let context_session_id = if let Some(session_id) = existing_context_session_id {
         Some(session_id)
     } else {
-        match crate::context_store::start_live_transcript_session(Local::now()) {
-            Ok(session) => Some(session.id),
-            Err(error) => {
-                tracing::warn!(error = %error, "failed to create context session for live transcript");
-                None
-            }
-        }
+        crate::desktop_context::maybe_start_live_transcript_session(
+            &config.desktop_context,
+            Local::now(),
+        )
     };
 
     match run_inner(stop_flag, config, context_session_id.clone()) {
@@ -566,6 +641,13 @@ fn run_inner(
 
     let mut vad = Vad::new();
     let mut streaming = StreamingWhisper::new(config.transcription.language.clone());
+    #[cfg(target_os = "macos")]
+    let mut apple_utterance_samples: Vec<f32> = Vec::new();
+    #[cfg(target_os = "macos")]
+    let mut apple_live_enabled = config.transcription.engine.eq_ignore_ascii_case("apple-speech")
+        && live_supports_apple_speech();
+    #[cfg(not(target_os = "macos"))]
+    let apple_live_enabled = false;
 
     // Parakeet engine dispatch — mirrors run_sidecar_inner_mpsc. When the user
     // configures `engine = "parakeet"` and the parakeet feature is compiled in,
@@ -589,6 +671,17 @@ fn run_inner(
     // isn't compiled in. Same warning the recording sidecar emits.
     if config.transcription.engine.eq_ignore_ascii_case("parakeet") && !parakeet_live_enabled {
         emit_live_engine_scope_warning(&config.transcription.engine, "standalone");
+    }
+    if config
+        .transcription
+        .engine
+        .eq_ignore_ascii_case("apple-speech")
+        && !apple_live_enabled
+    {
+        emit_live_engine_scope_warning(&config.transcription.engine, "standalone");
+    }
+    if apple_live_enabled {
+        eprintln!("[minutes] Apple Speech live transcript enabled (experimental, standalone only)");
     }
 
     // Warm the parakeet sidecar at session start so the first utterance doesn't
@@ -647,6 +740,9 @@ fn run_inner(
                 #[cfg(feature = "parakeet")]
                 finalize_on_exit(
                     &mut writer,
+                    &mut apple_live_enabled,
+                    #[cfg(target_os = "macos")]
+                    &mut apple_utterance_samples,
                     &mut parakeet_live_enabled,
                     &mut parakeet_utterance_samples,
                     config,
@@ -655,7 +751,16 @@ fn run_inner(
                     "standalone",
                 );
                 #[cfg(not(feature = "parakeet"))]
-                finalize_on_exit(&mut writer, &mut streaming, &whisper_ctx);
+                finalize_on_exit(
+                    &mut writer,
+                    &mut apple_live_enabled,
+                    #[cfg(target_os = "macos")]
+                    &mut apple_utterance_samples,
+                    config,
+                    &mut streaming,
+                    &whisper_ctx,
+                    "standalone",
+                );
             }
             break;
         }
@@ -666,6 +771,9 @@ fn run_inner(
                 #[cfg(feature = "parakeet")]
                 finalize_on_exit(
                     &mut writer,
+                    &mut apple_live_enabled,
+                    #[cfg(target_os = "macos")]
+                    &mut apple_utterance_samples,
                     &mut parakeet_live_enabled,
                     &mut parakeet_utterance_samples,
                     config,
@@ -674,7 +782,16 @@ fn run_inner(
                     "standalone",
                 );
                 #[cfg(not(feature = "parakeet"))]
-                finalize_on_exit(&mut writer, &mut streaming, &whisper_ctx);
+                finalize_on_exit(
+                    &mut writer,
+                    &mut apple_live_enabled,
+                    #[cfg(target_os = "macos")]
+                    &mut apple_utterance_samples,
+                    config,
+                    &mut streaming,
+                    &whisper_ctx,
+                    "standalone",
+                );
             }
             break;
         }
@@ -703,6 +820,8 @@ fn run_inner(
                         );
                     }
                     streaming.reset();
+                    #[cfg(target_os = "macos")]
+                    apple_utterance_samples.clear();
                     #[cfg(feature = "parakeet")]
                     parakeet_utterance_samples.clear();
                     utterance_samples = 0;
@@ -715,6 +834,9 @@ fn run_inner(
                         #[cfg(feature = "parakeet")]
                         finalize_on_exit(
                             &mut writer,
+                            &mut apple_live_enabled,
+                            #[cfg(target_os = "macos")]
+                            &mut apple_utterance_samples,
                             &mut parakeet_live_enabled,
                             &mut parakeet_utterance_samples,
                             config,
@@ -723,7 +845,16 @@ fn run_inner(
                             "standalone",
                         );
                         #[cfg(not(feature = "parakeet"))]
-                        finalize_on_exit(&mut writer, &mut streaming, &whisper_ctx);
+                        finalize_on_exit(
+                            &mut writer,
+                            &mut apple_live_enabled,
+                            #[cfg(target_os = "macos")]
+                            &mut apple_utterance_samples,
+                            config,
+                            &mut streaming,
+                            &whisper_ctx,
+                            "standalone",
+                        );
                     }
                     break;
                 }
@@ -758,6 +889,8 @@ fn run_inner(
                             );
                         }
                         streaming.reset();
+                        #[cfg(target_os = "macos")]
+                        apple_utterance_samples.clear();
                         #[cfg(feature = "parakeet")]
                         parakeet_utterance_samples.clear();
                         utterance_samples = 0;
@@ -770,6 +903,9 @@ fn run_inner(
                             #[cfg(feature = "parakeet")]
                             finalize_on_exit(
                                 &mut writer,
+                                &mut apple_live_enabled,
+                                #[cfg(target_os = "macos")]
+                                &mut apple_utterance_samples,
                                 &mut parakeet_live_enabled,
                                 &mut parakeet_utterance_samples,
                                 config,
@@ -778,7 +914,16 @@ fn run_inner(
                                 "standalone",
                             );
                             #[cfg(not(feature = "parakeet"))]
-                            finalize_on_exit(&mut writer, &mut streaming, &whisper_ctx);
+                            finalize_on_exit(
+                                &mut writer,
+                                &mut apple_live_enabled,
+                                #[cfg(target_os = "macos")]
+                                &mut apple_utterance_samples,
+                                config,
+                                &mut streaming,
+                                &whisper_ctx,
+                                "standalone",
+                            );
                         }
                         break;
                     }
@@ -795,7 +940,12 @@ fn run_inner(
             was_speaking = true;
             utterance_samples += chunk.samples.len();
 
-            if parakeet_live_enabled {
+            if apple_live_enabled {
+                #[cfg(target_os = "macos")]
+                {
+                    apple_utterance_samples.extend_from_slice(&chunk.samples);
+                }
+            } else if parakeet_live_enabled {
                 #[cfg(feature = "parakeet")]
                 {
                     parakeet_utterance_samples.extend_from_slice(&chunk.samples);
@@ -810,6 +960,9 @@ fn run_inner(
                 #[cfg(feature = "parakeet")]
                 let write_ok = finalize_live_utterance(
                     &mut writer,
+                    &mut apple_live_enabled,
+                    #[cfg(target_os = "macos")]
+                    &mut apple_utterance_samples,
                     &mut parakeet_live_enabled,
                     &mut parakeet_utterance_samples,
                     config,
@@ -818,14 +971,16 @@ fn run_inner(
                     "standalone",
                 );
                 #[cfg(not(feature = "parakeet"))]
-                let write_ok = if let Some(sr) = streaming.finalize(&whisper_ctx) {
-                    let ok = writer.write_utterance(&sr.text, sr.duration_secs);
-                    streaming.reset();
-                    ok
-                } else {
-                    streaming.reset();
-                    true
-                };
+                let write_ok = finalize_live_utterance(
+                    &mut writer,
+                    &mut apple_live_enabled,
+                    #[cfg(target_os = "macos")]
+                    &mut apple_utterance_samples,
+                    config,
+                    &mut streaming,
+                    &whisper_ctx,
+                    "standalone",
+                );
                 if !write_ok {
                     tracing::error!("JSONL write failed — stopping session to prevent data loss");
                     break;
@@ -838,6 +993,9 @@ fn run_inner(
             #[cfg(feature = "parakeet")]
             let write_ok = finalize_live_utterance(
                 &mut writer,
+                &mut apple_live_enabled,
+                #[cfg(target_os = "macos")]
+                &mut apple_utterance_samples,
                 &mut parakeet_live_enabled,
                 &mut parakeet_utterance_samples,
                 config,
@@ -846,14 +1004,16 @@ fn run_inner(
                 "standalone",
             );
             #[cfg(not(feature = "parakeet"))]
-            let write_ok = if let Some(sr) = streaming.finalize(&whisper_ctx) {
-                let ok = writer.write_utterance(&sr.text, sr.duration_secs);
-                streaming.reset();
-                ok
-            } else {
-                streaming.reset();
-                true
-            };
+            let write_ok = finalize_live_utterance(
+                &mut writer,
+                &mut apple_live_enabled,
+                #[cfg(target_os = "macos")]
+                &mut apple_utterance_samples,
+                config,
+                &mut streaming,
+                &whisper_ctx,
+                "standalone",
+            );
             if !write_ok {
                 tracing::error!("JSONL write failed — stopping session to prevent data loss");
                 break;
@@ -1109,7 +1269,7 @@ fn trim_front(buffer: &mut Vec<f32>, max_len: usize) {
     }
 }
 
-#[cfg(all(feature = "whisper", feature = "parakeet"))]
+#[cfg(feature = "whisper")]
 fn transcribe_with_whisper_for_live_sidecar(
     samples: &[f32],
     whisper_ctx: &whisper_rs::WhisperContext,
@@ -1134,6 +1294,7 @@ fn transcribe_with_whisper_for_live_sidecar(
 /// churn and latency spikes on noisy inputs.
 #[cfg(feature = "parakeet")]
 const PARAKEET_LIVE_MIN_SAMPLES: usize = 16_000; // 1 second at 16kHz
+const APPLE_SPEECH_LIVE_MIN_SAMPLES: usize = 16_000; // 1 second at 16kHz
 
 #[cfg(feature = "parakeet")]
 fn transcribe_with_parakeet_for_live_sidecar(
@@ -1160,20 +1321,59 @@ fn transcribe_with_parakeet_for_live_sidecar(
     }
 }
 
-/// Finalize one utterance via the active engine (parakeet if enabled, else whisper)
+fn transcribe_with_apple_speech_for_live_sidecar(
+    samples: &[f32],
+    config: &Config,
+) -> Result<Option<(String, f64)>, MinutesError> {
+    if samples.len() < APPLE_SPEECH_LIVE_MIN_SAMPLES {
+        return Ok(None);
+    }
+
+    let tmp_wav = std::env::temp_dir().join(format!(
+        "minutes-live-apple-speech-{}-{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    crate::transcribe::write_wav_16k_mono(&tmp_wav, samples)?;
+
+    let locale =
+        crate::apple_speech::live_locale_hint(config.transcription.language.as_deref());
+    let result = crate::apple_speech::transcribe_with_apple_speech(
+        &tmp_wav,
+        locale.as_deref(),
+        crate::apple_speech::AppleSpeechMode::Speech,
+        true,
+    )?;
+    std::fs::remove_file(&tmp_wav).ok();
+
+    if let Some(error) = result.error {
+        return Err(MinutesError::Io(std::io::Error::other(error)));
+    }
+    if result.transcript.trim().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some((result.transcript, samples.len() as f64 / 16000.0)))
+}
+
+/// Finalize one utterance via the active engine (apple-speech, parakeet, or whisper)
 /// and write the resulting JSONL line.
 ///
 /// Returns `true` if the write succeeded (or there was no text to write) and the
 /// session should continue; `false` on JSONL write failure, which signals the
 /// caller to stop to prevent data loss.
 ///
-/// On parakeet failure, the function automatically falls back to whisper for
-/// the accumulated samples and flips `parakeet_live_enabled` to `false` so the
-/// remainder of the session uses whisper. This matches the recording-sidecar
-/// behavior — no runtime retries, one error per session.
+/// On apple/parakeet failure, the function automatically falls back to whisper
+/// for the accumulated samples and flips that engine flag to `false` so the
+/// remainder of the session uses whisper.
 #[cfg(all(feature = "whisper", feature = "parakeet"))]
 fn finalize_live_utterance(
     writer: &mut LiveTranscriptWriter,
+    apple_live_enabled: &mut bool,
+    #[cfg(target_os = "macos")] apple_utterance_samples: &mut Vec<f32>,
     parakeet_live_enabled: &mut bool,
     parakeet_utterance_samples: &mut Vec<f32>,
     config: &Config,
@@ -1181,6 +1381,40 @@ fn finalize_live_utterance(
     whisper_ctx: &whisper_rs::WhisperContext,
     source: &'static str,
 ) -> bool {
+    #[cfg(target_os = "macos")]
+    if *apple_live_enabled {
+        match transcribe_with_apple_speech_for_live_sidecar(apple_utterance_samples, config) {
+            Ok(Some((text, duration_secs))) => {
+                let ok = writer.write_utterance(&text, duration_secs);
+                apple_utterance_samples.clear();
+                return ok;
+            }
+            Ok(None) => {
+                apple_utterance_samples.clear();
+                return true;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "live apple-speech path failed — switching this session to whisper"
+                );
+                *apple_live_enabled = false;
+                emit_apple_speech_fallback_warning(source, &error.to_string());
+                if let Some((text, duration_secs)) = transcribe_with_whisper_for_live_sidecar(
+                    apple_utterance_samples,
+                    whisper_ctx,
+                    config.transcription.language.clone(),
+                ) {
+                    let ok = writer.write_utterance(&text, duration_secs);
+                    apple_utterance_samples.clear();
+                    return ok;
+                }
+                apple_utterance_samples.clear();
+                return true;
+            }
+        }
+    }
+
     if *parakeet_live_enabled {
         match transcribe_with_parakeet_for_live_sidecar(parakeet_utterance_samples, config) {
             Ok(Some((text, duration_secs))) => {
@@ -1236,6 +1470,8 @@ fn finalize_live_utterance(
 #[cfg(all(feature = "whisper", feature = "parakeet"))]
 fn finalize_on_exit(
     writer: &mut LiveTranscriptWriter,
+    apple_live_enabled: &mut bool,
+    #[cfg(target_os = "macos")] apple_utterance_samples: &mut Vec<f32>,
     parakeet_live_enabled: &mut bool,
     parakeet_utterance_samples: &mut Vec<f32>,
     config: &Config,
@@ -1245,6 +1481,9 @@ fn finalize_on_exit(
 ) {
     if !finalize_live_utterance(
         writer,
+        apple_live_enabled,
+        #[cfg(target_os = "macos")]
+        apple_utterance_samples,
         parakeet_live_enabled,
         parakeet_utterance_samples,
         config,
@@ -1259,17 +1498,81 @@ fn finalize_on_exit(
 }
 
 #[cfg(all(feature = "whisper", not(feature = "parakeet")))]
-fn finalize_on_exit(
+fn finalize_live_utterance(
     writer: &mut LiveTranscriptWriter,
+    apple_live_enabled: &mut bool,
+    #[cfg(target_os = "macos")] apple_utterance_samples: &mut Vec<f32>,
+    config: &Config,
     streaming: &mut StreamingWhisper,
     whisper_ctx: &whisper_rs::WhisperContext,
-) {
-    if let Some(sr) = streaming.finalize(whisper_ctx) {
-        if !writer.write_utterance(&sr.text, sr.duration_secs) {
-            tracing::error!(
-                "JSONL write failed while finalizing last utterance on shutdown — last utterance may be lost"
-            );
+    source: &'static str,
+) -> bool {
+    #[cfg(target_os = "macos")]
+    if *apple_live_enabled {
+        match transcribe_with_apple_speech_for_live_sidecar(apple_utterance_samples, config) {
+            Ok(Some((text, duration_secs))) => {
+                let ok = writer.write_utterance(&text, duration_secs);
+                apple_utterance_samples.clear();
+                return ok;
+            }
+            Ok(None) => {
+                apple_utterance_samples.clear();
+                return true;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "live apple-speech path failed — switching this session to whisper"
+                );
+                *apple_live_enabled = false;
+                emit_apple_speech_fallback_warning(source, &error.to_string());
+                if let Some((text, duration_secs)) = transcribe_with_whisper_for_live_sidecar(
+                    apple_utterance_samples,
+                    whisper_ctx,
+                    config.transcription.language.clone(),
+                ) {
+                    let ok = writer.write_utterance(&text, duration_secs);
+                    apple_utterance_samples.clear();
+                    return ok;
+                }
+                apple_utterance_samples.clear();
+                return true;
+            }
         }
+    }
+
+    let write_ok = if let Some(sr) = streaming.finalize(whisper_ctx) {
+        writer.write_utterance(&sr.text, sr.duration_secs)
+    } else {
+        true
+    };
+    streaming.reset();
+    write_ok
+}
+
+#[cfg(all(feature = "whisper", not(feature = "parakeet")))]
+fn finalize_on_exit(
+    writer: &mut LiveTranscriptWriter,
+    apple_live_enabled: &mut bool,
+    #[cfg(target_os = "macos")] apple_utterance_samples: &mut Vec<f32>,
+    config: &Config,
+    streaming: &mut StreamingWhisper,
+    whisper_ctx: &whisper_rs::WhisperContext,
+    source: &'static str,
+) {
+    if !finalize_live_utterance(
+        writer,
+        apple_live_enabled,
+        #[cfg(target_os = "macos")]
+        apple_utterance_samples,
+        config,
+        streaming,
+        whisper_ctx,
+        source,
+    ) {
+        tracing::error!(
+            "JSONL write failed while finalizing last utterance on shutdown — last utterance may be lost"
+        );
     }
 }
 
@@ -1363,6 +1666,18 @@ fn run_sidecar_inner_mpsc(
 
     if config.transcription.engine.eq_ignore_ascii_case("parakeet") && !parakeet_live_enabled {
         emit_live_engine_scope_warning(&config.transcription.engine, "recording-sidecar");
+    }
+    if config
+        .transcription
+        .engine
+        .eq_ignore_ascii_case("apple-speech")
+    {
+        eprintln!(
+            "[minutes] apple-speech currently applies only to standalone live transcript; recording sidecar continues with whisper"
+        );
+        tracing::info!(
+            "apple-speech requested for recording sidecar live transcript — keeping whisper for this scoped experiment"
+        );
     }
 
     tracing::info!("live sidecar started (recording mode)");
@@ -1861,7 +2176,37 @@ mod tests {
     use super::*;
     use chrono::Duration as ChronoDuration;
     use std::io::Write;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
     use tempfile::{tempdir, NamedTempFile};
+
+    fn with_temp_home<T>(f: impl FnOnce() -> T) -> T {
+        let _lock = crate::test_home_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let original_home = std::env::var_os("HOME");
+        #[cfg(windows)]
+        let original_userprofile = std::env::var_os("USERPROFILE");
+
+        std::env::set_var("HOME", dir.path());
+        #[cfg(windows)]
+        std::env::set_var("USERPROFILE", dir.path());
+
+        let result = f();
+
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        #[cfg(windows)]
+        if let Some(userprofile) = original_userprofile {
+            std::env::set_var("USERPROFILE", userprofile);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+
+        result
+    }
 
     fn live_status_with_state(state: LiveStatusState) -> LiveStatus {
         LiveStatus {
@@ -1948,6 +2293,32 @@ mod tests {
         };
         // The writer checks text.trim().is_empty() before writing
         assert!(line.text.trim().is_empty());
+    }
+
+    #[cfg(feature = "whisper")]
+    #[test]
+    fn precreated_context_session_is_failed_when_recording_blocks_start() {
+        with_temp_home(|| {
+            let session =
+                crate::context_store::start_live_transcript_session(Local::now()).unwrap();
+            let _recording_guard = crate::pid::create_pid_guard(&crate::pid::pid_path()).unwrap();
+            let stop_flag = Arc::new(AtomicBool::new(false));
+
+            let error = run(stop_flag, &Config::default(), Some(session.id.clone())).unwrap_err();
+
+            assert!(matches!(
+                error,
+                MinutesError::LiveTranscript(LiveTranscriptError::RecordingActive)
+            ));
+
+            let reloaded = crate::context_store::get_session(&session.id)
+                .unwrap()
+                .expect("context session should exist");
+            assert_eq!(
+                reloaded.state,
+                crate::context_store::ContextSessionState::Failed
+            );
+        });
     }
 
     #[cfg(feature = "whisper")]

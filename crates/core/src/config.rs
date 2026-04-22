@@ -98,7 +98,8 @@ impl Default for VoiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranscriptionConfig {
-    /// Transcription engine: "whisper" (default) or "parakeet".
+    /// Transcription engine: "whisper" (default), "parakeet", or
+    /// "apple-speech" (experimental live-transcript-only path on macOS 26+).
     pub engine: String,
     pub model: String,
     pub model_path: PathBuf,

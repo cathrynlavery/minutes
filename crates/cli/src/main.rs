@@ -1,6 +1,9 @@
 use anyhow::Result;
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
+use minutes_core::apple_speech::{
+    self, AppleSpeechBenchmarkArtifactPaths, AppleSpeechBenchmarkRequest,
+};
 use minutes_core::autoresearch::{
     self, DecodeHintEvalArtifactPaths, DecodeHintEvalComparisonArtifactPaths,
     DecodeHintEvalComparisonRequest, DecodeHintEvalOptions, DecodeHintEvalRequest,
@@ -331,6 +334,12 @@ enum Commands {
     Autoresearch {
         #[command(subcommand)]
         action: AutoresearchAction,
+    },
+
+    /// Evaluate Apple's SpeechAnalyzer stack on macOS.
+    AppleSpeech {
+        #[command(subcommand)]
+        action: AppleSpeechAction,
     },
 
     /// Check if a recording is in progress
@@ -907,6 +916,31 @@ enum AutoresearchAction {
 }
 
 #[derive(Subcommand)]
+enum AppleSpeechAction {
+    /// Probe Apple speech capability and asset readiness on the current Mac.
+    Capabilities {
+        /// Print the full JSON capability payload to stdout
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run the Apple-vs-current benchmark corpus and write artifacts.
+    Benchmark {
+        /// Path to the benchmark corpus manifest JSON
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Output root for local research artifacts (defaults to ~/.minutes/research/apple-speech)
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Print the full JSON report envelope to stdout
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ContextAction {
     /// Summarize desktop context for a session, artifact, or explicit time window
     ActivitySummary {
@@ -1134,6 +1168,12 @@ fn main() -> Result<()> {
             } => cmd_autoresearch_compare_decode_hints(&left, &right, out.as_deref(), json),
             AutoresearchAction::List { limit, json } => {
                 cmd_autoresearch_list_decode_hints(limit, json)
+            }
+        },
+        Commands::AppleSpeech { action } => match action {
+            AppleSpeechAction::Capabilities { json } => cmd_apple_speech_capabilities(json),
+            AppleSpeechAction::Benchmark { corpus, out, json } => {
+                cmd_apple_speech_benchmark(&corpus, out.as_deref(), json, &config)
             }
         },
         Commands::Search {
@@ -3420,6 +3460,136 @@ fn cmd_autoresearch_list_decode_hints(limit: usize, json: bool) -> Result<()> {
             println!("  summary: {}", run.summary_path.display());
         }
     }
+
+    Ok(())
+}
+
+fn cmd_apple_speech_capabilities(json: bool) -> Result<()> {
+    let report = apple_speech::probe_capabilities()?;
+
+    if json {
+        let envelope = json_envelope("minutes apple-speech capabilities", report);
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
+        return Ok(());
+    }
+
+    println!("Apple speech capability probe");
+    println!("OS: {}", report.os_version);
+    println!("Runtime supported: {}", report.runtime_supported);
+    println!(
+        "SpeechTranscriber available: {}",
+        report
+            .speech_transcriber
+            .is_available
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "SpeechTranscriber asset status: {}",
+        report.speech_transcriber.asset_status
+    );
+    println!(
+        "DictationTranscriber asset status: {}",
+        report.dictation_transcriber.asset_status
+    );
+    if !report.speech_transcriber.installed_locales.is_empty() {
+        println!(
+            "SpeechTranscriber installed locales: {}",
+            report.speech_transcriber.installed_locales.join(", ")
+        );
+    }
+    if !report.dictation_transcriber.installed_locales.is_empty() {
+        println!(
+            "DictationTranscriber installed locales: {}",
+            report.dictation_transcriber.installed_locales.join(", ")
+        );
+    }
+    if !report.notes.is_empty() {
+        println!("Notes:");
+        for note in &report.notes {
+            println!("- {}", note);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_apple_speech_benchmark(
+    corpus: &Path,
+    output_root: Option<&Path>,
+    json: bool,
+    config: &Config,
+) -> Result<()> {
+    let report = apple_speech::run_benchmark_corpus(corpus, config)?;
+    let request = AppleSpeechBenchmarkRequest {
+        command: "minutes apple-speech benchmark".into(),
+        generated_at: Local::now().to_rfc3339(),
+        corpus_path: corpus.to_path_buf(),
+        output_root: output_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(apple_speech::default_research_root),
+        configured_engine: config.transcription.engine.clone(),
+    };
+    let artifacts = apple_speech::write_benchmark_artifacts(&request, &report)?;
+
+    if json {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct AppleSpeechBenchmarkOutput {
+            report: minutes_core::apple_speech::AppleSpeechBenchmarkReport,
+            artifacts: AppleSpeechBenchmarkArtifactPaths,
+        }
+
+        let envelope = json_envelope(
+            "minutes apple-speech benchmark",
+            AppleSpeechBenchmarkOutput {
+                report,
+                artifacts: artifacts.clone(),
+            },
+        );
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
+        return Ok(());
+    }
+
+    println!("Apple speech benchmark complete");
+    println!("Cases: {}", report.cases.len());
+    println!("Artifacts: {}", artifacts.run_dir.display());
+    println!(
+        "SpeechTranscriber avg elapsed: {} ms",
+        report
+            .totals
+            .speech_transcriber
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "DictationTranscriber avg elapsed: {} ms",
+        report
+            .totals
+            .dictation_transcriber
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "Whisper avg elapsed: {} ms",
+        report
+            .totals
+            .whisper
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "Parakeet avg elapsed: {} ms",
+        report
+            .totals
+            .parakeet
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
 
     Ok(())
 }
@@ -6570,6 +6740,11 @@ fn cmd_live(config: &Config) -> Result<()> {
     use std::sync::Arc;
 
     eprintln!("Starting live transcript session...");
+    if config.transcription.engine == "apple-speech" {
+        eprintln!(
+            "[minutes] Apple Speech experimental live path selected. If unavailable, Minutes will fall back to whisper for this session."
+        );
+    }
     eprintln!("Press Ctrl-C or run `minutes stop` to end.\n");
 
     let stop = Arc::new(AtomicBool::new(false));

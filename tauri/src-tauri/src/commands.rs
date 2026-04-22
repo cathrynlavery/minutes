@@ -6002,9 +6002,9 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
     match (section.as_str(), key.as_str()) {
         // Transcription
         ("transcription", "engine") => {
-            if !["whisper", "parakeet"].contains(&value.as_str()) {
+            if !["whisper", "parakeet", "apple-speech"].contains(&value.as_str()) {
                 return Err(format!(
-                    "unknown transcription engine '{}'. Valid: whisper, parakeet",
+                    "unknown transcription engine '{}'. Valid: whisper, parakeet, apple-speech",
                     value
                 ));
             }
