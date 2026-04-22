@@ -67,14 +67,14 @@ normalize_plugin_skill() {
   # - Strip user_invocable frontmatter
   # - Strip allowed-tools block (plugin-only)
   # - Swap ${CLAUDE_PLUGIN_ROOT} -> $MINUTES_SKILLS_ROOT/_runtime
-  # - Swap per-skill script paths to use $MINUTES_SKILL_ROOT/scripts/
+  # - Swap per-skill asset paths (scripts/, references/, etc.) to $MINUTES_SKILL_ROOT/
   # - Swap desktop app speaker references -> CLI equivalents
   local skill_name="$1"
   sed \
     -e '/^user_invocable:/d' \
     -e '/^allowed-tools:/,/^[^ ]/{ /^allowed-tools:/d; /^  - /d; }' \
-    -e "s|\${CLAUDE_PLUGIN_ROOT}/skills/${skill_name}/scripts/|\$MINUTES_SKILL_ROOT/scripts/|g" \
-    -e "s|\"\${CLAUDE_PLUGIN_ROOT}/skills/${skill_name}/scripts/|\"\$MINUTES_SKILL_ROOT/scripts/|g" \
+    -e "s|\${CLAUDE_PLUGIN_ROOT}/skills/${skill_name}/|\$MINUTES_SKILL_ROOT/|g" \
+    -e "s|\"\${CLAUDE_PLUGIN_ROOT}/skills/${skill_name}/|\"\$MINUTES_SKILL_ROOT/|g" \
     -e 's|\${CLAUDE_PLUGIN_ROOT}/skills/minutes-verify/scripts/|$MINUTES_SKILLS_ROOT/minutes-verify/scripts/|g' \
     -e 's|\${CLAUDE_PLUGIN_ROOT}/hooks/lib/|$MINUTES_SKILLS_ROOT/_runtime/hooks/lib/|g' \
     -e 's|"\${CLAUDE_PLUGIN_ROOT}/hooks/lib/|"$MINUTES_SKILLS_ROOT/_runtime/hooks/lib/|g' \
