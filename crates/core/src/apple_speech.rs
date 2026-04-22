@@ -191,9 +191,7 @@ pub fn default_research_root() -> PathBuf {
 }
 
 pub fn live_locale_hint(language: Option<&str>) -> Option<String> {
-    let Some(language) = language else {
-        return None;
-    };
+    let language = language?;
     let trimmed = language.trim();
     if trimmed.is_empty() {
         return None;

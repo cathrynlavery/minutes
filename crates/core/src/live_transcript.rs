@@ -647,7 +647,7 @@ fn run_inner(
     let mut apple_live_enabled = config.transcription.engine.eq_ignore_ascii_case("apple-speech")
         && live_supports_apple_speech();
     #[cfg(not(target_os = "macos"))]
-    let apple_live_enabled = false;
+    let mut apple_live_enabled = false;
 
     // Parakeet engine dispatch — mirrors run_sidecar_inner_mpsc. When the user
     // configures `engine = "parakeet"` and the parakeet feature is compiled in,
@@ -1546,6 +1546,8 @@ fn finalize_live_utterance(
     } else {
         true
     };
+    #[cfg(not(target_os = "macos"))]
+    let _ = (&apple_live_enabled, &config, source);
     streaming.reset();
     write_ok
 }
