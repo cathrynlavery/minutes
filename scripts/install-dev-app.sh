@@ -16,6 +16,25 @@ INSTALL_APP="${INSTALL_DIR}/${DEV_PRODUCT_NAME}.app"
 SIGNING_IDENTITY="${MINUTES_DEV_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
 SIGN_MODE="adhoc"
 
+run_with_ort_retry() {
+  local _build_tmp
+  _build_tmp=$(mktemp)
+  if ! "$@" 2>&1 | tee "$_build_tmp"; then
+    if grep -q "library 'clang_rt\." "$_build_tmp"; then
+      echo ""
+      echo "  Stale ort-sys clang runtime path (Xcode/CLT upgrade detected)."
+      echo "  Cleaning stale build cache and retrying..."
+      rm -rf target/*/build/ort-sys-*
+      rm -f "$_build_tmp"
+      "$@"
+      return
+    fi
+    rm -f "$_build_tmp"
+    return 1
+  fi
+  rm -f "$_build_tmp"
+}
+
 OPEN_AFTER_INSTALL=1
 for arg in "$@"; do
   case "$arg" in
@@ -40,14 +59,13 @@ if [[ -n "$SIGNING_IDENTITY" ]]; then
 fi
 
 echo "=== Building CLI (release) ==="
-cargo build --release -p minutes-cli --features "$MINUTES_BUILD_FEATURES"
+run_with_ort_retry cargo build --release -p minutes-cli --features "$MINUTES_BUILD_FEATURES"
 
 echo "=== Building ${DEV_PRODUCT_NAME}.app ==="
 # The calendar-events Swift helper is compiled and staged into
 # tauri/src-tauri/resources/ by tauri/src-tauri/build.rs, and Tauri bundles it
 # into the .app automatically via tauri.conf.json.
-cargo tauri build --bundles app --config "$DEV_CONFIG" --features "$MINUTES_BUILD_FEATURES" --no-sign
-
+run_with_ort_retry cargo tauri build --bundles app --config "$DEV_CONFIG" --features "$MINUTES_BUILD_FEATURES" --no-sign
 if [[ "$SIGN_MODE" == "identity" ]]; then
   echo "=== Pre-signing nested executables with configured identity ==="
   while IFS= read -r nested_executable; do

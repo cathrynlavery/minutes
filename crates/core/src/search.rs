@@ -87,6 +87,72 @@ pub struct DecisionConflict {
     pub resolution: Option<String>,
 }
 
+fn explicit_supersedes_resolution(
+    latest_supersedes: Option<&str>,
+    conflicting_previous: &[ReportEntry],
+) -> Option<String> {
+    let value = latest_supersedes
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    // `supersedes` is a free-text pointer. It's reliable for a simple
+    // one-new-decision-replaces-one-prior-decision case, but not strong enough
+    // to auto-resolve an entire topic arc when multiple contradictory prior
+    // decisions remain. Stay conservative so `/minutes-lint` doesn't hide a
+    // still-live conflict as "resolved".
+    if conflicting_previous.len() != 1 {
+        return None;
+    }
+
+    if !supersedes_references_previous_decision(value, &conflicting_previous[0]) {
+        return None;
+    }
+
+    Some(format!("Resolved by explicit supersedes: {}", value))
+}
+
+fn supersedes_references_previous_decision(supersedes: &str, previous: &ReportEntry) -> bool {
+    let supersedes_norm = normalize_decision_value(supersedes);
+    if supersedes_norm.is_empty() {
+        return false;
+    }
+
+    let previous_date = previous
+        .date
+        .split('T')
+        .next()
+        .unwrap_or(previous.date.as_str());
+    let previous_date_norm = normalize_decision_value(previous_date);
+    if !previous_date_norm.is_empty() && supersedes_norm.contains(&previous_date_norm) {
+        return true;
+    }
+
+    let previous_title_norm = normalize_decision_value(&previous.title);
+    if previous_title_norm.len() >= 4 && supersedes_norm.contains(&previous_title_norm) {
+        return true;
+    }
+
+    let previous_what_norm = normalize_decision_value(&previous.what);
+    if previous_what_norm.is_empty() {
+        return false;
+    }
+
+    let supersedes_tokens = supersedes_norm
+        .split_whitespace()
+        .filter(|token| token.len() >= 4)
+        .collect::<std::collections::HashSet<_>>();
+    let previous_tokens = previous_what_norm
+        .split_whitespace()
+        .filter(|token| token.len() >= 4)
+        .collect::<std::collections::HashSet<_>>();
+
+    supersedes_tokens
+        .intersection(&previous_tokens)
+        .take(2)
+        .count()
+        >= 2
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StaleCommitment {
     pub kind: IntentKind,
@@ -561,15 +627,14 @@ pub fn consistency_report(
 
         if unique_values.len() > 1 {
             let (latest_entry, latest_supersedes) = entries.pop().expect("entries not empty");
-            let resolution = latest_supersedes
-                .as_ref()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty())
-                .map(|value| format!("Resolved by explicit supersedes: {}", value));
+            let previous_entries: Vec<ReportEntry> =
+                entries.into_iter().map(|(entry, _)| entry).collect();
+            let resolution =
+                explicit_supersedes_resolution(latest_supersedes.as_deref(), &previous_entries);
             decision_conflicts.push(DecisionConflict {
                 topic,
                 latest: latest_entry,
-                previous: entries.into_iter().map(|(entry, _)| entry).collect(),
+                previous: previous_entries,
                 resolution,
             });
         }
@@ -1425,6 +1490,61 @@ mod tests {
         assert_eq!(report.decision_conflicts.len(), 1);
         assert!(report.decision_conflicts[0].resolution.is_none());
         assert!(report.decision_conflicts[0].latest.authority.is_none());
+    }
+
+    #[test]
+    fn consistency_report_does_not_mark_resolution_when_other_conflicts_remain() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-01-a.md",
+            "---\ntitle: A\ntype: meeting\ndate: 2026-03-01T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Launch monthly billing\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nA.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-12-b.md",
+            "---\ntitle: B\ntype: meeting\ndate: 2026-03-12T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Stay annual only\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nB.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-25-c.md",
+            "---\ntitle: C\ntype: meeting\ndate: 2026-03-25T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Test monthly billing for consultants only\n    topic: pricing\n    supersedes: \"2026-03-01 monthly billing decision\"\nintents: []\n---\n\n## Transcript\n\nC.\n",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let report = consistency_report(&config, None, 7).unwrap();
+        assert_eq!(report.decision_conflicts.len(), 1);
+        let conflict = &report.decision_conflicts[0];
+        assert_eq!(conflict.previous.len(), 2);
+        assert!(conflict.resolution.is_none());
+    }
+
+    #[test]
+    fn consistency_report_requires_supersedes_to_reference_the_prior_decision() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-01-a.md",
+            "---\ntitle: A\ntype: meeting\ndate: 2026-03-01T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Launch monthly billing\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nA.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-12-b.md",
+            "---\ntitle: B\ntype: meeting\ndate: 2026-03-12T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Stay annual only\n    topic: pricing\n    supersedes: \"some old plan\"\nintents: []\n---\n\n## Transcript\n\nB.\n",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let report = consistency_report(&config, None, 7).unwrap();
+        assert_eq!(report.decision_conflicts.len(), 1);
+        assert!(report.decision_conflicts[0].resolution.is_none());
     }
 
     #[test]

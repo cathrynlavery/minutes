@@ -72,11 +72,9 @@ crashTrace("imports-complete");
 // avoids the TTY-detection ambiguity that an earlier dual-mode design had.
 //
 // Guarded on `--demo` AND on being the actual entry point so importers don't
-// trigger disk side effects by mistake.
-const IS_ENTRY_POINT = Boolean(
-  process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-);
-if (IS_ENTRY_POINT && process.argv.includes("--demo")) {
+// trigger disk side effects by mistake. Use the same realpath-aware guard as
+// `main()` so npm/.bin shims and symlinked entrypoints still execute demo mode.
+if (process.argv.includes("--demo") && shouldRunMainEntry(process.argv[1], fileURLToPath(import.meta.url))) {
   handleDemoSetup();
 }
 

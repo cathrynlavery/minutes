@@ -1,13 +1,13 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
-// End-to-end test for `node dist/index.js --demo`.
-// Runs the built binary with HOME overridden so fixture installation lands in
-// a temp dir, then asserts the setup path:
+// End-to-end tests for `minutes-mcp --demo`.
+// Run the built binary with HOME overridden so fixture installation lands in a
+// temp dir, then assert the setup path:
 //   - fixtures are copied into $HOME/.minutes/demo/
 //   - the MCP config snippet prints with MEETINGS_DIR pointing at that dir
 //   - all five fixtures carry the minutes_demo: true tag + ISO-8601 date with tz
@@ -59,6 +59,30 @@ describe("`minutes-mcp --demo`", () => {
         expect(content).toMatch(
           /date:\s*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})/
         );
+      }
+    }
+  );
+
+  it.skipIf(!existsSync(DIST_ENTRY) || process.platform === "win32")(
+    "works when launched through a symlinked shim path",
+    () => {
+      const shimDir = mkdtempSync(join(tmpdir(), "minutes-mcp-demo-shim-"));
+      const shimPath = join(shimDir, "minutes-mcp");
+      mkdirSync(tempHome, { recursive: true });
+      symlinkSync(DIST_ENTRY, shimPath);
+
+      try {
+        const result = spawnSync("node", [shimPath, "--demo"], {
+          env: { ...process.env, HOME: tempHome },
+          encoding: "utf8",
+          timeout: 30000,
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("Demo corpus ready at:");
+        expect(result.stderr).not.toContain("Minutes MCP server running on stdio");
+      } finally {
+        rmSync(shimDir, { recursive: true, force: true });
       }
     }
   );
