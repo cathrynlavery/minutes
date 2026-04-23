@@ -3526,17 +3526,17 @@ Hello there.
     fn decode_hints_merge_additional_candidates() {
         let base = DecodeHints::from_candidates(&["Mat".to_string()], &["X1 Planning".to_string()]);
         let merged = base.with_additional_candidates(
-            &["Garrett Gunderson".to_string()],
-            &["Well Factory".to_string()],
+            &["Casey Rowan".to_string()],
+            &["Northstar Studio".to_string()],
         );
 
         assert_eq!(
             merged.combined_phrases(10),
             vec![
                 "Mat".to_string(),
-                "Garrett Gunderson".to_string(),
+                "Casey Rowan".to_string(),
                 "X1 Planning".to_string(),
-                "Well Factory".to_string(),
+                "Northstar Studio".to_string(),
             ]
         );
     }
@@ -3559,15 +3559,15 @@ Hello there.
     fn local_parakeet_hints_keep_priority_names_and_drop_context_terms() {
         let config = Config::default();
         let hints = DecodeHints::from_candidates(
-            &["Garrett Gunderson".to_string()],
+            &["Casey Rowan".to_string()],
             &[
-                "Wealth Factory".to_string(),
+                "Northstar Studio".to_string(),
                 "direct response projects".to_string(),
             ],
         );
 
         let phrases = combined_parakeet_boost_phrases(&config, &hints);
-        assert_eq!(phrases, vec!["Garrett Gunderson".to_string()]);
+        assert_eq!(phrases, vec!["Casey Rowan".to_string()]);
     }
 
     #[test]

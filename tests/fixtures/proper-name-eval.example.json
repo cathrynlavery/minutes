@@ -76,13 +76,13 @@
     "audio_path": "/absolute/path/to/external-proper-noun.wav",
     "content_type": "meeting",
     "engine": "parakeet",
-    "reference_text": "Garrett Gunderson and the Well Factory team reviewed PDF Toolkit packaging.",
-    "title": "Garrett / Well Factory follow-up",
-    "calendar_event_title": "Garrett Gunderson with Well Factory",
+    "reference_text": "Casey Rowan and the Northstar Studio team reviewed PDF Toolkit packaging.",
+    "title": "Casey / Northstar Studio follow-up",
+    "calendar_event_title": "Casey Rowan with Northstar Studio",
     "pre_context": "PDF Toolkit packaging review",
     "extra_priority_hints": [
-      "Garrett Gunderson",
-      "Well Factory"
+      "Casey Rowan",
+      "Northstar Studio"
     ],
     "extra_context_hints": [
       "PDF Toolkit"
@@ -93,16 +93,16 @@
     ],
     "max_wer_regression": 0.02,
     "require_hinted_terms": [
-      "garrett gunderson",
-      "well factory",
+      "casey rowan",
+      "northstar studio",
       "pdf toolkit"
     ],
     "forbid_hinted_terms": [
       "matt mullenweg"
     ],
     "allowed_failure_substrings": [
-      "missing required hinted term 'garrett gunderson'",
-      "missing required hinted term 'well factory'"
+      "missing required hinted term 'casey rowan'",
+      "missing required hinted term 'northstar studio'"
     ]
   }
 ]

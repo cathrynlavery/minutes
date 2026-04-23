@@ -34,7 +34,7 @@ One available long WAV (`job-20260413130210152-33883-0.wav`) mapped to a failed 
 
 With `boost_limit = 25`, the current graph-derived phrase list was:
 
-`Matt`, `Wesley`, `Mat S.`, `Case`, `Mat Silverstein`, `Gordon`, `Andrew`, `Logan`, `Dan`, `Matt Mullenweg`, `Dieter`, `Alex C.`, `Alex`, `Case W.`, `Wesley Young`, `Mr. Young`, `Donald`, `Bobby McPherson`, `Garrett Gunderson`, `Tricia`, `Ryan`, `Dean`, `Brock`, `Mark Fister`, `Jerry`
+`Matt`, `Wesley`, `Mat S.`, `Case`, `Mat Silverstein`, `Gordon`, `Andrew`, `Logan`, `Dan`, `Matt Mullenweg`, `Dieter`, `Alex C.`, `Alex`, `Case W.`, `Wesley Young`, `Mr. Young`, `Donald`, `Bobby McPherson`, `Casey Rowan`, `Tricia`, `Ryan`, `Dean`, `Brock`, `Mark Fister`, `Jerry`
 
 This matters. The list includes some strong multi-token entities, but it also includes many short common first names (`Matt`, `Dan`, `Alex`, `Case`) that are plausible hallucination targets on imperfect audio.
 

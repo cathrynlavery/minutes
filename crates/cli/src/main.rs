@@ -4941,13 +4941,13 @@ mod tests {
                     },
                     delta_wer: 0.0,
                     max_wer_regression: Some(0.02),
-                    required_terms: vec!["garrett gunderson".into()],
+                    required_terms: vec!["casey rowan".into()],
                     forbidden_terms: vec![],
                     passed: true,
                     status: "allowed-failure".into(),
                     failure_reasons: vec![],
                     allowed_failure_reasons: vec![
-                        "missing required hinted term 'garrett gunderson'".into(),
+                        "missing required hinted term 'casey rowan'".into(),
                     ],
                 },
             ],
@@ -5056,7 +5056,7 @@ life (qmd://life/)
         assert!(output.contains("Allowed failures: 1"));
         assert!(output.contains("Allowed-failure cases:"));
         assert!(output.contains("external-proper-noun-research"));
-        assert!(output.contains("missing required hinted term 'garrett gunderson'"));
+        assert!(output.contains("missing required hinted term 'casey rowan'"));
     }
 
     #[test]

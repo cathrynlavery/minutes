@@ -1216,13 +1216,13 @@ mod tests {
                 },
                 delta_wer: 0.0,
                 max_wer_regression: Some(0.02),
-                required_terms: vec!["garrett gunderson".into()],
+                required_terms: vec!["casey rowan".into()],
                 forbidden_terms: vec![],
                 passed: true,
                 status: "allowed-failure".into(),
                 failure_reasons: vec![],
                 allowed_failure_reasons: vec![
-                    "missing required hinted term 'garrett gunderson'".into()
+                    "missing required hinted term 'casey rowan'".into()
                 ],
             }],
             failure_messages: vec![],
@@ -1239,8 +1239,8 @@ mod tests {
             title: Some("X1 / Planning Review".into()),
             calendar_event_title: Some("Mat with Alex Chen".into()),
             pre_context: Some("Asana migration with Box".into()),
-            extra_priority_hints: vec!["Garrett Gunderson".into()],
-            extra_context_hints: vec!["Well Factory".into()],
+            extra_priority_hints: vec!["Casey Rowan".into()],
+            extra_context_hints: vec!["Northstar Studio".into()],
             attendees: vec!["mat@example.com".into(), "alex.chen@example.com".into()],
             identity_name: Some("Mat".into()),
             identity_aliases: vec!["Mathieu".into(), "Matthew".into()],
@@ -1274,7 +1274,7 @@ mod tests {
         assert!(summary.contains("Verdict: **PASS WITH ALLOWED FAILURES**"));
         assert!(summary.contains("Allowed failures: 1"));
         assert!(
-            summary.contains("allowed failures: missing required hinted term 'garrett gunderson'")
+            summary.contains("allowed failures: missing required hinted term 'casey rowan'")
         );
     }
 
@@ -1298,11 +1298,11 @@ mod tests {
         assert!(full
             .debug_priority_phrases()
             .iter()
-            .any(|v| v == "Garrett Gunderson"));
+            .any(|v| v == "Casey Rowan"));
         assert!(full
             .debug_contextual_phrases()
             .iter()
-            .any(|v| v == "Well Factory"));
+            .any(|v| v == "Northstar Studio"));
 
         let mut ablated = sample_eval_case();
         ablated.disable_identity_hints = true;
@@ -1320,11 +1320,11 @@ mod tests {
         assert!(!parakeet_default
             .debug_priority_phrases()
             .iter()
-            .any(|v| v == "Well Factory"));
+            .any(|v| v == "Northstar Studio"));
         assert!(!parakeet_default
             .debug_contextual_phrases()
             .iter()
-            .any(|v| v == "Well Factory"));
+            .any(|v| v == "Northstar Studio"));
 
         let mut forced = sample_eval_case();
         forced.force_extra_context_hints_for_decode = true;
@@ -1332,7 +1332,7 @@ mod tests {
         assert!(forced_hints
             .debug_contextual_phrases()
             .iter()
-            .any(|v| v == "Well Factory"));
+            .any(|v| v == "Northstar Studio"));
     }
 
     #[test]
@@ -1366,7 +1366,7 @@ mod tests {
         right.cases[0].failure_reasons =
             vec!["missing required hinted term 'pdf extension'".into()];
         right.cases[0].allowed_failure_reasons =
-            vec!["missing required hinted term 'garrett gunderson'".into()];
+            vec!["missing required hinted term 'casey rowan'".into()];
         right.failure_messages = right.cases[0]
             .failure_reasons
             .iter()
@@ -1397,7 +1397,7 @@ mod tests {
         assert!(comparison.cases[0]
             .newly_allowed_failures
             .iter()
-            .any(|reason| reason.contains("garrett gunderson")));
+            .any(|reason| reason.contains("casey rowan")));
     }
 
     #[test]
@@ -1429,19 +1429,19 @@ mod tests {
                 newly_missing_terms: vec![],
                 resolved_failures: vec![],
                 newly_allowed_failures: vec![
-                    "missing required hinted term 'garrett gunderson'".into()
+                    "missing required hinted term 'casey rowan'".into()
                 ],
                 resolved_allowed_failures: vec![
-                    "missing required hinted term 'well factory'".into()
+                    "missing required hinted term 'northstar studio'".into()
                 ],
             }],
         };
 
         let summary = render_decode_hint_eval_comparison_summary(&report);
         assert!(summary
-            .contains("new allowed failures: missing required hinted term 'garrett gunderson'"));
+            .contains("new allowed failures: missing required hinted term 'casey rowan'"));
         assert!(summary
-            .contains("resolved allowed failures: missing required hinted term 'well factory'"));
+            .contains("resolved allowed failures: missing required hinted term 'northstar studio'"));
     }
 
     #[test]
@@ -1488,7 +1488,7 @@ mod tests {
                 newly_missing_terms: vec![],
                 resolved_failures: vec![],
                 newly_allowed_failures: vec![
-                    "missing required hinted term 'garrett gunderson'".into()
+                    "missing required hinted term 'casey rowan'".into()
                 ],
                 resolved_allowed_failures: vec![],
             }],
