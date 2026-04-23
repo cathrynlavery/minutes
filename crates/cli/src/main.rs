@@ -3358,36 +3358,10 @@ fn cmd_autoresearch_decode_hints(
         );
         println!("{}", serde_json::to_string_pretty(&envelope)?);
     } else {
-        let verdict = if failed {
-            "FAIL"
-        } else if report.totals.cases_allowed_failures > 0 {
-            "PASS WITH ALLOWED FAILURES"
-        } else {
-            "PASS"
-        };
-        println!("Decode hint eval: {verdict}");
-        println!("Cases: {}", report.totals.cases_total);
-        println!("Passed: {}", report.totals.cases_passed);
-        println!("Failed: {}", report.totals.cases_failed);
-        println!("Allowed failures: {}", report.totals.cases_allowed_failures);
-        println!("Artifacts: {}", artifacts.run_dir.display());
-        if failed {
-            println!();
-            println!("Failure messages:");
-            for failure in &report.failure_messages {
-                println!("- {failure}");
-            }
-        } else if report.totals.cases_allowed_failures > 0 {
-            println!();
-            println!("Allowed-failure cases:");
-            for case in report
-                .cases
-                .iter()
-                .filter(|case| !case.allowed_failure_reasons.is_empty())
-            {
-                println!("- {}: {}", case.id, case.allowed_failure_reasons.join("; "));
-            }
-        }
+        println!(
+            "{}",
+            render_decode_hints_plaintext_summary(&report, &artifacts.run_dir, failed)
+        );
     }
 
     if failed {
@@ -3398,6 +3372,53 @@ fn cmd_autoresearch_decode_hints(
     }
 
     Ok(())
+}
+
+fn render_decode_hints_plaintext_summary(
+    report: &minutes_core::autoresearch::DecodeHintEvalReport,
+    artifact_dir: &Path,
+    failed: bool,
+) -> String {
+    let verdict = if failed {
+        "FAIL"
+    } else if report.totals.cases_allowed_failures > 0 {
+        "PASS WITH ALLOWED FAILURES"
+    } else {
+        "PASS"
+    };
+
+    let mut lines = vec![
+        format!("Decode hint eval: {verdict}"),
+        format!("Cases: {}", report.totals.cases_total),
+        format!("Passed: {}", report.totals.cases_passed),
+        format!("Failed: {}", report.totals.cases_failed),
+        format!("Allowed failures: {}", report.totals.cases_allowed_failures),
+        format!("Artifacts: {}", artifact_dir.display()),
+    ];
+
+    if failed {
+        lines.push(String::new());
+        lines.push("Failure messages:".into());
+        for failure in &report.failure_messages {
+            lines.push(format!("- {failure}"));
+        }
+    } else if report.totals.cases_allowed_failures > 0 {
+        lines.push(String::new());
+        lines.push("Allowed-failure cases:".into());
+        for case in report
+            .cases
+            .iter()
+            .filter(|case| !case.allowed_failure_reasons.is_empty())
+        {
+            lines.push(format!(
+                "- {}: {}",
+                case.id,
+                case.allowed_failure_reasons.join("; ")
+            ));
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn cmd_autoresearch_compare_decode_hints(
@@ -4814,6 +4835,10 @@ fn cmd_logs(errors: bool, lines: usize) -> Result<()> {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use minutes_core::autoresearch::{
+        DecodeHintEvalCaseResult, DecodeHintEvalHintDebug, DecodeHintEvalOptions,
+        DecodeHintEvalReport, DecodeHintEvalTotals, DecodeHintEvalTranscriptMetrics,
+    };
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -4862,6 +4887,115 @@ mod tests {
         result
     }
 
+    fn sample_decode_hint_eval_report_with_allowed_failures() -> DecodeHintEvalReport {
+        DecodeHintEvalReport {
+            generated_at: "2026-04-23T12:00:00Z".into(),
+            corpus_path: PathBuf::from("/tmp/corpus.json"),
+            options: DecodeHintEvalOptions::default(),
+            totals: DecodeHintEvalTotals {
+                cases_total: 2,
+                cases_passed: 2,
+                cases_failed: 0,
+                cases_allowed_failures: 1,
+                improved_cases: 1,
+                regressed_cases: 0,
+                average_delta_wer: -0.01,
+            },
+            cases: vec![
+                DecodeHintEvalCaseResult {
+                    id: "self-intro-whisper".into(),
+                    engine: "whisper".into(),
+                    hint_debug: DecodeHintEvalHintDebug::default(),
+                    baseline: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.12,
+                        focus_hits: vec!["mat".into()],
+                        forbidden_hits: vec![],
+                    },
+                    candidate: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.09,
+                        focus_hits: vec!["mat".into(), "leadernet".into()],
+                        forbidden_hits: vec![],
+                    },
+                    delta_wer: -0.03,
+                    max_wer_regression: Some(0.03),
+                    required_terms: vec!["mat".into(), "leadernet".into()],
+                    forbidden_terms: vec![],
+                    passed: true,
+                    status: "pass".into(),
+                    failure_reasons: vec![],
+                    allowed_failure_reasons: vec![],
+                },
+                DecodeHintEvalCaseResult {
+                    id: "external-proper-noun-research".into(),
+                    engine: "parakeet".into(),
+                    hint_debug: DecodeHintEvalHintDebug::default(),
+                    baseline: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.10,
+                        focus_hits: vec!["pdf toolkit".into()],
+                        forbidden_hits: vec![],
+                    },
+                    candidate: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.10,
+                        focus_hits: vec!["pdf toolkit".into()],
+                        forbidden_hits: vec![],
+                    },
+                    delta_wer: 0.0,
+                    max_wer_regression: Some(0.02),
+                    required_terms: vec!["garrett gunderson".into()],
+                    forbidden_terms: vec![],
+                    passed: true,
+                    status: "allowed-failure".into(),
+                    failure_reasons: vec![],
+                    allowed_failure_reasons: vec![
+                        "missing required hinted term 'garrett gunderson'".into(),
+                    ],
+                },
+            ],
+            failure_messages: vec![],
+        }
+    }
+
+    fn sample_decode_hint_eval_report_with_failures() -> DecodeHintEvalReport {
+        DecodeHintEvalReport {
+            generated_at: "2026-04-23T12:00:00Z".into(),
+            corpus_path: PathBuf::from("/tmp/corpus.json"),
+            options: DecodeHintEvalOptions::default(),
+            totals: DecodeHintEvalTotals {
+                cases_total: 1,
+                cases_passed: 0,
+                cases_failed: 1,
+                cases_allowed_failures: 0,
+                improved_cases: 0,
+                regressed_cases: 1,
+                average_delta_wer: 0.03,
+            },
+            cases: vec![DecodeHintEvalCaseResult {
+                id: "case-1".into(),
+                engine: "parakeet".into(),
+                hint_debug: DecodeHintEvalHintDebug::default(),
+                baseline: DecodeHintEvalTranscriptMetrics {
+                    wer: 0.12,
+                    focus_hits: vec![],
+                    forbidden_hits: vec![],
+                },
+                candidate: DecodeHintEvalTranscriptMetrics {
+                    wer: 0.15,
+                    focus_hits: vec![],
+                    forbidden_hits: vec!["matt mullenweg".into()],
+                },
+                delta_wer: 0.03,
+                max_wer_regression: Some(0.02),
+                required_terms: vec!["alex chen".into()],
+                forbidden_terms: vec!["matt mullenweg".into()],
+                passed: false,
+                status: "fail".into(),
+                failure_reasons: vec!["contains forbidden hinted term 'matt mullenweg'".into()],
+                allowed_failure_reasons: vec![],
+            }],
+            failure_messages: vec!["case-1 contains forbidden hinted term 'matt mullenweg'".into()],
+        }
+    }
+
     #[test]
     fn parse_qmd_collection_names_extracts_collection_headers() {
         let output = r#"Collections (2):
@@ -4908,6 +5042,36 @@ life (qmd://life/)
         assert_eq!(value["transcript"], "[0:00] hello");
         assert_eq!(value["segments"][0], "hello");
         assert_eq!(value["meta"]["schemaVersion"], 1);
+    }
+
+    #[test]
+    fn render_decode_hints_plaintext_summary_surfaces_allowed_failures() {
+        let output = render_decode_hints_plaintext_summary(
+            &sample_decode_hint_eval_report_with_allowed_failures(),
+            Path::new("/tmp/decode-hints/2026-04-23T12-00-00Z"),
+            false,
+        );
+
+        assert!(output.contains("Decode hint eval: PASS WITH ALLOWED FAILURES"));
+        assert!(output.contains("Allowed failures: 1"));
+        assert!(output.contains("Allowed-failure cases:"));
+        assert!(output.contains("external-proper-noun-research"));
+        assert!(output.contains("missing required hinted term 'garrett gunderson'"));
+    }
+
+    #[test]
+    fn render_decode_hints_plaintext_summary_surfaces_blocking_failures() {
+        let output = render_decode_hints_plaintext_summary(
+            &sample_decode_hint_eval_report_with_failures(),
+            Path::new("/tmp/decode-hints/2026-04-23T12-00-00Z"),
+            true,
+        );
+
+        assert!(output.contains("Decode hint eval: FAIL"));
+        assert!(output.contains("Allowed failures: 0"));
+        assert!(output.contains("Failure messages:"));
+        assert!(output.contains("case-1 contains forbidden hinted term 'matt mullenweg'"));
+        assert!(!output.contains("Allowed-failure cases:"));
     }
 
     #[test]
