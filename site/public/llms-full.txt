@@ -2,7 +2,7 @@
 
 > Generated file. Do not edit by hand.
 > Source: manifest.json + crates/mcp/src/index.ts + site/lib/skills-catalog.json
-> Last generated: 2026-04-22
+> Last generated: 2026-04-23
 
 ## Product
 
@@ -10,33 +10,31 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 
 29 tools • 7 resources • Interactive MCP App dashboard • Prompt templates
 
-**What's new in 0.13.3:**
-• Stem diarization has an escape hatch. Open-speaker setups (Studio Display, laptop mic, USB desk mic near speakers) were collapsing Zoom calls to a single SPEAKER_0 because the mic acoustically picks up system audio. The correlation gate that triggers the collapse is now configurable via `[diarization] stem_correlation_threshold` in `config.toml`. Default is 0.85 (unchanged). Set to 1.0 to disable the collapse entirely. Reported by @athal7 in issue #157.
-• `stop_when_call_ends` actually auto-stops now. The countdown shipped in 0.13.0 was armed correctly but a state race could orphan it before it fired. The countdown thread now owns the lifecycle exclusively. Re-detecting the same call mid-countdown cancels instead of firing. Reported by @athal7 in issue #129.
-• Linux PipeWire recording no longer segfaults. A double host init/teardown inside the capture plan was tripping an abort. Fixed the lifetime so the host stays live for the recording session.
-• `npx minutes-mcp` launches cleanly from npm shims. OpenCode, Cursor, and any `.bin` shim caller now connect without an early exit. Entrypoint guard compares canonical realpaths instead of raw path strings.
-• `minutes setup --demo` installs 5 bundled fixture meetings so new users can see search, graph, and summarize surfaces immediately without recording anything first. Useful for demos, reviewer onboarding, and MCP dashboard preview.
-• Recall (the multi-agent CLI launcher) got three fixes: per-agent scoping of approval-bypass flags, OpenCode agent settings support, and assistant workspace sync to generated portable skill trees.
-• Frontmatter adds opt-in `authority` and `supersedes` fields on Decision entries for teams that want to mark one decision as overriding another.
-• Desktop-context retrieval is now part of the public MCP surface via `activity_summary`, `search_context`, and `get_moment`.
+**What's new in 0.14.0:**
+• **Desktop context is now a first-class MCP surface.** A new local `context.db` store captures meeting-adjacent activity (docs, terminals, browser tabs) around every recording and live session. Three new MCP tools query it: `activity_summary` for what happened in a window, `search_context` for keyword lookups, and `get_moment` for rewinding to a specific timestamp. Works without a transcript — useful even when you weren't recording.
+• **New `/minutes-video-review` workflow.** Drop a Loom, ScreenPal recording, bug repro clip, or local screen-walkthrough and Minutes produces a durable review artifact: transcript, sampled frames, metadata, and a briefable bundle any agent can read. Surfaced as a plugin skill and portable skill for Codex/Gemini/OpenCode.
+• **Apple Speech live backend is now its own config surface.** Standalone live transcription (`minutes live`) has its own backend picker, separate from the general transcription engine. Old overloaded configs migrate automatically. Current scope is explicitly standalone-live-only; see `docs/APPLE_SPEECH.md`.
+• **Cleaner fallback chain for live transcription.** Apple Speech falls back to Parakeet and then Whisper when unavailable. Parakeet itself now falls back to CPU when the GPU path is unavailable, so builds without Metal/CUDA still work end-to-end.
+• **Hybrid source-aware diarization for call capture.** When dual-source stems are available (mic + system audio), diarization now keeps your local voice ownership stable and refines remote speakers from the system stem. Chunks are aligned by index, not wall-clock, so long calls stay coherent.
+• **Device-name canonicalization.** Decorated picker labels persisted from older versions (`"MacBook Pro Microphone (Built-in)"`, etc.) now resolve to the real CoreAudio device so your saved recording device keeps working after upgrades.
+• **Calendar is safer and more honest.** `[calendar] enabled=false` is now respected throughout. The background calendar poller no longer auto-launches Calendar.app. The `calendar-events` helper is correctly bundled into release `.app` builds on macOS.
+• **Native call capture can bypass the loopback preflight** when the desktop path is available, so ScreenCaptureKit-based setups don't need loopback installed to record system audio.
+• **Windows and Linux desktop-context collectors.** Shared implementation lands alongside the existing macOS path. Platform-gated cleanly so cross-compile stays green.
+• **Self-healing Claude Desktop extension.** The hosted `.mcpb` no longer breaks when our CLI version advances. Same-major skew (e.g. MCP 0.13.3 against CLI 0.14.0) is silent-compatible, and auto-install fetches the latest CLI via GitHub's `releases/latest/download/` redirect instead of a pinned tag (issue #183 Phase 1).
+• **Build reliability.** Auto-recovers from stale `ort-sys` clang_rt paths after Xcode upgrades (the recurring `library not found` after macOS major updates). CLI and app feature flags stay in sync.
 
-**Rolled up from 0.13.2 (three days ago):**
-• Minutes-local mic-mute toggle for passive attendance (webinars, all-hands, panels). Tray menu, `minutes record --mute-mic`, `minutes mic-toggle`, or `MicMuted` / `MicUnmuted` events. Only meaningful during dual-source capture. Thanks to @maxtacu for the request in discussion #146.
-• Claude Desktop extension install works on Claude Desktop 1.3109.0 and later. Bundle is clean of path-traversal-tripping filenames and `check_mcpb_bundle` guards future regressions. File-based crash tracer at `~/.minutes/logs/mcp-crash.log` catches silent exits when a host swallows stderr.
-
-**Rolled up from 0.13.0 (four days ago):**
-• Settings UX: toggle rows no longer drift out of sync with what you clicked. Command palette shortcut has a real UI row.
-• Identity setup: name, emails, and name variants so Minutes recognizes you across calendars, frontmatter, and conversation memory.
-• Call-aware recording: smarter Teams web detection across Arc, Safari, and Chrome. `stop_when_call_ends` exposed in the desktop UI.
-• Capture resilience: pinned-device capture more stable on Linux, better handling of decorated or ambiguous device labels.
-• Autoresearch tooling: compare decode-hint eval runs and list recent research output from the CLI.
+**Agent surface polish:**
+• `llms.txt` enumerates the full skill catalog with CI enforcement.
+• Plugin tree now emits per-skill `scripts/` and `references/` assets for Claude host's `copy` asset policy.
+• Generated agent docs (`.agents/skills/`, `.opencode/skills/`, `.opencode/commands/`) stay in lockstep via a compiler check.
+• Surface audits guard against silent skill/hook/pack drift.
 
 **Setup:** `npx minutes-mcp` gets you search, browsing, and the dashboard right away. For recording and transcription, Minutes can auto-install the CLI on first use, or you can install it yourself with `brew install silverstein/tap/minutes` or `cargo install minutes-cli`, then run `minutes setup --model tiny`, `minutes setup --parakeet`, or `minutes setup --demo`. Want to preview the full experience without recording? Run `minutes setup --demo`.
 
 **What Minutes already gives you:**
 • Filesystem-as-API: meetings land as YAML-frontmatter markdown in `~/meetings/`. Every agent reads the same source of truth. No vendor lock-in.
 • Start/stop live meeting recordings
-• Process audio files (WAV, M4A, MP3, OGG)
+• Process audio files (WAV, M4A, MP3, OGG), Looms, and ScreenPal recordings
 • Local transcription with Whisper or Parakeet. Nothing leaves your machine.
 • Speaker diarization, native, no Python required
 • Dictation mode for clipboard and daily notes
