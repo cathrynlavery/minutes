@@ -63,6 +63,11 @@ Each entry can specify:
 - `require_hinted_terms`
 - `forbid_hinted_terms`
 - `allowed_failure_substrings`
+- `disable_identity_hints`
+- `disable_attendee_hints`
+- `disable_context_hints`
+- `disable_extra_priority_hints`
+- `disable_extra_context_hints`
 
 ## What the harness measures
 

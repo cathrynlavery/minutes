@@ -51,6 +51,16 @@ pub struct DecodeHintEvalCase {
     pub forbid_hinted_terms: Vec<String>,
     #[serde(default)]
     pub allowed_failure_substrings: Vec<String>,
+    #[serde(default)]
+    pub disable_identity_hints: bool,
+    #[serde(default)]
+    pub disable_attendee_hints: bool,
+    #[serde(default)]
+    pub disable_context_hints: bool,
+    #[serde(default)]
+    pub disable_extra_priority_hints: bool,
+    #[serde(default)]
+    pub disable_extra_context_hints: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -304,14 +314,7 @@ pub fn run_decode_hint_eval_corpus(
         config.identity.aliases = case.identity_aliases.clone();
 
         let reference = eval_text_for_compare(&load_reference_text(&case)?);
-        let hints = build_decode_hints(
-            case.title.as_deref(),
-            case.calendar_event_title.as_deref(),
-            case.pre_context.as_deref(),
-            &case.attendees,
-            Some(&config.identity),
-        )
-        .with_additional_candidates(&case.extra_priority_hints, &case.extra_context_hints);
+        let hints = build_eval_case_hints(&case, &config.identity);
         let hint_debug = DecodeHintEvalHintDebug {
             priority_phrases: hints.debug_priority_phrases(),
             contextual_phrases: hints.debug_contextual_phrases(),
@@ -983,6 +986,46 @@ fn invalid_data_error(error: impl std::fmt::Display) -> MinutesError {
     ))
 }
 
+fn build_eval_case_hints(
+    case: &DecodeHintEvalCase,
+    identity: &crate::config::IdentityConfig,
+) -> DecodeHints {
+    let identity_for_hints = (!case.disable_identity_hints).then_some(identity);
+    let attendees = if case.disable_attendee_hints {
+        &[][..]
+    } else {
+        case.attendees.as_slice()
+    };
+    let title = (!case.disable_context_hints)
+        .then_some(case.title.as_deref())
+        .flatten();
+    let calendar_event_title = (!case.disable_context_hints)
+        .then_some(case.calendar_event_title.as_deref())
+        .flatten();
+    let pre_context = (!case.disable_context_hints)
+        .then_some(case.pre_context.as_deref())
+        .flatten();
+    let extra_priority_hints = if case.disable_extra_priority_hints {
+        &[][..]
+    } else {
+        case.extra_priority_hints.as_slice()
+    };
+    let extra_context_hints = if case.disable_extra_context_hints {
+        &[][..]
+    } else {
+        case.extra_context_hints.as_slice()
+    };
+
+    build_decode_hints(
+        title,
+        calendar_event_title,
+        pre_context,
+        attendees,
+        identity_for_hints,
+    )
+    .with_additional_candidates(extra_priority_hints, extra_context_hints)
+}
+
 fn transcribe_case(
     case: &DecodeHintEvalCase,
     config: &Config,
@@ -1184,6 +1227,36 @@ mod tests {
         }
     }
 
+    fn sample_eval_case() -> DecodeHintEvalCase {
+        DecodeHintEvalCase {
+            id: "case-1".into(),
+            audio_path: PathBuf::from("/tmp/audio.wav"),
+            content_type: ContentType::Meeting,
+            reference_text: "reference".into(),
+            reference_path: None,
+            title: Some("X1 / Planning Review".into()),
+            calendar_event_title: Some("Mat with Alex Chen".into()),
+            pre_context: Some("Asana migration with Box".into()),
+            extra_priority_hints: vec!["Garrett Gunderson".into()],
+            extra_context_hints: vec!["Well Factory".into()],
+            attendees: vec!["mat@example.com".into(), "alex.chen@example.com".into()],
+            identity_name: Some("Mat".into()),
+            identity_aliases: vec!["Mathieu".into(), "Matthew".into()],
+            language: Some("en".into()),
+            engine: Some("whisper".into()),
+            parakeet_boost_score_override: None,
+            max_wer_regression: Some(0.02),
+            require_hinted_terms: vec!["mat".into()],
+            forbid_hinted_terms: vec!["matt mullenweg".into()],
+            allowed_failure_substrings: vec![],
+            disable_identity_hints: false,
+            disable_attendee_hints: false,
+            disable_context_hints: false,
+            disable_extra_priority_hints: false,
+            disable_extra_context_hints: false,
+        }
+    }
+
     #[test]
     fn render_summary_surfaces_failures() {
         let summary = render_decode_hint_eval_summary(&sample_report());
@@ -1200,6 +1273,45 @@ mod tests {
         assert!(
             summary.contains("allowed failures: missing required hinted term 'garrett gunderson'")
         );
+    }
+
+    #[test]
+    fn build_eval_case_hints_respects_ablation_flags() {
+        let identity = crate::config::IdentityConfig {
+            name: Some("Mat".into()),
+            email: Some("mat@example.com".into()),
+            emails: vec![],
+            aliases: vec!["Mathieu".into(), "Matthew".into()],
+        };
+
+        let full = build_eval_case_hints(&sample_eval_case(), &identity);
+        assert!(full.debug_priority_phrases().iter().any(|v| v == "Mat"));
+        assert!(full
+            .debug_priority_phrases()
+            .iter()
+            .any(|v| v == "Alex Chen"));
+        assert!(full
+            .debug_contextual_phrases()
+            .iter()
+            .any(|v| v == "Asana migration"));
+        assert!(full
+            .debug_priority_phrases()
+            .iter()
+            .any(|v| v == "Garrett Gunderson"));
+        assert!(full
+            .debug_contextual_phrases()
+            .iter()
+            .any(|v| v == "Well Factory"));
+
+        let mut ablated = sample_eval_case();
+        ablated.disable_identity_hints = true;
+        ablated.disable_attendee_hints = true;
+        ablated.disable_context_hints = true;
+        ablated.disable_extra_priority_hints = true;
+        ablated.disable_extra_context_hints = true;
+        let suppressed = build_eval_case_hints(&ablated, &identity);
+        assert!(suppressed.debug_priority_phrases().is_empty());
+        assert!(suppressed.debug_contextual_phrases().is_empty());
     }
 
     #[test]
