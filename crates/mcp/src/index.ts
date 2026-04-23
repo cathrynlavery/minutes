@@ -61,6 +61,7 @@ import {
   validatePathInDirectories,
   validatePathInDirectory,
 } from "./paths.js";
+import { isCliCompatible } from "./version.js";
 
 crashTrace("imports-complete");
 
@@ -375,9 +376,13 @@ function findMinutesBinary(): string {
 
 let MINUTES_BIN = findMinutesBinary();
 
-// ── Expected CLI version (must match this MCP server release) ──
-const MCP_SERVER_VERSION = "0.13.3";
-const EXPECTED_CLI_VERSION = MCP_SERVER_VERSION;
+// ── MCP server version ────────────────────────────────────────
+// Kept for capabilities handshake and user-facing log messages.
+// The compatibility decision against the installed CLI lives in
+// `./version.ts` (see issue #183). Hosted `.mcpb` bundles will run
+// against CLIs with different minor/patch numbers within the same
+// major; that is explicitly supported.
+const MCP_SERVER_VERSION = "0.14.0";
 
 export function parseKnowledgeConfig(configContent: string): KnowledgeConfigStatus | null {
   const knowledgeMatch = configContent.match(/\[knowledge\][\s\S]*?(?=\n\[|$)/);
@@ -398,9 +403,10 @@ export function parseKnowledgeConfig(configContent: string): KnowledgeConfigStat
     engine: engineMatch?.[1] || "none",
   };
 }
-const RELEASE_TAG = `v${EXPECTED_CLI_VERSION}`;
-
 // ── CLI auto-install ────────────────────────────────────────
+// Auto-install fetches from the GitHub `releases/latest/download/` redirect,
+// not a pinned tag, so hosted `.mcpb` bundles self-heal across our release
+// cadence. See issue #183 for context.
 // When installed via MCPB or `npx minutes-mcp`, the Rust CLI binary
 // may not be present. We attempt to install it automatically so
 // non-technical users don't hit a "binary not found" dead end.
@@ -435,13 +441,13 @@ async function tryAutoInstall(): Promise<boolean> {
   const binaryName = getReleaseBinaryName();
   if (binaryName) {
     try {
-      const url = `https://github.com/silverstein/minutes/releases/download/${RELEASE_TAG}/${binaryName}`;
+      const url = `https://github.com/silverstein/minutes/releases/latest/download/${binaryName}`;
       const installDir = getInstallDir();
       const isWindows = process.platform === "win32";
       const targetName = isWindows ? "minutes.exe" : "minutes";
       const targetPath = join(installDir, targetName);
 
-      console.error(`[Minutes] Downloading ${binaryName} from ${RELEASE_TAG} release...`);
+      console.error(`[Minutes] Downloading ${binaryName} from latest release...`);
 
       // Ensure install directory exists
       await execFileAsync("mkdir", ["-p", installDir], { timeout: 5000 }).catch(() => {});
@@ -501,21 +507,25 @@ async function tryAutoInstall(): Promise<boolean> {
 async function checkCliVersion(): Promise<void> {
   try {
     const { stdout } = await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
-    // Output is like "minutes 0.8.0" or just "0.8.0"
+    // Output is like "minutes 0.8.0" or just "0.8.0".
     const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
-    if (match) {
-      const installedVersion = match[1];
-      if (installedVersion !== EXPECTED_CLI_VERSION) {
-        console.error(
-          `[Minutes] ⚠ CLI version mismatch: installed ${installedVersion}, server expects ${EXPECTED_CLI_VERSION}. ` +
-          `Update with: brew upgrade minutes (or cargo install minutes-cli)`
-        );
-      } else {
-        console.error(`[Minutes] CLI v${installedVersion} — up to date`);
-      }
+    if (!match) return;
+
+    const installedVersion = match[1];
+    const result = isCliCompatible(installedVersion, MCP_SERVER_VERSION);
+
+    // Only surface logs the user should see. Same-major skew is silent-
+    // compatible, which is the whole point of issue #183 fix: hosted `.mcpb`
+    // bundles frequently run against a CLI with a different minor/patch
+    // and that is fine.
+    if (result.severity === "error") {
+      console.error(`[Minutes] ${result.message}`);
+    } else if (result.severity === "ok") {
+      console.error(`[Minutes] ${result.message}`);
     }
+    // "info" severity (compatible skew, unparseable version) stays silent.
   } catch {
-    // Version check is best-effort — don't block on failure
+    // Version check is best-effort. Don't block on failure.
   }
 }
 
