@@ -143,7 +143,7 @@ certificate or local notarization credentials.
 | **Tauri command duplication** | Changes to live transcript start/stop logic | Both `cmd_start_live_transcript` and `handle_live_shortcut_event` must use the shared `try_acquire_live` + `run_live_session` functions. Do NOT duplicate logic. |
 | **Desktop app identity** | Any Tauri packaging, dogfooding, Screen Recording, Input Monitoring, Accessibility, call capture, hotkey, or repeated-permission work | Use `./scripts/install-dev-app.sh`, not `rm -rf /Applications/Minutes.app && cp ...`. If a local signing identity exists, export `MINUTES_DEV_SIGNING_IDENTITY` first. Test `~/Applications/Minutes Dev.app`, not `/Applications/Minutes.app`. |
 | **README accuracy** | New/removed tools, features, crates, or CLI commands | Tool/resource counts, crate list in Architecture, feature sections, and CLI examples in README.md must reflect the current state. Check: tool count matches `manifest.json`, crate list matches `ls crates/*/`, module count matches `ls crates/core/src/*.rs` |
-| **Website accuracy** | New/removed tools, CLI commands, features, version bumps, or skill changes | Tool count, CLI command count, test count, and feature descriptions in `site/app/page.tsx` must reflect the current state. DMG download link must reference the current version. The `/for-agents` skill catalog (rendered from `site/lib/skills-catalog.json`) is **generated** — never hand-edit that file or the skill cards in `site/app/for-agents/page.tsx`; run the skill compiler instead (see **Skill compiler outputs sync**). Redeploy the landing page with the prebuilt Vercel flow from the repo root: `npx vercel@50.38.2 build --prod && npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory` |
+| **Website accuracy** | New/removed tools, CLI commands, features, version bumps, or skill changes | The hero stat line (version, MCP tool count, CLI command count, test count) is **generated** from `site/lib/release.ts` — run `node scripts/sync_site_release_version.mjs` after any change that affects those counts (the `Site Release Link Consistency` CI job fails if it drifts, and the script now also scans `manifest.json`, `crates/cli/src/main.rs`, and Rust + TS test files). Hand-written copy in `site/app/page.tsx` (release banner, feature descriptions, pipeline blurb) must still be updated manually — the script cannot reason about prose. The `/for-agents` skill catalog (rendered from `site/lib/skills-catalog.json`) is **generated** — never hand-edit that file or the skill cards in `site/app/for-agents/page.tsx`; run the skill compiler instead (see **Skill compiler outputs sync**). Redeploy the landing page with the prebuilt Vercel flow from the repo root: `npx vercel@50.38.2 build --prod && npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory` |
 | **npm dep versions** | Version bumps | `crates/mcp/package.json` `minutes-sdk` dep must reference a version that's actually published on npm. Check with `npm view minutes-sdk versions --json` |
 | **Release notes drafted** | Version bumps / releases | Every release is a visibility moment in followers' GitHub feeds. Draft compelling release notes BEFORE creating the release. No empty releases — ever. See Release Checklist step 5. |
 | **Release warranted?** | New/removed MCP tools, new CLI commands, user-facing features | Manifest changes (new tools, updated description) don't reach Claude Desktop users until a release is cut and `.mcpb` is uploaded. If the change is user-visible, plan a release. |
@@ -240,11 +240,20 @@ cd crates/mcp && npm publish --access public --registry https://registry.npmjs.o
 ```
 **IMPORTANT**: `crates/mcp/package.json` must depend on `"minutes-sdk": "^X.Y.Z"` (npm version), NOT `"file:../sdk"` (local path). Check before publishing. If 2FA blocks publish, use a granular access token with "Bypass 2FA" enabled.
 
-### 12. Redeploy landing page
-```bash
-npx vercel@50.38.2 build --prod
-npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory
-```
+### 12. Refresh the landing page copy, then redeploy
+Before deploying, make sure the site matches what just shipped:
+
+1. **Regenerate the stat line** (version, tool count, CLI count, test count):
+   ```bash
+   node scripts/sync_site_release_version.mjs
+   ```
+   The `Site Release Link Consistency` CI job runs this with `--check` on every push, so forgetting this step also blocks CI — but running it locally first saves a round-trip and surfaces drift before tagging.
+2. **Hand-update the prose** — the release banner, headline feature blurb, and pipeline description in `site/app/page.tsx`, plus `docs/frontmatter-schema.md`'s "corresponds to" footer if the schema row moved. The sync script handles numbers; it cannot rewrite copy that references last release's headline features.
+3. **Then deploy**:
+   ```bash
+   npx vercel@50.38.2 build --prod
+   npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory
+   ```
 
 **IMPORTANT**: Run these commands from the repo root, not `site/`. The linked Vercel project uses `rootDirectory=site`, and the Git-connected / remote build path is currently failing after successful Next 16.2.3 builds because Vercel looks for `.next/routes-manifest-deterministic.json`. The prebuilt flow uploads the local `.vercel/output` and avoids that failing server-side post-build step.
 

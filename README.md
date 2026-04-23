@@ -482,7 +482,7 @@ command = "npx"
 args = ["minutes-mcp"]
 ```
 
-All 26 tools are available in Vibe as `minutes_*` (e.g. `minutes_start_recording`, `minutes_search_meetings`).
+All 29 tools are available in Vibe as `minutes_*` (e.g. `minutes_start_recording`, `minutes_search_meetings`).
 
 ### Claude Code (Plugin)
 
@@ -1067,16 +1067,16 @@ agent_args = []           # Optional extra args, e.g. ["--dangerously-skip-permi
 
 ```
 minutes/
-├── crates/core/          34 Rust modules — the engine (shared by all interfaces)
-├── crates/cli/           CLI binary — 45 commands (recording, search, health, workflows)
+├── crates/core/          43 Rust modules — the engine (shared by all interfaces)
+├── crates/cli/           CLI binary — 47 commands (recording, search, health, workflows)
 ├── crates/whisper-guard/ Anti-hallucination toolkit (VAD gating, dedup, noise trimming)
 ├── crates/reader/        Lightweight read-only meeting parser (no audio deps)
 ├── crates/assets/        Bundled assets (demo.wav)
 ├── crates/sdk/           TypeScript SDK — `npm install minutes-sdk` (query meetings programmatically)
-├── crates/mcp/           MCP server — 26 tools + 6 resources + interactive dashboard
+├── crates/mcp/           MCP server — 29 tools + 6 resources + interactive dashboard
 │   └── ui/               MCP App dashboard (vanilla TS → single-file HTML)
 ├── tauri/                Menu bar app — system tray, recording UI, singleton AI Assistant
-└── .claude/plugins/minutes/   Claude Code plugin — 18 skills + 1 agent + 2 hooks
+└── .claude/plugins/minutes/   Claude Code plugin — 19 skills + 1 agent + 2 hooks
 ```
 
 Single `minutes-core` library shared by CLI, MCP server, and Tauri app. Zero code duplication.

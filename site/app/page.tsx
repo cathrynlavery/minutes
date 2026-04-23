@@ -1,13 +1,19 @@
 import { CopyButton } from "@/components/copy-button";
 import { APPLE_SILICON_DOWNLOAD_PATH } from "@/lib/downloads";
-import { WINDOWS_SETUP_EXE } from "@/lib/release";
+import {
+  MINUTES_CLI_COMMAND_COUNT,
+  MINUTES_MCP_TOOL_COUNT,
+  MINUTES_RELEASE_VERSION,
+  MINUTES_TEST_COUNT,
+  WINDOWS_SETUP_EXE,
+} from "@/lib/release";
 
 const featureGrid = [
   {
     label: "For agents",
     title: "Memory with structure",
     description:
-      "26 MCP tools and structured markdown let Claude, Codex, Gemini CLI, and Cowork query what happened instead of guessing.",
+      `${MINUTES_MCP_TOOL_COUNT} MCP tools and structured markdown let Claude, Codex, Gemini CLI, and Cowork query what happened instead of guessing.`,
   },
   {
     label: "For developers",
@@ -93,7 +99,7 @@ const capabilityColumns = [
       ],
       [
         "Claude-native",
-        "26 MCP tools for Claude Desktop, Cowork, Dispatch, and Claude Code.",
+        `${MINUTES_MCP_TOOL_COUNT} MCP tools for Claude Desktop, Cowork, Dispatch, and Claude Code.`,
       ],
       [
         "Any LLM",
@@ -111,7 +117,7 @@ const comparisons = [
   ["Local transcription", "No", "No", "Yes", "Yes"],
   ["Open source", "No", "No", "Yes", "MIT"],
   ["Free", "$18/mo", "Freemium", "Free", "Free"],
-  ["AI agent integration", "No", "No", "No", "26 MCP tools"],
+  ["AI agent integration", "No", "No", "No", `${MINUTES_MCP_TOOL_COUNT} MCP tools`],
   ["Cross-meeting intelligence", "No", "No", "No", "Yes"],
   ["Dictation mode", "No", "No", "No", "Yes"],
   ["Voice memos", "No", "No", "No", "iPhone pipeline"],
@@ -240,7 +246,8 @@ export default function Home() {
           Open-source. MCP-native.
         </p>
         <p className="mx-auto mb-5 max-w-[720px] font-mono text-[12px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-          v0.13.2 • 26 MCP tools • 45 CLI commands • 620 tests
+          v{MINUTES_RELEASE_VERSION} • {MINUTES_MCP_TOOL_COUNT} MCP tools •{" "}
+          {MINUTES_CLI_COMMAND_COUNT} CLI commands • {MINUTES_TEST_COUNT}+ tests
         </p>
         <h1 className="mx-auto max-w-[720px] font-serif text-[40px] leading-[0.98] tracking-[-0.045em] text-[var(--text)] sm:text-[58px]">
           Every meeting, memo, and voice note,
@@ -288,11 +295,14 @@ export default function Home() {
         </p>
 
         <p className="mx-auto mt-4 max-w-[620px] text-[14px] leading-6 text-[var(--text-secondary)]">
-          v0.12.0 makes Parakeet multilingual by default. New installs use
-          <span className="mx-1 font-mono text-[var(--text)]">tdt-600m</span>
-          instead of the old English-only
-          <span className="mx-1 font-mono text-[var(--text)]">tdt-ctc-110m</span>,
-          with native VAD, watcher batching, and opt-in fp16 and vocabulary boosts.
+          v0.14.0 promotes desktop context to a first-class MCP surface with
+          <span className="mx-1 font-mono text-[var(--text)]">activity_summary</span>,
+          <span className="mx-1 font-mono text-[var(--text)]">search_context</span>, and
+          <span className="mx-1 font-mono text-[var(--text)]">get_moment</span>,
+          adds the
+          <span className="mx-1 font-mono text-[var(--text)]">/minutes-video-review</span>
+          workflow for Looms and screen recordings, and ships a self-healing
+          Claude Desktop extension with capability-based tool gating.
         </p>
 
         <div className="mt-12">
@@ -352,10 +362,11 @@ export default function Home() {
         </div>
 
         <p className="mt-4 text-[13px] text-[var(--text-secondary)]">
-          Download, install, done. First launch downloads a speech model. Existing
-          Parakeet users should run
+          Download, install, done. First launch downloads a speech model. Run
           <span className="mx-1 font-mono text-[var(--text)]">minutes setup --parakeet</span>
-          to fetch the new multilingual default, or pin the old 110m model in config.
+          for the multilingual Parakeet backend, or
+          <span className="mx-1 font-mono text-[var(--text)]">minutes setup --demo</span>
+          to try the pipeline on five bundled fixture meetings.
         </p>
 
         <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -400,11 +411,12 @@ export default function Home() {
                                 Ollama`}
         </pre>
         <p className="mt-5 max-w-[660px] text-[15px] leading-7 text-[var(--text-secondary)]">
-          Transcription is local via whisper.cpp or parakeet.cpp. In v0.12.0,
-          Parakeet is multilingual by default and uses native VAD to avoid the
-          old fixed 45-second slices. Summarization is optional. Claude can do
-          it conversationally when you ask, using your existing subscription.
-          No API keys are required to get useful output.
+          Transcription is local via whisper.cpp or parakeet.cpp. Parakeet is
+          multilingual by default with native VAD. Live transcription falls
+          back cleanly through Apple Speech, Parakeet, and Whisper.
+          Summarization is optional — Claude can do it conversationally when
+          you ask, using your existing subscription. No API keys are required
+          to get useful output.
         </p>
       </section>
 
