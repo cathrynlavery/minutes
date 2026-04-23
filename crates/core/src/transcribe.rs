@@ -216,7 +216,10 @@ impl DecodeHints {
 
     #[cfg(feature = "parakeet")]
     fn parakeet_local_boost_phrases(&self) -> Vec<String> {
-        self.combined_phrases(8)
+        self.priority_phrases
+            .iter()
+            .take(8)
+            .cloned()
             .into_iter()
             .filter(|phrase| {
                 let has_digit = phrase.chars().any(|c| c.is_ascii_digit());
@@ -3548,10 +3551,23 @@ Hello there.
         );
 
         let phrases = combined_parakeet_boost_phrases(&config, &hints);
-        assert_eq!(
-            phrases,
-            vec!["Alex Chen".to_string(), "X1 Planning".to_string(),]
+        assert_eq!(phrases, vec!["Alex Chen".to_string(),]);
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
+    fn local_parakeet_hints_keep_priority_names_and_drop_context_terms() {
+        let config = Config::default();
+        let hints = DecodeHints::from_candidates(
+            &["Garrett Gunderson".to_string()],
+            &[
+                "Wealth Factory".to_string(),
+                "direct response projects".to_string(),
+            ],
         );
+
+        let phrases = combined_parakeet_boost_phrases(&config, &hints);
+        assert_eq!(phrases, vec!["Garrett Gunderson".to_string()]);
     }
 
     #[test]
