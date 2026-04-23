@@ -1985,6 +1985,106 @@ fn append_parakeet_boost_args(
 }
 
 #[cfg(feature = "parakeet")]
+fn parakeet_gpu_unavailable(stderr: &str) -> bool {
+    stderr.contains("Metal GPU not available")
+}
+
+#[cfg(feature = "parakeet")]
+fn build_parakeet_command(
+    binary: &str,
+    model_str: &str,
+    audio_args: &[&str],
+    vocab_str: &str,
+    model_id: &str,
+    use_gpu: bool,
+    use_fp16: bool,
+    vad_path: Option<&str>,
+    vad_threshold: f32,
+    config: &Config,
+    hints: &DecodeHints,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(binary);
+    command.arg(model_str);
+    for audio_arg in audio_args {
+        command.arg(audio_arg);
+    }
+    command
+        .args(["--vocab", vocab_str])
+        .args(["--model", model_id])
+        .arg("--timestamps");
+    if use_gpu {
+        command.arg("--gpu");
+        if use_fp16 {
+            command.arg("--fp16");
+        }
+    }
+    if let Some(vad_path) = vad_path {
+        command
+            .args(["--vad", vad_path])
+            .args(["--vad-threshold", &vad_threshold.to_string()]);
+    }
+    append_parakeet_boost_args(&mut command, config, hints);
+    command
+}
+
+#[cfg(feature = "parakeet")]
+fn run_parakeet_command_with_cpu_fallback(
+    binary: &str,
+    model_str: &str,
+    audio_args: &[&str],
+    vocab_str: &str,
+    model_id: &str,
+    use_gpu: bool,
+    use_fp16: bool,
+    vad_path: Option<&str>,
+    vad_threshold: f32,
+    config: &Config,
+    hints: &DecodeHints,
+) -> Result<(std::process::Output, bool), TranscribeError> {
+    let mut attempted_gpu = use_gpu;
+    loop {
+        let output = build_parakeet_command(
+            binary,
+            model_str,
+            audio_args,
+            vocab_str,
+            model_id,
+            attempted_gpu,
+            use_fp16 && attempted_gpu,
+            vad_path,
+            vad_threshold,
+            config,
+            hints,
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                TranscribeError::ParakeetNotFound
+            } else {
+                TranscribeError::ParakeetFailed(format!("spawn error: {}", e))
+            }
+        })?;
+
+        if output.status.success() {
+            return Ok((output, attempted_gpu));
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if attempted_gpu && parakeet_gpu_unavailable(&stderr) {
+            tracing::warn!("parakeet GPU path unavailable at runtime; retrying on CPU");
+            attempted_gpu = false;
+            continue;
+        }
+
+        return Err(TranscribeError::ParakeetFailed(
+            stderr.lines().last().unwrap_or("unknown error").to_string(),
+        ));
+    }
+}
+
+#[cfg(feature = "parakeet")]
 fn resolve_minutes_parakeet_helper() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("MINUTES_PARAKEET_HELPER") {
         let path = PathBuf::from(explicit);
@@ -2030,8 +2130,6 @@ pub fn run_parakeet_cli_structured(
     config: &Config,
     hints: &DecodeHints,
 ) -> Result<ParakeetCliTranscript, TranscribeError> {
-    use std::process::Command;
-
     let model_str = model_path
         .to_str()
         .ok_or_else(|| TranscribeError::ParakeetFailed("model path is not valid UTF-8".into()))?;
@@ -2043,43 +2141,19 @@ pub fn run_parakeet_cli_structured(
         .ok_or_else(|| TranscribeError::ParakeetFailed("vocab path is not valid UTF-8".into()))?;
 
     let use_fp16 = use_gpu && config.transcription.parakeet_fp16;
-    let mut command = Command::new(binary);
-    command
-        .arg(model_str)
-        .arg(wav_str)
-        .args(["--vocab", vocab_str])
-        .args(["--model", model_id])
-        .arg("--timestamps");
-    if use_gpu {
-        command.arg("--gpu");
-        if use_fp16 {
-            command.arg("--fp16");
-        }
-    }
-    if let Some(vad_path) = vad_path.and_then(|path| path.to_str()) {
-        command
-            .args(["--vad", vad_path])
-            .args(["--vad-threshold", &vad_threshold.to_string()]);
-    }
-    append_parakeet_boost_args(&mut command, config, hints);
-    let output = command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                TranscribeError::ParakeetNotFound
-            } else {
-                TranscribeError::ParakeetFailed(format!("spawn error: {}", e))
-            }
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TranscribeError::ParakeetFailed(
-            stderr.lines().last().unwrap_or("unknown error").to_string(),
-        ));
-    }
+    let (output, _used_gpu) = run_parakeet_command_with_cpu_fallback(
+        binary,
+        model_str,
+        &[wav_str],
+        vocab_str,
+        model_id,
+        use_gpu,
+        use_fp16,
+        vad_path.and_then(|path| path.to_str()),
+        vad_threshold,
+        config,
+        hints,
+    )?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let (parsed, _transcript, _stats) = parse_parakeet_output(&stdout, config)?;
@@ -2099,8 +2173,6 @@ pub fn run_parakeet_cli_structured_batch(
     config: &Config,
     hints: &DecodeHints,
 ) -> Result<Vec<Result<ParakeetCliTranscript, TranscribeError>>, TranscribeError> {
-    use std::process::Command;
-
     if audio_paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -2112,51 +2184,29 @@ pub fn run_parakeet_cli_structured_batch(
         .to_str()
         .ok_or_else(|| TranscribeError::ParakeetFailed("vocab path is not valid UTF-8".into()))?;
 
-    let mut command = Command::new(binary);
-    command.arg(model_str);
-    for audio_path in audio_paths {
-        let wav_str = audio_path.to_str().ok_or_else(|| {
-            TranscribeError::ParakeetFailed("audio path is not valid UTF-8".into())
-        })?;
-        command.arg(wav_str);
-    }
-    command
-        .args(["--vocab", vocab_str])
-        .args(["--model", model_id])
-        .arg("--timestamps");
-
     let use_fp16 = use_gpu && config.transcription.parakeet_fp16;
-    if use_gpu {
-        command.arg("--gpu");
-        if use_fp16 {
-            command.arg("--fp16");
-        }
-    }
-    if let Some(vad_path) = vad_path.and_then(|path| path.to_str()) {
-        command
-            .args(["--vad", vad_path])
-            .args(["--vad-threshold", &vad_threshold.to_string()]);
-    }
-    append_parakeet_boost_args(&mut command, config, hints);
+    let audio_args = audio_paths
+        .iter()
+        .map(|audio_path| {
+            audio_path.to_str().ok_or_else(|| {
+                TranscribeError::ParakeetFailed("audio path is not valid UTF-8".into())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let output = command
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                TranscribeError::ParakeetNotFound
-            } else {
-                TranscribeError::ParakeetFailed(format!("spawn error: {}", e))
-            }
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TranscribeError::ParakeetFailed(
-            stderr.lines().last().unwrap_or("unknown error").to_string(),
-        ));
-    }
+    let (output, _used_gpu) = run_parakeet_command_with_cpu_fallback(
+        binary,
+        model_str,
+        &audio_args,
+        vocab_str,
+        model_id,
+        use_gpu,
+        use_fp16,
+        vad_path.and_then(|path| path.to_str()),
+        vad_threshold,
+        config,
+        hints,
+    )?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_parakeet_batch_output(&stdout, audio_paths.len(), config)
@@ -2561,8 +2611,6 @@ pub fn transcribe_parakeet_batch(
 
 #[cfg(feature = "parakeet")]
 pub fn warmup_parakeet(config: &Config) -> Result<ParakeetWarmupStats, TranscribeError> {
-    use std::process::Command;
-
     let model_path = resolve_parakeet_model_path(config)?;
     let vocab_path = resolve_parakeet_vocab_path(config)?;
     let resolved_binary = crate::parakeet::resolve_parakeet_binary(
@@ -2593,44 +2641,22 @@ pub fn warmup_parakeet(config: &Config) -> Result<ParakeetWarmupStats, Transcrib
     let used_gpu = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     let used_fp16 = used_gpu && config.transcription.parakeet_fp16;
     let started = Instant::now();
-    let mut command = Command::new(&resolved_binary);
-    command
-        .arg(model_str)
-        .arg(wav_str)
-        .args(["--vocab", vocab_str])
-        .args(["--model", &config.transcription.parakeet_model])
-        .arg("--timestamps");
-    if used_gpu {
-        command.arg("--gpu");
-        if used_fp16 {
-            command.arg("--fp16");
-        }
-    }
-    if let Some(vad_path) = native_vad_path.as_ref().and_then(|path| path.to_str()) {
-        command.args(["--vad", vad_path]).args([
-            "--vad-threshold",
-            &PARAKEET_NATIVE_VAD_THRESHOLD.to_string(),
-        ]);
-    }
-    append_parakeet_boost_args(&mut command, config, &DecodeHints::default());
-    let output = command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                TranscribeError::ParakeetNotFound
-            } else {
-                TranscribeError::ParakeetFailed(format!("spawn error: {}", e))
-            }
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TranscribeError::ParakeetFailed(
-            stderr.lines().last().unwrap_or("unknown error").to_string(),
-        ));
-    }
+    let resolved_binary_str = resolved_binary.to_str().ok_or_else(|| {
+        TranscribeError::ParakeetFailed("resolved parakeet binary path is not valid UTF-8".into())
+    })?;
+    let (_output, used_gpu) = run_parakeet_command_with_cpu_fallback(
+        resolved_binary_str,
+        model_str,
+        &[wav_str],
+        vocab_str,
+        &config.transcription.parakeet_model,
+        used_gpu,
+        used_fp16,
+        native_vad_path.as_ref().and_then(|path| path.to_str()),
+        PARAKEET_NATIVE_VAD_THRESHOLD,
+        config,
+        &DecodeHints::default(),
+    )?;
 
     Ok(ParakeetWarmupStats {
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -3526,5 +3552,12 @@ Hello there.
             phrases,
             vec!["Alex Chen".to_string(), "X1 Planning".to_string(),]
         );
+    }
+
+    #[test]
+    #[cfg(feature = "parakeet")]
+    fn parakeet_gpu_unavailable_matches_runtime_error() {
+        assert!(parakeet_gpu_unavailable("Error: Metal GPU not available"));
+        assert!(!parakeet_gpu_unavailable("Error: tokenizer file missing"));
     }
 }
