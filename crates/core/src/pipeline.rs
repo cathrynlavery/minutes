@@ -4867,10 +4867,15 @@ mod tests {
         let audio_path = dir.path().join("memo.wav");
         std::fs::write(&audio_path, vec![0u8; 64_044]).unwrap();
 
-        let mut config = Config::default();
-        config.output_dir = dir.path().to_path_buf();
-        config.identity.name = Some("Mat".into());
-        config.identity.aliases = vec!["Matt".into()];
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            identity: IdentityConfig {
+                name: Some("Mat".into()),
+                aliases: vec!["Matt".into()],
+                ..IdentityConfig::default()
+            },
+            ..Config::default()
+        };
 
         let context = BackgroundPipelineContext {
             calendar_event: Some(crate::calendar::CalendarEvent {
