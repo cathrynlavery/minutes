@@ -75,3 +75,6 @@ tmp/
 docs/assets/demo*
 .agents/napkin.md
 .claude/scheduled_tasks.lock
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
