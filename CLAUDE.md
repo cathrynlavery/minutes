@@ -221,8 +221,6 @@ gh run list --workflow="Release Windows Desktop" --limit 1
 ```
 If any fail, fix on `main`, `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`, re-tag at the new commit, and re-run from step 7. (Cheap because the release is still a draft.)
 
-**Known exception**: `Release macOS` fails with `A required agreement is missing or has expired` when Apple Developer Program enrollment is pending or the agreement hasn't been signed. That is environmental, not a code issue — proceed to step 9 with the understanding that the signed/notarized DMG won't be in this release.
-
 ### 9. Publish the draft
 ```bash
 gh release edit vX.Y.Z --draft=false
