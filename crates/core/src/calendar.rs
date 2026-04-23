@@ -1,7 +1,11 @@
+#[cfg(any(test, target_os = "macos"))]
 use std::process::Command;
+#[cfg(any(test, target_os = "macos"))]
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Local, Timelike};
+use chrono::{DateTime, Local};
+#[cfg(target_os = "macos")]
+use chrono::{Datelike, Timelike};
 
 // ──────────────────────────────────────────────────────────────
 // Calendar integration — upcoming meetings from macOS Calendar.
@@ -16,14 +20,18 @@ use chrono::{DateTime, Datelike, Local, Timelike};
 /// Maximum time to wait for a calendar subprocess before giving up.
 /// Calendar queries should complete in <1s when Calendar.app is healthy.
 /// 3s is generous enough for slow CalDAV syncs but doesn't freeze the app.
+#[cfg(any(test, target_os = "macos"))]
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(any(test, target_os = "macos"))]
 const EVENTKIT_OVERLAP_LOOKAHEAD_MINUTES: u32 = 120;
+#[cfg(any(test, target_os = "macos"))]
 const EVENTKIT_OVERLAP_LOOKBACK_MINUTES: u32 = 120;
 
 /// Run a Command with a timeout. Returns None if the process hangs or fails to start.
 ///
 /// On Unix, the child is placed in its own process group so that the entire
 /// group (including any grandchild processes) can be killed on timeout.
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn output_with_timeout(
     mut cmd: Command,
     timeout: Duration,
@@ -378,6 +386,7 @@ return output"#
 }
 
 /// Parse EventKit helper JSON output, extracting meeting URLs from raw location strings.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_eventkit_output(stdout: &str) -> Vec<CalendarEvent> {
     stdout
         .lines()
@@ -393,6 +402,7 @@ fn parse_eventkit_output(stdout: &str) -> Vec<CalendarEvent> {
 }
 
 /// Deduplicate events by title, keeping the one closest to now.
+#[cfg(any(test, target_os = "macos"))]
 fn dedup_events(events: &mut Vec<CalendarEvent>) {
     events.sort_by_key(|e| (e.title.clone(), e.minutes_until.abs()));
     events.dedup_by(|a, b| a.title == b.title);
@@ -401,6 +411,7 @@ fn dedup_events(events: &mut Vec<CalendarEvent>) {
 }
 
 /// Query via compiled Swift EventKit helper (if available and permitted).
+#[cfg(target_os = "macos")]
 fn query_via_eventkit(lookahead_minutes: u32) -> Option<Vec<CalendarEvent>> {
     let helper = find_calendar_helper()?;
 
@@ -418,11 +429,13 @@ fn query_via_eventkit(lookahead_minutes: u32) -> Option<Vec<CalendarEvent>> {
 
 /// Query overlapping events via EventKit helper with a backward+forward window.
 /// Returns None if the helper is missing or fails (triggers AppleScript fallback).
+#[cfg(target_os = "macos")]
 fn query_overlap_via_eventkit(reference_epoch_seconds: Option<i64>) -> Option<Vec<CalendarEvent>> {
     let helper = find_calendar_helper()?;
     query_overlap_via_eventkit_with_helper(&helper, reference_epoch_seconds)
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn query_overlap_via_eventkit_with_helper(
     helper: &std::path::Path,
     reference_epoch_seconds: Option<i64>,
@@ -467,6 +480,7 @@ fn query_overlap_via_eventkit_with_helper(
 ///
 /// The workspace root is derived from `CARGO_MANIFEST_DIR` at compile time
 /// so it works regardless of where the user cloned the repo.
+#[cfg(target_os = "macos")]
 fn find_calendar_helper() -> Option<std::path::PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
