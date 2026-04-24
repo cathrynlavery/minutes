@@ -349,6 +349,57 @@ Minutes should remain:
 - **Codex-friendly** because the CLI and markdown store are stable
 - **OpenAI-compatible** because the integration boundary is tool calling/MCP/CLI, not product-specific APIs
 
+### Current Execution Priority — World-Class Cohesion Epic
+
+_Updated 2026-04-24 after the sidecar overlay store landed._
+
+The active launch-quality program is `minutes-8zgi`: make Minutes feel
+world-class across product, UX, UI, and proof. The next move is not another
+backend optimization round. The next move is the now-unblocked P1 cohesion
+slice:
+
+**`minutes-8zgi.2` — Make Recall, artifacts, and command surfaces feel like one
+coherent product.**
+
+Why this is next:
+
+- `minutes-43ny` closed the hard architecture blocker by moving user-confirmed
+  state into `~/.minutes/overlays.db` while preserving immutable markdown.
+- Overlay-aware reporting now proves the same correction can flow into
+  query/report surfaces.
+- The remaining launch risk is whether that architecture is visible as a
+  coherent human workflow, not whether the graph rebuild path is faster.
+- The acceptance bar is a demoable end-to-end correction loop: a user corrects
+  a speaker in one surface, the correction persists, and Recall/MCP/CLI/artifact
+  review surfaces all reflect it without mutating historical markdown.
+
+Execution protocol:
+
+- Start with a repo-grounded workflow map of the correction path:
+  desktop/command surface -> overlay write -> projection/reporting -> Recall/MCP
+  surfaces -> artifact/review presentation.
+- Use adversarial review gates already tracked in beads, especially
+  `minutes-8zgi.7`, before letting the cohesion work feed visual polish.
+- Use subagents only when useful for parallel exploration, visual/screenshot
+  review, or disjoint implementation ownership. Do not hand off the immediate
+  blocker when the next local step depends on it.
+- Any design/layout touch must be verified visually on real surfaces before
+  shipping. Screenshots, state-transition checks, and mobile/desktop layout
+  checks are part of done, not polish theater.
+
+Strategic sequencing:
+
+- `minutes-v6zf` remains a valid P2 engineering follow-up, but it should stay
+  parked until there is real graph-rebuild pain or the launch-quality cohesion
+  work has landed. Do not deepen investment in derived graph caching ahead of a
+  user-visible payoff.
+- If the next choice is pure differentiator work rather than UX cohesion,
+  `minutes-h1zm` is the higher-leverage P1 alternative because proper-name
+  rescue sits directly on the audio-to-agent bridge.
+- The graph should remain a rebuildable derived cache. The durable product
+  contract is markdown artifacts plus sidecar overlays plus just-in-time agent
+  access.
+
 ### UX Opportunities Worth Adopting In A Minutes-Native Way
 
 #### A. Original Earcon System
