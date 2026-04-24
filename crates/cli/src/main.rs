@@ -6838,6 +6838,7 @@ fn cmd_confirm(
     config: &Config,
 ) -> Result<()> {
     use minutes_core::diarize::{AttributionSource, Confidence};
+    use minutes_core::overlays;
     use minutes_core::voice;
 
     if !meeting_path.exists() {
@@ -6849,7 +6850,7 @@ fn cmd_confirm(
 
     // Read the meeting file
     let content = std::fs::read_to_string(meeting_path)?;
-    let (yaml_str, body) = minutes_core::markdown::split_frontmatter(&content);
+    let (yaml_str, _body) = minutes_core::markdown::split_frontmatter(&content);
 
     if yaml_str.is_empty() {
         return Err(anyhow::anyhow!("Meeting has no YAML frontmatter"));
@@ -6867,6 +6868,7 @@ fn cmd_confirm(
 
     // Load meeting embeddings (for optional voice save)
     let meeting_embeddings = voice::load_meeting_embeddings(meeting_path);
+    let mut overlay_writes: Vec<(String, String, String)> = Vec::new();
 
     // Non-interactive mode: confirm a specific speaker
     if let (Some(speaker_label), Some(new_name)) = (speaker, name) {
@@ -6877,9 +6879,11 @@ fn cmd_confirm(
 
         if let Some(attr) = found {
             let old_confidence = attr.confidence;
+            let old_name = attr.name.clone();
             attr.name = new_name.to_string();
             attr.confidence = Confidence::High;
             attr.source = AttributionSource::Manual;
+            overlay_writes.push((speaker_label.to_string(), new_name.to_string(), old_name));
             eprintln!(
                 "Confirmed: {} = {} (was {:?} → High)",
                 speaker_label, new_name, old_confidence
@@ -6959,16 +6963,20 @@ fn cmd_confirm(
                 || input.eq_ignore_ascii_case("y")
                 || input.eq_ignore_ascii_case("yes")
             {
+                let old_name = attr.name.clone();
                 attr.confidence = Confidence::High;
                 attr.source = AttributionSource::Manual;
+                overlay_writes.push((attr.speaker_label.clone(), attr.name.clone(), old_name));
                 eprintln!("    → Confirmed: {} = {}", attr.speaker_label, attr.name);
             } else if input.eq_ignore_ascii_case("n") || input.eq_ignore_ascii_case("no") {
                 eprintln!("    → Skipped");
             } else {
                 // User typed a different name
+                let old_name = attr.name.clone();
                 attr.name = input.to_string();
                 attr.confidence = Confidence::High;
                 attr.source = AttributionSource::Manual;
+                overlay_writes.push((attr.speaker_label.clone(), attr.name.clone(), old_name));
                 eprintln!("    → Updated: {} = {}", attr.speaker_label, attr.name);
             }
         }
@@ -7009,13 +7017,25 @@ fn cmd_confirm(
         }
     }
 
-    // Rewrite the meeting file with updated speaker_map
-    // Also apply High-confidence names to transcript body
-    let new_body = minutes_core::diarize::apply_confirmed_names(body, &frontmatter.speaker_map);
-    let new_yaml = serde_yaml::to_string(&frontmatter)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize frontmatter: {}", e))?;
-    let new_content = format!("---\n{}---\n{}", new_yaml, new_body);
-    std::fs::write(meeting_path, new_content)?;
+    for (speaker_label, confirmed_name, previous_name) in &overlay_writes {
+        overlays::write_speaker_confirmation(
+            meeting_path,
+            speaker_label,
+            confirmed_name,
+            Some(previous_name),
+            Some("minutes confirm"),
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+
+    if !overlay_writes.is_empty() {
+        if let Err(error) = minutes_core::graph::rebuild_index(config) {
+            eprintln!(
+                "Warning: speaker overlay saved, but graph rebuild failed: {}",
+                error
+            );
+        }
+    }
 
     let confirmed_count = frontmatter
         .speaker_map
@@ -7023,7 +7043,7 @@ fn cmd_confirm(
         .filter(|a| a.confidence == Confidence::High)
         .count();
     eprintln!(
-        "\nMeeting updated: {}/{} speakers confirmed.",
+        "\nSpeaker overlay updated: {}/{} speakers confirmed. Meeting markdown was not rewritten.",
         confirmed_count,
         frontmatter.speaker_map.len()
     );

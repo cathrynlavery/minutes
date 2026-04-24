@@ -2510,7 +2510,7 @@ registerTool(
 
 registerTool(
   "confirm_speaker",
-  "Confirm or correct a speaker attribution in a meeting. Promotes the attribution to High confidence and rewrites the transcript label. Optionally saves the speaker's voice profile for future meetings.",
+  "Confirm or correct a speaker attribution in a meeting. Stores the correction in Minutes' sidecar overlay store so the original markdown capture stays immutable. Optionally saves the speaker's voice profile for future meetings.",
   {
     meeting: z.string().describe("Path to the meeting markdown file"),
     speaker_label: z.string().describe("Speaker label to confirm (e.g., SPEAKER_1)"),

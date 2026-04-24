@@ -191,9 +191,40 @@ levels (L0-L3):
 - **L3** (user-confirmed): the user explicitly confirmed this attribution.
   Highest trust once set.
 
-Only attributions at `high` confidence rewrite transcript speaker labels.
-Lower-confidence attributions stay as `SPEAKER_N` tokens in the transcript
-with the best-guess name in `speaker_map`.
+High-confidence attributions can be used by renderers and graph projections as
+the speaker's real name. The raw transcript remains valid even when it keeps
+`SPEAKER_N` tokens; later user confirmations are layered through the overlay
+contract below instead of rewriting historical files.
+
+### Overlay contract
+
+Minutes treats meeting markdown as raw capture. System-driven confirmations do
+not rewrite historical meeting files, even when a user confirms that
+`SPEAKER_1` is Alex Kim or merges an alias.
+
+User-confirmed and derived state lives in a sidecar SQLite database:
+
+```text
+~/.minutes/overlays.db
+```
+
+The current overlay table stores additive rows with these fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `entity_key` | string | Stable target key. Speaker confirmations use `meeting:<absolute-path>#speaker:<label>`. |
+| `overlay_type` | string | Overlay family, e.g. `speaker`. |
+| `value` | string | Confirmed value. For speaker overlays this is the real speaker name. |
+| `confidence` | string | `high`, `medium`, or `low`. User confirmations write `high`. |
+| `source` | string | `manual`, `llm`, `deterministic`, or `enrollment`. User confirmations write `manual`. |
+| `reversible_to` | string? | Previous value, when known, so clients can explain or undo the overlay. |
+| `note` | string? | Optional provenance note. |
+| `created_at` | string | RFC3339 timestamp for the overlay write. |
+
+`graph.db` remains a rebuildable projection. Rebuilding the graph reads the
+markdown corpus, then layers `overlays.db` on top. A third-party tool that only
+reads `~/meetings/` still gets the raw source material; a tool that wants
+user-confirmed state can also read `overlays.db`.
 
 ---
 

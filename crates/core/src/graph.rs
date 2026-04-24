@@ -1,5 +1,7 @@
 use crate::config::Config;
+use crate::diarize::SpeakerAttribution;
 use crate::markdown::{split_frontmatter, ContentType, Frontmatter};
+use crate::overlays;
 use crate::person_identity::PersonCanonicalizer;
 use chrono::Local;
 use rusqlite::{params, Connection};
@@ -355,6 +357,7 @@ pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, Grap
     }
 
     let conn = open_db(path)?;
+    let overlay_db_path = overlays::db_path_for_graph_path(path);
 
     // Wrap entire rebuild in a transaction for atomicity.
     // If killed mid-rebuild, the old data remains intact.
@@ -419,6 +422,8 @@ pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, Grap
         };
         let date_str = frontmatter.date.to_rfc3339();
         let duration_secs = parse_duration_secs(&frontmatter.duration);
+        let speaker_map =
+            speaker_map_with_overlays(&frontmatter.speaker_map, &overlay_db_path, file_path);
 
         // Insert meeting
         conn.execute(
@@ -440,8 +445,7 @@ pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, Grap
             .chain(frontmatter.people.iter().map(String::as_str))
             .chain(speakers.iter().map(String::as_str))
             .chain(
-                frontmatter
-                    .speaker_map
+                speaker_map
                     .iter()
                     .filter(|attr| attr.confidence == crate::diarize::Confidence::High)
                     .map(|attr| attr.name.as_str()),
@@ -504,7 +508,15 @@ pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, Grap
         }
 
         // Source 4: transcript speaker labels [NAME HH:MM] or [NAME M:SS]
+        let confirmed_speaker_label_slugs: HashSet<String> = speaker_map
+            .iter()
+            .filter(|attr| attr.confidence == crate::diarize::Confidence::High)
+            .map(|attr| slugify(&attr.speaker_label))
+            .collect();
         for speaker in &speakers {
+            if confirmed_speaker_label_slugs.contains(&slugify(speaker)) {
+                continue;
+            }
             if let Some(identity) = canonicalizer.resolve(speaker) {
                 push_file_person(
                     &mut file_people,
@@ -517,7 +529,7 @@ pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, Grap
         }
 
         // Source 5: speaker_map (confirmed speaker attributions)
-        for attr in &frontmatter.speaker_map {
+        for attr in &speaker_map {
             if attr.confidence == crate::diarize::Confidence::High {
                 if let Some(identity) = canonicalizer.resolve(&attr.name) {
                     push_file_person(
@@ -704,6 +716,25 @@ pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, Grap
         alias_suggestions,
         rebuild_ms: elapsed,
     })
+}
+
+fn speaker_map_with_overlays(
+    speaker_map: &[SpeakerAttribution],
+    overlay_db_path: &Path,
+    meeting_path: &Path,
+) -> Vec<SpeakerAttribution> {
+    let mut combined = speaker_map.to_vec();
+    match overlays::load_speaker_confirmations_for_meeting_at(overlay_db_path, meeting_path) {
+        Ok(confirmations) => overlays::apply_speaker_confirmations(&mut combined, &confirmations),
+        Err(error) => {
+            tracing::warn!(
+                path = %meeting_path.display(),
+                error = %error,
+                "failed to load speaker overlays; using markdown speaker_map only"
+            );
+        }
+    }
+    combined
 }
 
 // ── Queries ───────────────────────────────────────────────────
@@ -1326,6 +1357,65 @@ Skip the wizard. Drop users into a pre-populated demo workspace.
         assert!(stats.people_count >= 2); // Sarah + Alex (from attendees + transcript)
         assert_eq!(stats.meeting_count, 1);
         assert!(stats.commitment_count >= 3); // 1 action_item + 1 intent + 1 decision + transcript patterns
+    }
+
+    #[test]
+    fn rebuild_layers_speaker_overlays_without_rewriting_markdown() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let meeting = meetings.join("speaker.md");
+        let content = r#"---
+title: Speaker Review
+type: meeting
+date: 2026-03-20T14:00:00-07:00
+duration: 10m
+attendees: []
+speaker_map:
+  - speaker_label: SPEAKER_0
+    name: Unknown Speaker
+    confidence: medium
+    source: llm
+---
+
+## Transcript
+[SPEAKER_0 0:00] I will send the follow-up.
+"#;
+        fs::write(&meeting, content).unwrap();
+
+        let graph_db = tmp.path().join("graph.db");
+        let overlay_db = crate::overlays::db_path_for_graph_path(&graph_db);
+        crate::overlays::write_speaker_confirmation_at(
+            &overlay_db,
+            &meeting,
+            "SPEAKER_0",
+            "Alex Kim",
+            Some("Unknown Speaker"),
+            Some("test confirmation"),
+        )
+        .unwrap();
+
+        let config = test_config(&meetings);
+        rebuild_index_at(&config, &graph_db).unwrap();
+
+        let conn = open_db(&graph_db).unwrap();
+        let name: String = conn
+            .query_row(
+                "SELECT name FROM people WHERE slug = 'alex-kim'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, "Alex Kim");
+        let raw_speaker_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM people WHERE slug = 'speaker-0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw_speaker_count, 0);
+        assert_eq!(fs::read_to_string(&meeting).unwrap(), content);
     }
 
     #[test]
