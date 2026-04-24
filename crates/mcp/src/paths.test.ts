@@ -1,5 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
-import { homedir } from "os";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -21,18 +21,35 @@ describe("path normalization", () => {
   });
 
   it("accepts a meeting file when the configured root uses ${HOME}", () => {
-    const tempRoot = mkdtempSync(join(homedir(), "minutes-mcp-paths-"));
+    const tempRoot = mkdtempSync(join(tmpdir(), "minutes-mcp-paths-"));
     tempRoots.push(tempRoot);
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
-    const meetingsDir = join(tempRoot, "meetings");
-    mkdirSync(meetingsDir, { recursive: true });
+    try {
+      const meetingsDir = join(tempRoot, "meetings");
+      mkdirSync(meetingsDir, { recursive: true });
 
-    const meetingPath = join(meetingsDir, "2026-03-28-home-expansion.md");
-    writeFileSync(meetingPath, "# test meeting\n");
+      const meetingPath = join(meetingsDir, "2026-03-28-home-expansion.md");
+      writeFileSync(meetingPath, "# test meeting\n");
 
-    const configuredRoot = `\${HOME}/${tempRoot.slice(homedir().length + 1)}/meetings`;
-
-    expect(validatePathInDirectory(meetingPath, configuredRoot, [".md"])).toBe(meetingPath);
+      expect(validatePathInDirectory(meetingPath, "${HOME}/meetings", [".md"])).toBe(
+        realpathSync(meetingPath)
+      );
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      if (originalUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = originalUserProfile;
+      }
+    }
   });
 });
 

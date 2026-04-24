@@ -65,7 +65,7 @@ import { isCliCompatible } from "./version.js";
 import {
   hasFeature,
   probeCapabilitiesSync,
-  type CapabilityReport,
+  type CapabilityProbeResult,
 } from "./capabilities.js";
 
 crashTrace("imports-complete");
@@ -384,20 +384,21 @@ let MINUTES_BIN = findMinutesBinary();
 // ── Capability probe (Phase 2 of #183) ────────────────────────
 // Ask the CLI what it supports instead of inferring from version strings.
 // Synchronous so it can run before tool registrations at module load.
-// A `null` report means we could not probe (missing or old CLI): the
-// `hasFeature` helper treats that as "optimistic yes" so we preserve
-// backward compatibility with pre-0.14.0 CLIs that have no `capabilities`
-// subcommand.
-const CLI_CAPABILITIES: CapabilityReport | null =
+// Distinguish a truly missing CLI (first-run auto-install can still recover
+// later in the session) from an already-installed CLI that does not support
+// the capabilities contract and should stay fail-closed.
+const CLI_CAPABILITIES: CapabilityProbeResult =
   probeCapabilitiesSync(MINUTES_BIN);
-if (CLI_CAPABILITIES) {
+if (CLI_CAPABILITIES.kind === "report") {
   crashTrace("cli-capabilities-probed", {
-    cliVersion: CLI_CAPABILITIES.version,
-    apiVersion: CLI_CAPABILITIES.api_version,
-    featureCount: Object.keys(CLI_CAPABILITIES.features).length,
+    cliVersion: CLI_CAPABILITIES.report.version,
+    apiVersion: CLI_CAPABILITIES.report.api_version,
+    featureCount: Object.keys(CLI_CAPABILITIES.report.features).length,
   });
+} else if (CLI_CAPABILITIES.kind === "missing-cli") {
+  crashTrace("cli-capabilities-cli-missing");
 } else {
-  crashTrace("cli-capabilities-unknown");
+  crashTrace("cli-capabilities-unsupported");
 }
 
 // ── MCP server version ────────────────────────────────────────
@@ -1443,11 +1444,10 @@ registerDocsAppTool(
 );
 
 // ── Tool: activity_summary ──────────────────────────────────
-// Feature-gated (#183 phase 2). Hidden when the CLI does not report
-// activity_summary in its capability probe. On an older CLI that has no
-// `capabilities` subcommand, the probe returns null and `hasFeature`
-// resolves to true, so the tool is still exposed and any runtime call
-// surfaces a clear CLI error rather than silently disappearing.
+// Feature-gated (#183 phase 2). Hidden when an already-installed CLI does not
+// report activity_summary support. If the CLI is missing at boot, the tool
+// stays visible so first-run auto-install can still make it usable without a
+// server restart.
 
 if (hasFeature(CLI_CAPABILITIES, "activity_summary"))
 registerDocsAppTool(

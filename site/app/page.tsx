@@ -295,14 +295,11 @@ export default function Home() {
         </p>
 
         <p className="mx-auto mt-4 max-w-[620px] text-[14px] leading-6 text-[var(--text-secondary)]">
-          v0.14.0 promotes desktop context to a first-class MCP surface with
-          <span className="mx-1 font-mono text-[var(--text)]">activity_summary</span>,
-          <span className="mx-1 font-mono text-[var(--text)]">search_context</span>, and
-          <span className="mx-1 font-mono text-[var(--text)]">get_moment</span>,
-          adds the
-          <span className="mx-1 font-mono text-[var(--text)]">/minutes-video-review</span>
-          workflow for Looms and screen recordings, and ships a self-healing
-          Claude Desktop extension with capability-based tool gating.
+          v{MINUTES_RELEASE_VERSION} keeps the 0.14 desktop context tools,
+          <span className="mx-1 font-mono text-[var(--text)]">/minutes-video-review</span>,
+          and the self-healing Claude Desktop extension, while tightening the
+          first-wave regressions in call-end auto-stop and source-aware
+          diarization.
         </p>
 
         <div className="mt-12">

@@ -4,19 +4,18 @@
  * Phase 2 of #183: instead of guessing which MCP tools to expose based on
  * version strings, ask the CLI directly via `minutes capabilities --json`.
  * Tools whose backing CLI subcommand the report confirms get registered;
- * tools whose subcommand is missing (or whose feature key is absent, or
- * whose probe failed entirely) are hidden from the MCP tool list.
+ * tools whose subcommand is missing (or whose feature key is absent) stay
+ * hidden from the MCP tool list.
  *
- * The probe is synchronous so tool registration at module load can consult
- * it. If the CLI is missing, older, or crashes, the probe returns `null`
- * and `hasFeature(null, ...)` returns `false` — fail-closed. For the
- * specific features this module gates (new in 0.14.0), that matches
- * ground truth: a CLI too old to respond to `capabilities` is also too
- * old to have the backing subcommand, so hiding the tool is correct.
- *
- * The alternative (fail-open) was rejected because it produced tools that
- * fail at call time with "unknown subcommand" errors on older CLIs — the
- * exact UX problem #183 Phase 2 is meant to eliminate.
+ * The wrinkle is first-run `npx minutes-mcp`: the CLI may not exist at boot,
+ * but `isCliAvailable()` can auto-install it later in the same session. We
+ * therefore distinguish:
+ * - `missing-cli`: no binary was found at boot, so keep gated tools visible
+ *   and let later auto-install make them usable.
+ * - `unsupported-cli`: a binary exists, but the capabilities probe failed or
+ *   the payload is invalid. Treat as fail-closed and hide gated tools.
+ * - `report`: parsed capability payload; register only the features that are
+ *   explicitly `true`.
  */
 
 import { execFileSync } from "child_process";
@@ -30,23 +29,25 @@ export type CapabilityReport = {
   features: Record<string, boolean>;
 };
 
+export type CapabilityProbeResult =
+  | { kind: "report"; report: CapabilityReport }
+  | { kind: "missing-cli" }
+  | { kind: "unsupported-cli" };
+
 /**
  * Probe the installed CLI for its capability report. Synchronous so it
  * runs before tool registrations at module load.
  *
- * Returns `null` if:
- * - the binary does not exist on PATH or at the resolved path,
- * - the CLI is too old to have a `capabilities` subcommand,
- * - the output is not valid JSON,
- * - the output does not match the expected shape.
- *
- * A `null` return is a soft signal meaning "proceed optimistically"; the
- * caller should register all tools as if every feature is supported.
+ * Returns one of:
+ * - `{ kind: "report", report }` when the probe succeeds and parses.
+ * - `{ kind: "missing-cli" }` when the binary is not present at boot.
+ * - `{ kind: "unsupported-cli" }` when a binary exists but the capabilities
+ *   subcommand fails or returns invalid output.
  */
 export function probeCapabilitiesSync(
   binPath: string,
   options: { timeoutMs?: number } = {}
-): CapabilityReport | null {
+): CapabilityProbeResult {
   const timeoutMs = options.timeoutMs ?? 2000;
 
   let stdout: string;
@@ -58,11 +59,23 @@ export function probeCapabilitiesSync(
       // old (and prints an unknown-subcommand error to stderr).
       stdio: ["ignore", "pipe", "ignore"],
     });
-  } catch {
-    return null;
+  } catch (error: unknown) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "ENOENT"
+    ) {
+      return { kind: "missing-cli" };
+    }
+    return { kind: "unsupported-cli" };
   }
 
-  return parseCapabilityReport(stdout);
+  const report = parseCapabilityReport(stdout);
+  if (report === null) {
+    return { kind: "unsupported-cli" };
+  }
+  return { kind: "report", report };
 }
 
 /**
@@ -136,19 +149,18 @@ export function parseCapabilityReport(raw: string): CapabilityReport | null {
 /**
  * Decide whether to expose a feature-gated MCP tool.
  *
- * Fail-closed contract:
- * - `report === null`: probe failed or CLI is old/missing. Return `false`.
- *   The gated tool is hidden. For the Phase 2 gate set (features new in
- *   the same CLI release that introduced the `capabilities` subcommand),
- *   this matches ground truth: an old CLI is missing both the probe and
- *   the backing subcommand.
- * - `report !== null` and feature key is present and `true`: Return `true`.
- * - `report !== null` and feature key is `false` or missing: Return `false`.
+ * Registration contract:
+ * - `missing-cli`: return `true` so first-run auto-install sessions do not
+ *   permanently lose gated tools until restart.
+ * - `unsupported-cli`: return `false` so an older already-installed CLI does
+ *   not expose tools whose backing subcommands it definitely lacks.
+ * - `report`: return `true` only when the feature key is explicitly `true`.
  */
 export function hasFeature(
-  report: CapabilityReport | null,
+  probe: CapabilityProbeResult,
   name: string
 ): boolean {
-  if (report === null) return false;
-  return report.features[name] === true;
+  if (probe.kind === "missing-cli") return true;
+  if (probe.kind !== "report") return false;
+  return probe.report.features[name] === true;
 }

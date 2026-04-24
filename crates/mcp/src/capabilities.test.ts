@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   hasFeature,
   parseCapabilityReport,
+  type CapabilityProbeResult,
   type CapabilityReport,
 } from "./capabilities.js";
 
@@ -128,10 +129,17 @@ describe("parseCapabilityReport", () => {
 });
 
 describe("hasFeature", () => {
-  it("returns false for every key when report is null (fail-closed)", () => {
-    expect(hasFeature(null, "activity_summary")).toBe(false);
-    expect(hasFeature(null, "anything")).toBe(false);
-    expect(hasFeature(null, "")).toBe(false);
+  it("returns true when the CLI is missing at boot (first-run auto-install path)", () => {
+    const probe: CapabilityProbeResult = { kind: "missing-cli" };
+    expect(hasFeature(probe, "activity_summary")).toBe(true);
+    expect(hasFeature(probe, "anything")).toBe(true);
+    expect(hasFeature(probe, "")).toBe(true);
+  });
+
+  it("returns false when an installed CLI cannot answer capabilities", () => {
+    const probe: CapabilityProbeResult = { kind: "unsupported-cli" };
+    expect(hasFeature(probe, "activity_summary")).toBe(false);
+    expect(hasFeature(probe, "anything")).toBe(false);
   });
 
   it("returns true when feature is explicitly true", () => {
@@ -140,7 +148,8 @@ describe("hasFeature", () => {
       api_version: 1,
       features: { activity_summary: true },
     };
-    expect(hasFeature(report, "activity_summary")).toBe(true);
+    const probe: CapabilityProbeResult = { kind: "report", report };
+    expect(hasFeature(probe, "activity_summary")).toBe(true);
   });
 
   it("returns false when feature is explicitly false", () => {
@@ -149,7 +158,8 @@ describe("hasFeature", () => {
       api_version: 1,
       features: { parakeet: false },
     };
-    expect(hasFeature(report, "parakeet")).toBe(false);
+    const probe: CapabilityProbeResult = { kind: "report", report };
+    expect(hasFeature(probe, "parakeet")).toBe(false);
   });
 
   it("returns false when feature key is missing from a non-null report", () => {
@@ -160,6 +170,7 @@ describe("hasFeature", () => {
     };
     // An older CLI that does not know about activity_summary: the MCP
     // must hide the tool rather than optimistically expose it.
-    expect(hasFeature(report, "activity_summary")).toBe(false);
+    const probe: CapabilityProbeResult = { kind: "report", report };
+    expect(hasFeature(probe, "activity_summary")).toBe(false);
   });
 });

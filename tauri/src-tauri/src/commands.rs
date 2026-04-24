@@ -6682,7 +6682,50 @@ pub fn cmd_open_meeting_url(app: tauri::AppHandle, url: String) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::TempDir;
+
+    fn test_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn with_temp_home<T>(f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = test_guard();
+        let dir = std::env::temp_dir().join(format!(
+            "minutes-app-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let original_home = std::env::var_os("HOME");
+        let original_userprofile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", &dir);
+        std::env::set_var("USERPROFILE", &dir);
+
+        let result = f(&dir);
+
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(userprofile) = original_userprofile {
+            std::env::set_var("USERPROFILE", userprofile);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+        result
+    }
 
     #[test]
     fn filtered_agent_args_drops_skip_permissions_for_unsupported_agents() {
@@ -7063,45 +7106,56 @@ mod tests {
 
     #[test]
     fn desktop_settings_reject_apple_speech_engine_selection() {
-        let error = cmd_set_setting(
-            "transcription".into(),
-            "engine".into(),
-            "apple-speech".into(),
-        )
-        .unwrap_err();
+        with_temp_home(|_| {
+            let error = cmd_set_setting(
+                "transcription".into(),
+                "engine".into(),
+                "apple-speech".into(),
+            )
+            .unwrap_err();
 
-        assert!(error.contains("standalone live transcript"));
+            assert!(error.contains("standalone live transcript"));
+        });
     }
 
     #[test]
     fn desktop_settings_accept_live_transcript_backend_selection() {
-        cmd_set_setting(
-            "live_transcript".into(),
-            "backend".into(),
-            "apple-speech".into(),
-        )
-        .unwrap();
+        with_temp_home(|_| {
+            cmd_set_setting(
+                "live_transcript".into(),
+                "backend".into(),
+                "apple-speech".into(),
+            )
+            .unwrap();
+
+            let config = Config::load();
+            assert_eq!(config.live_transcript.backend, "apple-speech");
+        });
     }
 
     #[test]
     fn desktop_settings_reject_unknown_live_transcript_backend() {
-        let error = cmd_set_setting("live_transcript".into(), "backend".into(), "laser".into())
-            .unwrap_err();
+        with_temp_home(|_| {
+            let error = cmd_set_setting("live_transcript".into(), "backend".into(), "laser".into())
+                .unwrap_err();
 
-        assert!(error.contains("unknown live transcript backend"));
+            assert!(error.contains("unknown live transcript backend"));
+        });
     }
 
     #[test]
     fn desktop_settings_normalize_decorated_recording_device_name() {
-        cmd_set_setting(
-            "recording".into(),
-            "device".into(),
-            "Ground Control (16000Hz, 1 ch)".into(),
-        )
-        .unwrap();
+        with_temp_home(|_| {
+            cmd_set_setting(
+                "recording".into(),
+                "device".into(),
+                "Ground Control (16000Hz, 1 ch)".into(),
+            )
+            .unwrap();
 
-        let config = Config::load();
-        assert_eq!(config.recording.device.as_deref(), Some("Ground Control"));
+            let config = Config::load();
+            assert_eq!(config.recording.device.as_deref(), Some("Ground Control"));
+        });
     }
 
     #[test]
