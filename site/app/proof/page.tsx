@@ -4,7 +4,7 @@ import { PublicFooter } from "@/components/public-footer";
 export const metadata: Metadata = {
   title: "Minutes proof",
   description:
-    "What Minutes can prove today, what is still a smoke test, and what proof milestones come next.",
+    "Run the Minutes demo, inspect the source meetings, and see what proof is real today versus still in progress.",
   alternates: {
     canonical: "/proof",
   },
@@ -34,6 +34,24 @@ const proofRows = [
       "Mem0 and Graphiti adapters show how Minutes markdown maps into external memory systems. They are intentionally small examples, not a supported SDK. Identity-aware ingestion, idempotency, and pinned adapter tests are the next v2 milestone.",
     href: "https://github.com/silverstein/minutes/tree/main/examples",
     link: "See adapters",
+  },
+] as const;
+
+const sourceFiles = [
+  {
+    date: "2026-02-28",
+    label: "monthly billing launched",
+    href: "https://github.com/silverstein/minutes/blob/main/crates/mcp/fixtures/demo/2026-02-28-pricing-strategy.md",
+  },
+  {
+    date: "2026-03-25",
+    label: "monthly billing reversed",
+    href: "https://github.com/silverstein/minutes/blob/main/crates/mcp/fixtures/demo/2026-03-25-pricing-reversal.md",
+  },
+  {
+    date: "2026-04-17",
+    label: "Q2 priorities locked",
+    href: "https://github.com/silverstein/minutes/blob/main/crates/mcp/fixtures/demo/2026-04-17-prioritization.md",
   },
 ] as const;
 
@@ -91,17 +109,86 @@ export default function ProofPage() {
           Proof
         </p>
         <h1 className="mt-4 font-serif text-[42px] leading-[0.98] tracking-[-0.045em] text-[var(--text)] sm:text-[56px]">
-          What Minutes can prove today.
+          Run the demo. Inspect the receipts.
         </h1>
         <p className="mt-5 text-[17px] leading-8 text-[var(--text-secondary)]">
-          Minutes is real enough to run, inspect, and evaluate. It is not yet at
-          the point where every proof artifact deserves benchmark language. This
-          page keeps that boundary visible: what works now, what is only a smoke
-          test, and what has to land before stronger claims are fair.
+          The useful proof is not a claim on this page. It is a loop you can run:
+          seed a small meeting corpus, ask an agent a question with a stale
+          answer, and inspect the markdown files it used to answer. Minutes is
+          real enough to try today; the caveats below explain where the evidence
+          is still young.
         </p>
       </section>
 
-      <section className="mt-12">
+      <section className="mt-12 rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-6 shadow-[var(--shadow-panel)]">
+        <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+          Try the proof loop
+        </p>
+        <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_1fr]">
+          <div>
+            <p className="text-[15px] leading-8 text-[var(--text-secondary)]">
+              First, install the bundled demo corpus. It writes five fictional
+              meetings to{" "}
+              <code className="font-mono text-[13px] text-[var(--text)]">
+                ~/.minutes/demo/
+              </code>{" "}
+              and prints the MCP config for your agent host.
+            </p>
+            <div className="mt-4 rounded-[6px] bg-[var(--bg)] px-4 py-3 font-mono text-[13px] text-[var(--text)]">
+              npx minutes-mcp --demo
+            </div>
+            <p className="mt-5 text-[15px] leading-8 text-[var(--text-secondary)]">
+              Then ask:
+            </p>
+            <div className="mt-3 rounded-[6px] border border-[color:var(--border)] bg-[var(--bg)] px-4 py-3 text-[14px] leading-7 text-[var(--text)]">
+              What did we decide about pricing, and which decision is current?
+            </div>
+          </div>
+          <div className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg)] p-5">
+            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+              A good answer should say
+            </p>
+            <p className="mt-4 text-[15px] leading-8 text-[var(--text-secondary)]">
+              The current pricing decision is annual-only. Minutes should find
+              the February meeting that launched a narrow monthly billing test,
+              then the March meeting that reversed it because four signups missed
+              the threshold and churn looked worse. The March decision explicitly
+              supersedes the February decision.
+            </p>
+            <p className="mt-4 text-[13px] leading-6 text-[var(--text-secondary)]">
+              That is the point: not a prettier note, but a durable corpus where
+              an agent can answer with provenance instead of vibes.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-14">
+        <SectionLabel label="Inspect the source" />
+        <div className="grid gap-3">
+          {sourceFiles.map((file) => (
+            <a
+              key={file.href}
+              href={file.href}
+              className="flex flex-col gap-2 rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5 shadow-[var(--shadow-panel)] transition hover:border-[color:var(--border-mid)] hover:bg-[var(--bg-hover)] sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+                  {file.date}
+                </p>
+                <p className="mt-2 text-[15px] text-[var(--text)]">
+                  {file.label}
+                </p>
+              </div>
+              <p className="font-mono text-[12px] uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+                open markdown
+              </p>
+            </a>
+          ))}
+        </div>
+      </section>
+
+      <section className="mt-14">
         <SectionLabel label="Current evidence" />
         <div className="grid gap-4">
           {proofRows.map((row) => (
@@ -168,12 +255,13 @@ export default function ProofPage() {
 
       <section className="mt-14 rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-6 shadow-[var(--shadow-panel)]">
         <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
-          Best first step
+          Why this matters
         </p>
         <p className="mt-3 text-[15px] leading-8 text-[var(--text-secondary)]">
-          Run the demo corpus, ask the pricing and commitment questions, then
-          inspect the markdown files it used. If that loop makes sense, the full
-          product is just the same contract pointed at your real meetings.
+          Cloud meeting tools mostly sell the finished summary. Minutes is aimed
+          at the layer underneath: durable, inspectable source material for the
+          agents you already use. If the demo loop makes sense, the full product
+          is the same contract pointed at your real meetings.
         </p>
         <div className="mt-5 flex flex-wrap gap-3">
           <a
