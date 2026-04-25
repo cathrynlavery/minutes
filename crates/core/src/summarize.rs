@@ -2272,10 +2272,18 @@ fn parse_speaker_mapping(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
+    use std::thread;
 
     fn home_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn api_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -2307,6 +2315,80 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _home = HomeOverride::set(dir.path());
         f(dir.path())
+    }
+
+    #[derive(Debug)]
+    struct CapturedHttpRequest {
+        path: String,
+        headers: String,
+        body: String,
+    }
+
+    fn spawn_openai_compatible_test_server() -> (String, thread::JoinHandle<CapturedHttpRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}/v1", addr);
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 1024];
+
+            loop {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0, "client closed before sending a full request");
+                buffer.extend_from_slice(&chunk[..n]);
+
+                let Some(header_end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if name.eq_ignore_ascii_case("content-length") {
+                            value.trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                let body_start = header_end + 4;
+                if buffer.len() < body_start + content_length {
+                    continue;
+                }
+
+                let body =
+                    String::from_utf8_lossy(&buffer[body_start..body_start + content_length])
+                        .to_string();
+                let path = headers
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_string();
+                let response_body = serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "KEY POINTS:\n- Local compatible server worked\n\nDECISIONS:\n- Use generic backend"
+                        }
+                    }]
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                return CapturedHttpRequest {
+                    path,
+                    headers,
+                    body,
+                };
+            }
+        });
+        (base_url, handle)
     }
 
     #[test]
@@ -2448,6 +2530,64 @@ COMMITMENTS:
             .as_str()
             .unwrap()
             .contains("screen aware transcript"));
+    }
+
+    #[test]
+    fn summarize_with_openai_compatible_posts_text_request_to_local_server() {
+        let (base_url, handle) = spawn_openai_compatible_test_server();
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_base_url = base_url;
+        config.summarization.openai_compatible_model = "local-test-model".into();
+        config.summarization.openai_compatible_api_key_env = String::new();
+
+        let summary =
+            summarize_with_openai_compatible("hello from a local server", &[], &config).unwrap();
+        assert_eq!(summary.key_points, vec!["Local compatible server worked"]);
+        assert_eq!(summary.decisions, vec!["Use generic backend"]);
+
+        let captured = handle.join().unwrap();
+        assert_eq!(captured.path, "/v1/chat/completions");
+        assert!(
+            !captured.headers.to_lowercase().contains("authorization:"),
+            "local no-key mode should not send an Authorization header: {}",
+            captured.headers
+        );
+        let body: serde_json::Value = serde_json::from_str(&captured.body).unwrap();
+        assert_eq!(body["model"], "local-test-model");
+        assert!(
+            body["messages"][1]["content"].is_string(),
+            "text-only local requests should use string content: {}",
+            captured.body
+        );
+    }
+
+    #[test]
+    fn summarize_with_openai_compatible_sends_bearer_when_env_is_configured() {
+        let _guard = api_env_lock().lock().unwrap();
+        let env_name = "MINUTES_TEST_OPENAI_COMPATIBLE_API_KEY";
+        std::env::set_var(env_name, "test-secret-token");
+
+        let (base_url, handle) = spawn_openai_compatible_test_server();
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_base_url = base_url;
+        config.summarization.openai_compatible_model = "gateway-test-model".into();
+        config.summarization.openai_compatible_api_key_env = env_name.into();
+
+        let result = summarize_with_openai_compatible("cloud gateway path", &[], &config);
+        std::env::remove_var(env_name);
+        result.unwrap();
+
+        let captured = handle.join().unwrap();
+        assert!(
+            captured
+                .headers
+                .to_lowercase()
+                .contains("authorization: bearer test-secret-token"),
+            "configured cloud mode should send bearer auth from env var: {}",
+            captured.headers
+        );
     }
 
     #[test]
