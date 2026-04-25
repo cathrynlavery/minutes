@@ -8,7 +8,7 @@ import skillsCatalog from "@/lib/skills-catalog.json";
 export const metadata: Metadata = {
   title: "Minutes — the audio layer for agent memory",
   description:
-    "The open-source audio layer for agent memory. Minutes captures meetings locally and writes structured markdown to ~/meetings/. Claude Code, Codex, Gemini CLI, Cursor, and OpenCode all read from the same folder. No cloud, no SDK, no API key.",
+    "The open-source audio layer for agent memory. Minutes captures meetings locally and writes structured markdown to ~/meetings/. Claude Code, Codex, Gemini CLI, Cursor, OpenCode, and Pi all read from the same folder. No cloud, no SDK, no API key.",
   alternates: { canonical: "/for-agents" },
 };
 
@@ -255,7 +255,7 @@ export default function ForAgentsPage() {
           their API. Minutes writes every meeting and voice memo to structured
           markdown in{" "}
           <code className="font-mono text-[15px] text-[var(--text)]">~/meetings/</code>
-          {" "}on your own disk. Claude Code, Codex, Gemini CLI, Cursor, OpenCode,
+          {" "}on your own disk. Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Pi,
           and any MCP-compatible client read from the same folder. No SDK. No
           API key. Your corpus survives tools, vendors, and hype cycles.
         </p>
@@ -441,6 +441,14 @@ export default function ForAgentsPage() {
                   </td>
                 </tr>
                 <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">Pi</td>
+                  <td className="py-2 pr-3">{skillCount} skills via <code className="text-[11px]">.agents/</code></td>
+                  <td className="py-2 pr-3 text-[var(--text-secondary)]">—</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">agent_command = "pi"</code>
+                  </td>
+                </tr>
+                <tr className="border-b border-[color:var(--border)]">
                   <td className="py-2 pr-3">Cursor</td>
                   <td className="py-2 pr-3 text-[var(--text-secondary)]">—</td>
                   <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools</td>
@@ -478,6 +486,18 @@ export default function ForAgentsPage() {
             also includes artifact workflows like{" "}
             <code className="font-mono text-[12px] text-[var(--text)]">/minutes-video-review</code>{" "}
             for Loom, ScreenPal, and local walkthrough videos.
+          </p>
+          <p className="mt-3 text-[12px] leading-6 text-[var(--text-secondary)]">
+            Adding another agent host? Use{" "}
+            <a
+              href="/docs/agent-integrations"
+              className="text-[var(--accent)] hover:underline"
+            >
+              the agent integration checklist
+            </a>{" "}
+            to decide whether it needs raw files, MCP, portable skills, a
+            host-specific generated tree, or an <code className="font-mono text-[12px] text-[var(--text)]">agent_command</code>{" "}
+            backend.
           </p>
         </div>
       </section>
@@ -574,7 +594,7 @@ export default function ForAgentsPage() {
         <SectionLabel n="02" label="Install the MCP server" />
         <p className="mb-4 text-[15px] leading-7 text-[var(--text-secondary)]">
           Add this to the MCP configuration for Claude Desktop, Claude Code, Codex,
-          Gemini CLI, or any MCP client. No Rust toolchain required.
+          Gemini CLI, Cursor, or any MCP client. No Rust toolchain required.
         </p>
         <div className="relative overflow-hidden rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)]">
           <div className="flex items-center justify-between border-b border-[color:var(--border)] px-4 py-2">
@@ -601,7 +621,7 @@ export default function ForAgentsPage() {
       <section className="mt-14">
         <SectionLabel n="03" label="Choose your surface" />
         <p className="mb-5 text-[15px] leading-7 text-[var(--text-secondary)]">
-          Minutes has four entry points. Recommend the one that matches the
+          Minutes has five entry points. Recommend the one that matches the
           user&apos;s environment. This matrix is source-backed so the install
           steps stay aligned with the docs index and generated agent artifacts.
         </p>
@@ -769,7 +789,7 @@ export default function ForAgentsPage() {
             Without it, all speech is attributed to a single speaker.
           </p>
           <p>
-            Summarization requires either an active Claude session (recommended), a
+            Summarization requires either an active agent CLI session, a
             local LLM via Ollama, or a Mistral API key. Without any of these,
             Minutes still transcribes and extracts structured data from frontmatter.
           </p>
@@ -788,6 +808,7 @@ export default function ForAgentsPage() {
             ["/docs/mcp/tools.md", "/docs/mcp/tools.md", "Same reference as raw markdown for direct context ingestion"],
             ["/docs/errors", "/docs/errors", "Generated error catalog from Rust thiserror definitions"],
             ["/docs/errors.md", "/docs/errors.md", "Error catalog as raw markdown"],
+            ["/docs/agent-integrations", "/docs/agent-integrations", "Checklist for adding another agent host without duplicating surfaces"],
             ["https://github.com/silverstein/minutes", "GitHub", "Source, issues, and discussions"],
             ["https://www.npmjs.com/package/minutes-mcp", "minutes-mcp", "MCP server npm package"],
             ["https://www.npmjs.com/package/minutes-sdk", "minutes-sdk", "SDK for building on Minutes output"],

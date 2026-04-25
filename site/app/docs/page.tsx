@@ -62,6 +62,12 @@ const docsSections = [
         blurb:
           "Generated reference for stable Minutes core errors and platform-specific variants.",
       },
+      {
+        title: "Adding agent integrations",
+        href: "/docs/agent-integrations",
+        blurb:
+          "Checklist for deciding whether a new agent needs files, MCP, portable skills, a host-specific surface, or agent_command support.",
+      },
     ],
   },
   {
