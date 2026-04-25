@@ -594,7 +594,9 @@ engine = "ollama"
 ollama_model = "llama3.2"
 
 # Or use any OpenAI-compatible gateway/local server.
-# Local servers can leave openai_compatible_api_key_env blank.
+# Desktop users can paste cloud gateway keys in Settings; Minutes stores them
+# in macOS Keychain and uses MINUTES_OPENAI_COMPATIBLE_API_KEY internally.
+# CLI users can set any env var and name it below. Local servers can leave it blank.
 [summarization]
 engine = "openai-compatible"
 openai_compatible_base_url = "https://openrouter.ai/api/v1"
@@ -1049,7 +1051,7 @@ ollama_url = "http://localhost:11434"
 ollama_model = "llama3.2"
 openai_compatible_base_url = "http://localhost:11434/v1"
 openai_compatible_model = "llama3.2"
-openai_compatible_api_key_env = "" # Optional env var name; blank means no Authorization header.
+openai_compatible_api_key_env = "" # Blank means no Authorization header. Desktop cloud presets use MINUTES_OPENAI_COMPATIBLE_API_KEY with Keychain.
 
 [diarization]
 engine = "auto"           # "auto" (default — uses pyannote-rs if models downloaded, otherwise skips),

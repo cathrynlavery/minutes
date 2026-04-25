@@ -58,6 +58,12 @@ openai_compatible_base_url = "https://gateway.example.com/v1"
 openai_compatible_api_key_env = "AI_GATEWAY_API_KEY"
 ```
 
+In the desktop app, cloud gateway presets use the same backend with a friendlier
+secret path: users paste the key in Settings, Minutes stores it in macOS
+Keychain, and the app hydrates `MINUTES_OPENAI_COMPATIBLE_API_KEY` for its own
+summarization calls. Keep provider-specific env vars as the CLI/power-user
+fallback, not as the default desktop experience.
+
 ## Checklist
 
 1. Identify the host contract.

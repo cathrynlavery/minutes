@@ -6216,6 +6216,8 @@ pub fn cmd_terminal_info(state: tauri::State<AppState>, session_id: String) -> T
 pub fn cmd_get_settings() -> serde_json::Value {
     let config = Config::load();
     let path = Config::config_path();
+    let openai_compatible_secret_status =
+        crate::secret_store::hydrate_openai_compatible_api_key_env();
     let recording_status = minutes_core::pid::status();
     let live_status = minutes_core::live_transcript::session_status();
     let desktop_context_supported = minutes_core::desktop_context::capture_supported();
@@ -6240,8 +6242,13 @@ pub fn cmd_get_settings() -> serde_json::Value {
         .openai_compatible_api_key_env
         .trim()
         .to_string();
-    let openai_compatible_key_set = openai_compatible_api_key_env.is_empty()
-        || std::env::var(&openai_compatible_api_key_env).is_ok();
+    let openai_compatible_key_set =
+        if openai_compatible_api_key_env == crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV {
+            openai_compatible_secret_status.key_set
+        } else {
+            openai_compatible_api_key_env.is_empty()
+                || std::env::var(&openai_compatible_api_key_env).is_ok()
+        };
 
     // Check Ollama reachability
     let ollama_reachable = ureq::Agent::new_with_config(
@@ -6303,6 +6310,11 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "openai_compatible_model": config.summarization.openai_compatible_model,
             "openai_compatible_api_key_env": config.summarization.openai_compatible_api_key_env,
             "openai_compatible_key_set": openai_compatible_key_set,
+            "openai_compatible_desktop_api_key_env": crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV,
+            "openai_compatible_keychain_supported": openai_compatible_secret_status.supported,
+            "openai_compatible_keychain_key_set": openai_compatible_secret_status.stored_key_set,
+            "openai_compatible_key_storage_label": openai_compatible_secret_status.storage_label,
+            "openai_compatible_key_status_message": openai_compatible_secret_status.message,
             "anthropic_key_set": anthropic_key_set,
             "openai_key_set": openai_key_set,
             "ollama_reachable": ollama_reachable,
@@ -6378,6 +6390,46 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "aliases": config.identity.aliases,
         },
     })
+}
+
+#[tauri::command]
+pub fn cmd_openai_compatible_secret_status() -> serde_json::Value {
+    serde_json::to_value(crate::secret_store::hydrate_openai_compatible_api_key_env())
+        .unwrap_or_else(|_| serde_json::json!({ "keySet": false }))
+}
+
+#[tauri::command]
+pub fn cmd_set_openai_compatible_api_key(api_key: String) -> Result<serde_json::Value, String> {
+    let api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err("Paste an API key first.".into());
+    }
+
+    crate::secret_store::save_openai_compatible_api_key(&api_key)?;
+    std::env::set_var(crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV, &api_key);
+
+    let mut config = Config::load();
+    config.summarization.openai_compatible_api_key_env =
+        crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV.into();
+    config
+        .save()
+        .map_err(|e| format!("Failed to save config: {}", e))?;
+
+    Ok(
+        serde_json::to_value(crate::secret_store::openai_compatible_secret_status())
+            .unwrap_or_else(|_| serde_json::json!({ "keySet": true })),
+    )
+}
+
+#[tauri::command]
+pub fn cmd_clear_openai_compatible_api_key() -> Result<serde_json::Value, String> {
+    crate::secret_store::clear_openai_compatible_api_key()?;
+    std::env::remove_var(crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV);
+
+    Ok(
+        serde_json::to_value(crate::secret_store::openai_compatible_secret_status())
+            .unwrap_or_else(|_| serde_json::json!({ "keySet": false })),
+    )
 }
 
 #[tauri::command]

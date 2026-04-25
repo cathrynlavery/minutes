@@ -3660,6 +3660,18 @@
       box-sizing: border-box;
     }
 
+    .settings-secret-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: end;
+      margin-top: 6px;
+    }
+
+    .settings-secret-row .settings-field {
+      margin-top: 0;
+    }
+
     .settings-meta-inline {
       margin-bottom: 6px;
       margin-top: 4px;
@@ -4576,11 +4588,22 @@
             <input type="text" id="settings-openai-compatible-model" class="settings-field" placeholder="llama3.2" spellcheck="false">
           </div>
         </div>
+        <div class="about-controls is-hidden" id="settings-openai-compatible-secret-row">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">API key</div>
+            <div class="about-controls-meta" id="settings-openai-compatible-key-status">Paste a key once. Minutes stores it securely.</div>
+            <div class="settings-secret-row">
+              <input type="password" id="settings-openai-compatible-api-key" class="settings-field" placeholder="Paste API key" autocomplete="off" spellcheck="false">
+              <button class="btn btn-secondary btn-sm" id="settings-openai-compatible-save-key" type="button">Save</button>
+              <button class="btn btn-secondary btn-sm" id="settings-openai-compatible-clear-key" type="button">Forget</button>
+            </div>
+          </div>
+        </div>
         <div class="about-controls is-hidden" id="settings-openai-compatible-api-key-row">
           <div class="about-controls-group">
-            <div class="about-controls-copy">Advanced: API key variable name</div>
-            <div class="about-controls-meta">Leave blank for local servers. For cloud gateways, put only the environment variable name here, never the key itself.</div>
-            <input type="text" id="settings-openai-compatible-api-key-env" class="settings-field" placeholder="OPENROUTER_API_KEY" spellcheck="false">
+            <div class="about-controls-copy">Advanced: env var fallback</div>
+            <div class="about-controls-meta">Optional. Use this only if you prefer launching Minutes with a shell-managed secret.</div>
+            <input type="text" id="settings-openai-compatible-api-key-env" class="settings-field" placeholder="MINUTES_OPENAI_COMPATIBLE_API_KEY" spellcheck="false">
           </div>
         </div>
       </div>
@@ -7669,6 +7692,7 @@
       }
       return { sanitized, supportsSkip };
     }
+    const OPENAI_COMPATIBLE_DESKTOP_KEY_ENV = 'MINUTES_OPENAI_COMPATIBLE_API_KEY';
     const openAiCompatiblePresets = {
       local: {
         baseUrl: 'http://localhost:11434/v1',
@@ -7678,17 +7702,17 @@
       openrouter: {
         baseUrl: 'https://openrouter.ai/api/v1',
         model: 'openai/gpt-4o-mini',
-        apiKeyEnv: 'OPENROUTER_API_KEY',
+        apiKeyEnv: OPENAI_COMPATIBLE_DESKTOP_KEY_ENV,
       },
       vercel: {
         baseUrl: 'https://ai-gateway.vercel.sh/v1',
         model: 'openai/gpt-4o-mini',
-        apiKeyEnv: 'AI_GATEWAY_API_KEY',
+        apiKeyEnv: OPENAI_COMPATIBLE_DESKTOP_KEY_ENV,
       },
       cloudflare: {
         baseUrl: 'https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/compat',
         model: 'openai/gpt-4o-mini',
-        apiKeyEnv: 'CLOUDFLARE_AI_GATEWAY_API_KEY',
+        apiKeyEnv: OPENAI_COMPATIBLE_DESKTOP_KEY_ENV,
       },
     };
     function isOpenAiCompatibleEngine(engine) {
@@ -7702,6 +7726,10 @@
       if (baseUrl.includes('gateway.ai.cloudflare.com')) return 'cloudflare';
       return 'custom';
     }
+    function openAiCompatibleShouldOfferKey(s) {
+      const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
+      return Boolean(apiKeyEnv) || inferOpenAiCompatiblePreset(s) !== 'local';
+    }
     function openAiCompatibleStatusText(s) {
       const baseUrl = (s.summarization.openai_compatible_base_url || '').trim();
       const model = (s.summarization.openai_compatible_model || '').trim();
@@ -7709,11 +7737,29 @@
       if (!baseUrl) return 'Paste a connection URL before automatic summaries can use this backend.';
       if (baseUrl.includes('<') || baseUrl.includes('>')) return 'Replace the placeholder account/gateway values in the URL.';
       if (!model) return 'Enter the model name your server or gateway expects.';
-      if (!apiKeyEnv) return 'Local mode: no Authorization header will be sent.';
-      if (!s.summarization.openai_compatible_key_set) return apiKeyEnv + ' not found in this app environment.';
+      if (!apiKeyEnv && !openAiCompatibleShouldOfferKey(s)) return 'Local mode: no Authorization header will be sent.';
+      if (!apiKeyEnv) return 'No key configured. Save one if this endpoint requires auth, or leave it blank for local/private servers.';
+      if (!s.summarization.openai_compatible_key_set) {
+        return s.summarization.openai_compatible_key_status_message || 'Paste an API key to unlock this cloud gateway.';
+      }
       let host = baseUrl;
       try { host = new URL(baseUrl).host; } catch (_) {}
-      return 'Advanced cloud mode. Minutes will send summaries to ' + host + ' using ' + model + '.';
+      if (s.summarization.openai_compatible_keychain_key_set) {
+        return 'Ready. Minutes will send summaries to ' + host + ' using ' + model + ' with a key saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
+      }
+      return 'Ready. Minutes will send summaries to ' + host + ' using ' + model + '.';
+    }
+    function openAiCompatibleKeyStatusText(s) {
+      const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
+      if (!openAiCompatibleShouldOfferKey(s)) return 'No key needed for local servers.';
+      if (!apiKeyEnv) return 'Optional for custom endpoints. Save a key if this gateway requires one.';
+      if (s.summarization.openai_compatible_keychain_key_set) {
+        return 'Saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
+      }
+      if (s.summarization.openai_compatible_keychain_supported === false) {
+        return 'Keychain storage is unavailable here. Use the env var fallback below.';
+      }
+      return s.summarization.openai_compatible_key_status_message || 'Paste a key once. Minutes stores it securely.';
     }
     function renderOpenAiCompatibleSettings(s) {
       const visible = isOpenAiCompatibleEngine(s.summarization.engine);
@@ -7721,18 +7767,28 @@
         'settings-openai-compatible-preset-row',
         'settings-openai-compatible-base-url-row',
         'settings-openai-compatible-model-row',
+        'settings-openai-compatible-secret-row',
         'settings-openai-compatible-api-key-row',
       ];
       for (const id of rowIds) {
         document.getElementById(id).classList.toggle('is-hidden', !visible);
       }
+      const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
+      const keyNeeded = openAiCompatibleShouldOfferKey(s);
       document.getElementById('settings-openai-compatible-preset').value = inferOpenAiCompatiblePreset(s);
       document.getElementById('settings-openai-compatible-base-url').value =
         s.summarization.openai_compatible_base_url || '';
       document.getElementById('settings-openai-compatible-model').value =
         s.summarization.openai_compatible_model || '';
       document.getElementById('settings-openai-compatible-api-key-env').value =
-        s.summarization.openai_compatible_api_key_env || '';
+        apiKeyEnv;
+      document.getElementById('settings-openai-compatible-key-status').textContent =
+        visible ? openAiCompatibleKeyStatusText(s) : '';
+      document.getElementById('settings-openai-compatible-api-key').disabled = !visible || !keyNeeded;
+      document.getElementById('settings-openai-compatible-save-key').disabled =
+        !visible || !keyNeeded || s.summarization.openai_compatible_keychain_supported === false;
+      document.getElementById('settings-openai-compatible-clear-key').disabled =
+        !visible || !keyNeeded || (!s.summarization.openai_compatible_keychain_key_set && !s.summarization.openai_compatible_key_set);
       document.getElementById('settings-openai-compatible-status').textContent =
         visible ? openAiCompatibleStatusText(s) : '';
     }
@@ -7910,6 +7966,7 @@
         'settings-openai-compatible-preset-row',
         'settings-openai-compatible-base-url-row',
         'settings-openai-compatible-model-row',
+        'settings-openai-compatible-secret-row',
         'settings-openai-compatible-api-key-row',
       ]) {
         document.getElementById(id).classList.toggle('is-hidden', !openAiCompatibleVisible);
@@ -7964,6 +8021,45 @@
       const s = await invoke('cmd_get_settings');
       updateSumStatus(s);
       renderOpenAiCompatibleSettings(s);
+    });
+    document.getElementById('settings-openai-compatible-save-key').addEventListener('click', async () => {
+      const input = document.getElementById('settings-openai-compatible-api-key');
+      const btn = document.getElementById('settings-openai-compatible-save-key');
+      const status = document.getElementById('settings-openai-compatible-key-status');
+      const apiKey = input.value.trim();
+      if (!apiKey) {
+        status.textContent = 'Paste an API key first.';
+        input.focus();
+        return;
+      }
+      btn.disabled = true;
+      status.textContent = 'Saving securely...';
+      try {
+        await invoke('cmd_set_openai_compatible_api_key', { apiKey });
+        input.value = '';
+        const s = await invoke('cmd_get_settings');
+        updateSumStatus(s);
+        renderOpenAiCompatibleSettings(s);
+      } catch (err) {
+        status.textContent = String(err);
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('settings-openai-compatible-clear-key').addEventListener('click', async () => {
+      const btn = document.getElementById('settings-openai-compatible-clear-key');
+      const status = document.getElementById('settings-openai-compatible-key-status');
+      btn.disabled = true;
+      status.textContent = 'Forgetting saved key...';
+      try {
+        await invoke('cmd_clear_openai_compatible_api_key');
+        document.getElementById('settings-openai-compatible-api-key').value = '';
+        const s = await invoke('cmd_get_settings');
+        updateSumStatus(s);
+        renderOpenAiCompatibleSettings(s);
+      } catch (err) {
+        status.textContent = String(err);
+        btn.disabled = false;
+      }
     });
     document.getElementById('settings-openai-compatible-base-url').addEventListener('change', async (e) => {
       const value = e.target.value.trim() || 'http://localhost:11434/v1';

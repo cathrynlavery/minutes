@@ -21,6 +21,7 @@ mod commands;
 mod context;
 mod palette_dispatch;
 mod pty;
+mod secret_store;
 mod shortcut_manager;
 
 const MINUTES_WEBSITE_URL: &str = "https://useminutes.app";
@@ -788,6 +789,14 @@ fn main() {
     // Load with first-run and upgrade migrations so palette defaults
     // stay enabled across upgrades and fresh installs.
     let startup_config_snapshot = minutes_core::config::Config::load_with_migrations();
+    if startup_config_snapshot
+        .summarization
+        .openai_compatible_api_key_env
+        .trim()
+        == secret_store::OPENAI_COMPATIBLE_API_KEY_ENV
+    {
+        let _ = secret_store::hydrate_openai_compatible_api_key_env();
+    }
     let recording = Arc::new(AtomicBool::new(false));
     let starting = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -1811,6 +1820,9 @@ fn main() {
             commands::cmd_terminal_info,
             commands::cmd_get_settings,
             commands::cmd_warm_parakeet,
+            commands::cmd_openai_compatible_secret_status,
+            commands::cmd_set_openai_compatible_api_key,
+            commands::cmd_clear_openai_compatible_api_key,
             commands::cmd_set_setting,
             commands::cmd_set_screen_share_hidden,
             commands::cmd_get_autostart,
