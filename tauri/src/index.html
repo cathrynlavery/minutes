@@ -7699,7 +7699,6 @@
       }
       return { sanitized, supportsSkip };
     }
-    const OPENAI_COMPATIBLE_DESKTOP_KEY_ENV = 'MINUTES_OPENAI_COMPATIBLE_API_KEY';
     const openAiCompatiblePresets = {
       local: {
         baseUrl: 'http://localhost:11434/v1',
@@ -7709,17 +7708,17 @@
       openrouter: {
         baseUrl: 'https://openrouter.ai/api/v1',
         model: 'openai/gpt-4o-mini',
-        apiKeyEnv: OPENAI_COMPATIBLE_DESKTOP_KEY_ENV,
+        apiKeyEnv: '',
       },
       vercel: {
         baseUrl: 'https://ai-gateway.vercel.sh/v1',
         model: 'openai/gpt-4o-mini',
-        apiKeyEnv: OPENAI_COMPATIBLE_DESKTOP_KEY_ENV,
+        apiKeyEnv: '',
       },
       cloudflare: {
         baseUrl: 'https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/compat',
         model: 'openai/gpt-4o-mini',
-        apiKeyEnv: OPENAI_COMPATIBLE_DESKTOP_KEY_ENV,
+        apiKeyEnv: '',
       },
     };
     function isOpenAiCompatibleEngine(engine) {
@@ -7745,12 +7744,15 @@
       if (baseUrl.includes('<') || baseUrl.includes('>')) return 'Replace the placeholder account/gateway values in the URL.';
       if (!model) return 'Enter the model name your server or gateway expects.';
       if (!apiKeyEnv && !openAiCompatibleShouldOfferKey(s)) return 'Local mode: no Authorization header will be sent.';
+      let host = baseUrl;
+      try { host = new URL(baseUrl).host; } catch (_) {}
+      if (!apiKeyEnv && s.summarization.openai_compatible_keychain_key_set) {
+        return 'Ready. Minutes will send summaries to ' + host + ' using ' + model + ' with a key saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
+      }
       if (!apiKeyEnv) return 'No key configured. Save one if this endpoint requires auth, or leave it blank for local/private servers.';
       if (!s.summarization.openai_compatible_key_set) {
         return s.summarization.openai_compatible_key_status_message || 'Paste an API key to unlock this cloud gateway.';
       }
-      let host = baseUrl;
-      try { host = new URL(baseUrl).host; } catch (_) {}
       if (s.summarization.openai_compatible_keychain_key_set) {
         return 'Ready. Minutes will send summaries to ' + host + ' using ' + model + ' with a key saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
       }
@@ -7759,10 +7761,10 @@
     function openAiCompatibleKeyStatusText(s) {
       const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
       if (!openAiCompatibleShouldOfferKey(s)) return 'No key needed for local servers.';
-      if (!apiKeyEnv) return 'Optional for custom endpoints. Save a key if this gateway requires one.';
       if (s.summarization.openai_compatible_keychain_key_set) {
         return 'Saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
       }
+      if (!apiKeyEnv) return 'Optional for custom endpoints. Save a key if this gateway requires one.';
       if (s.summarization.openai_compatible_keychain_supported === false) {
         return 'Keychain storage is unavailable here. Use the env var fallback below.';
       }

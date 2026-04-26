@@ -484,10 +484,9 @@ Install Pi, log in or configure a provider, then set:
 [summarization]
 engine = "agent"
 agent_command = "pi"
-agent_args = "--provider openai --model gpt-4o-mini"
 ```
 
-Minutes invokes Pi in non-interactive, no-tools mode with a private prompt file. That keeps summarization opt-in and prevents the agent from writing to the repo while it is turning a transcript into notes.
+Minutes invokes Pi in non-interactive, no-tools mode with a private prompt file. Configure provider/model defaults in Pi itself; Minutes does not currently forward extra `[summarization]` CLI flags. That keeps summarization opt-in and prevents the agent from writing to the repo while it is turning a transcript into notes.
 
 This is separate from Inflection's Pi chatbot/model. Inflection's Pi models are optimized for warmth and emotional intelligence, but the Inflection API terms say not to send regulated personal data. Meeting transcripts often contain personal data, so Minutes does not route transcripts to Inflection by default.
 
@@ -595,8 +594,9 @@ ollama_model = "llama3.2"
 
 # Or use any OpenAI-compatible gateway/local server.
 # Desktop users can paste cloud gateway keys in Settings; Minutes stores them
-# in macOS Keychain and uses MINUTES_OPENAI_COMPATIBLE_API_KEY internally.
-# CLI users can set any env var and name it below. Local servers can leave it blank.
+# in macOS Keychain and hydrates its own runtime secret without rewriting this
+# shared config. CLI users can set any env var and name it below. Local servers
+# can leave it blank.
 [summarization]
 engine = "openai-compatible"
 openai_compatible_base_url = "https://openrouter.ai/api/v1"
@@ -1051,7 +1051,7 @@ ollama_url = "http://localhost:11434"
 ollama_model = "llama3.2"
 openai_compatible_base_url = "http://localhost:11434/v1"
 openai_compatible_model = "llama3.2"
-openai_compatible_api_key_env = "" # Blank means no Authorization header. Desktop cloud presets use MINUTES_OPENAI_COMPATIBLE_API_KEY with Keychain.
+openai_compatible_api_key_env = "" # Blank means no Authorization header. Desktop cloud presets keep this blank and use a runtime-only Keychain secret.
 
 [diarization]
 engine = "auto"           # "auto" (default — uses pyannote-rs if models downloaded, otherwise skips),

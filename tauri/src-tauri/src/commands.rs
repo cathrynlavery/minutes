@@ -6242,13 +6242,13 @@ pub fn cmd_get_settings() -> serde_json::Value {
         .openai_compatible_api_key_env
         .trim()
         .to_string();
-    let openai_compatible_key_set =
-        if openai_compatible_api_key_env == crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV {
-            openai_compatible_secret_status.key_set
-        } else {
-            openai_compatible_api_key_env.is_empty()
-                || std::env::var(&openai_compatible_api_key_env).is_ok()
-        };
+    let openai_compatible_key_set = if openai_compatible_api_key_env.is_empty() {
+        openai_compatible_secret_status.key_set
+    } else if openai_compatible_api_key_env == crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV {
+        openai_compatible_secret_status.key_set
+    } else {
+        std::env::var(&openai_compatible_api_key_env).is_ok()
+    };
 
     // Check Ollama reachability
     let ollama_reachable = ureq::Agent::new_with_config(
@@ -6409,11 +6409,14 @@ pub fn cmd_set_openai_compatible_api_key(api_key: String) -> Result<serde_json::
     std::env::set_var(crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV, &api_key);
 
     let mut config = Config::load();
-    config.summarization.openai_compatible_api_key_env =
-        crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV.into();
-    config
-        .save()
-        .map_err(|e| format!("Failed to save config: {}", e))?;
+    if config.summarization.openai_compatible_api_key_env.trim()
+        == crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV
+    {
+        config.summarization.openai_compatible_api_key_env.clear();
+        config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))?;
+    }
 
     Ok(
         serde_json::to_value(crate::secret_store::openai_compatible_secret_status())
@@ -6425,6 +6428,16 @@ pub fn cmd_set_openai_compatible_api_key(api_key: String) -> Result<serde_json::
 pub fn cmd_clear_openai_compatible_api_key() -> Result<serde_json::Value, String> {
     crate::secret_store::clear_openai_compatible_api_key()?;
     std::env::remove_var(crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV);
+
+    let mut config = Config::load();
+    if config.summarization.openai_compatible_api_key_env.trim()
+        == crate::secret_store::OPENAI_COMPATIBLE_API_KEY_ENV
+    {
+        config.summarization.openai_compatible_api_key_env.clear();
+        config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))?;
+    }
 
     Ok(
         serde_json::to_value(crate::secret_store::openai_compatible_secret_status())

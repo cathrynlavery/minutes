@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 // Config file is OPTIONAL. minutes works without one.
 // ──────────────────────────────────────────────────────────────
 
+/// Desktop-only fallback env var used when the Tauri app hydrates an
+/// OpenAI-compatible gateway key from macOS Keychain.
+pub const OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV: &str = "MINUTES_OPENAI_COMPATIBLE_API_KEY";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -896,6 +900,37 @@ impl Config {
             );
         }
 
+        // Summarization upgrade safety:
+        //
+        // 1. Preserve the historical `"auto"` engine for existing sparse
+        //    configs that never wrote `[summarization].engine`. This stays
+        //    in-memory so we do not force-rewrite otherwise healthy files and
+        //    drop comments / unknown keys just to preserve legacy behavior.
+        // 2. Clear the desktop-only key env marker out of shared config files.
+        if file_existed {
+            if raw_toml
+                .as_deref()
+                .is_some_and(|raw| !raw_toml_has_setting_in_section(raw, "summarization", "engine"))
+            {
+                config.summarization.engine = "auto".into();
+                tracing::info!(
+                    "summarization migration: preserving legacy auto engine for sparse config at {}",
+                    path.display()
+                );
+            }
+
+            if config.summarization.openai_compatible_api_key_env.trim()
+                == OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV
+            {
+                config.summarization.openai_compatible_api_key_env.clear();
+                tracing::info!(
+                    "summarization migration: clearing desktop-only key env marker from shared config at {}",
+                    path.display()
+                );
+                migrated_toml = toml::to_string_pretty(&config).ok();
+            }
+        }
+
         // Palette section persistence: if the config file exists but
         // has no `[palette]` section, write the default section out
         // verbatim. We do NOT flip `shortcut_enabled` away from its
@@ -1644,6 +1679,60 @@ backend = "whisper"
         assert_eq!(config.transcription.engine, "apple-speech");
         assert_eq!(config.live_transcript.backend, "whisper");
         assert_eq!(config.effective_live_transcript_backend(), "whisper");
+    }
+
+    #[test]
+    fn upgrade_preserves_legacy_auto_summarization_when_engine_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+model = "small"
+
+[palette]
+shortcut_enabled = true
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_migrations_from(&config_path);
+        assert_eq!(config.summarization.engine, "auto");
+
+        let reloaded = std::fs::read_to_string(&config_path).unwrap();
+        assert!(reloaded.contains("[transcription]\nmodel = \"small\""));
+        assert!(reloaded.contains("[palette]\nshortcut_enabled = true"));
+        assert!(!reloaded.contains("[summarization]"));
+    }
+
+    #[test]
+    fn upgrade_clears_desktop_only_openai_compatible_env_marker() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[summarization]
+engine = "openai-compatible"
+openai_compatible_base_url = "https://openrouter.ai/api/v1"
+openai_compatible_model = "openai/gpt-4o-mini"
+openai_compatible_api_key_env = "{}"
+"#,
+                OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load_with_migrations_from(&config_path);
+        assert!(config
+            .summarization
+            .openai_compatible_api_key_env
+            .is_empty());
+
+        let reloaded = std::fs::read_to_string(&config_path).unwrap();
+        assert!(reloaded.contains("openai_compatible_api_key_env = \"\""));
     }
 
     #[test]

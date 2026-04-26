@@ -1484,7 +1484,11 @@ fn openai_compatible_api_key(
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let env_name = config.summarization.openai_compatible_api_key_env.trim();
     if env_name.is_empty() {
-        return Ok(None);
+        return Ok(
+            std::env::var(crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+        );
     }
 
     std::env::var(env_name)
@@ -2584,6 +2588,36 @@ COMMITMENTS:
                 .to_lowercase()
                 .contains("authorization: bearer test-secret-token"),
             "configured cloud mode should send bearer auth from env var: {}",
+            captured.headers
+        );
+    }
+
+    #[test]
+    fn summarize_with_openai_compatible_uses_desktop_fallback_env_when_config_env_is_blank() {
+        let _guard = api_env_lock().lock().unwrap();
+        std::env::set_var(
+            crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV,
+            "desktop-keychain-token",
+        );
+
+        let (base_url, handle) = spawn_openai_compatible_test_server();
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_base_url = base_url;
+        config.summarization.openai_compatible_model = "desktop-fallback-model".into();
+        config.summarization.openai_compatible_api_key_env = String::new();
+
+        let result = summarize_with_openai_compatible("desktop fallback path", &[], &config);
+        std::env::remove_var(crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV);
+        result.unwrap();
+
+        let captured = handle.join().unwrap();
+        assert!(
+            captured
+                .headers
+                .to_lowercase()
+                .contains("authorization: bearer desktop-keychain-token"),
+            "desktop fallback env should send bearer auth when config env is blank: {}",
             captured.headers
         );
     }

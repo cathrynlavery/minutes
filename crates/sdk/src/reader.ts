@@ -481,7 +481,7 @@ export async function getMeetingWithOverlays(
   const stdout = await new Promise<string | null>((resolve) => {
     execFile(
       bin,
-      ["get", filePath, "--json"],
+      ["get", filePath, "--json", "--compact-json"],
       { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
       (err, out) => {
         if (err) resolve(null);

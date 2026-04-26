@@ -51,7 +51,7 @@ So `minutes record --device "MacBook Pro Microphone"` always wins over `[recordi
 | `ollama_model` | `"llama3.2"` | Model name pulled in Ollama |
 | `openai_compatible_base_url` | `http://localhost:11434/v1` | OpenAI-compatible base URL. Minutes appends `/chat/completions` unless it is already present. |
 | `openai_compatible_model` | `"llama3.2"` | Model name for the compatible endpoint. |
-| `openai_compatible_api_key_env` | unset | Optional environment variable name containing the API key. Leave blank for local servers. The desktop app can also save a gateway key in macOS Keychain and hydrate `MINUTES_OPENAI_COMPATIBLE_API_KEY` for itself. |
+| `openai_compatible_api_key_env` | unset | Optional environment variable name containing the API key. Leave blank for local servers. The desktop app can also save a gateway key in macOS Keychain and hydrate its own runtime secret without rewriting shared config. |
 | `mistral_model` | `"mistral-large-latest"` | Mistral API model |
 | `chunk_max_tokens` | `4000` | Max tokens per chunk when splitting long transcripts |
 
@@ -66,7 +66,8 @@ generic backend instead of adding a provider-specific engine:
 
 The local path is simplest and does not require an API key. In the desktop app,
 cloud gateways can be set up from Settings by pasting a key once; Minutes stores
-it in macOS Keychain and keeps the raw secret out of `config.toml`.
+it in macOS Keychain, keeps the raw secret out of `config.toml`, and leaves this
+shared config field blank unless you explicitly choose an env-var-driven setup.
 
 For CLI and power-user setups, set the key in your environment and put only the
 variable name in config. Minutes never stores the raw key in `config.toml`.

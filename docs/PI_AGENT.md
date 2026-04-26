@@ -15,7 +15,6 @@ Minutes supports Mario Zechner's `pi` coding agent as an opt-in local agent CLI.
 [summarization]
 engine = "agent"
 agent_command = "pi"
-agent_args = "--provider openai --model gpt-4o-mini"
 ```
 
 Minutes runs Pi with:
@@ -23,6 +22,9 @@ Minutes runs Pi with:
 ```bash
 pi --no-session --no-tools --no-extensions --no-skills --no-prompt-templates --no-context-files -p @<private-prompt-file>
 ```
+
+Configure provider/model defaults in Pi itself; Minutes does not currently pass
+extra `[summarization]` CLI flags through to the pipeline invocation.
 
 That invocation is intentionally narrow: no saved session, no tool access, no automatic context files, and transcript prompt content passed through a private temp file rather than the command line.
 

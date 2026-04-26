@@ -789,14 +789,7 @@ fn main() {
     // Load with first-run and upgrade migrations so palette defaults
     // stay enabled across upgrades and fresh installs.
     let startup_config_snapshot = minutes_core::config::Config::load_with_migrations();
-    if startup_config_snapshot
-        .summarization
-        .openai_compatible_api_key_env
-        .trim()
-        == secret_store::OPENAI_COMPATIBLE_API_KEY_ENV
-    {
-        let _ = secret_store::hydrate_openai_compatible_api_key_env();
-    }
+    let _ = secret_store::hydrate_openai_compatible_api_key_env();
     let recording = Arc::new(AtomicBool::new(false));
     let starting = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));

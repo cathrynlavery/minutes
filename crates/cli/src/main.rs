@@ -693,6 +693,10 @@ enum Commands {
         /// Emit structured JSON with overlay-applied speaker_map instead of raw markdown
         #[arg(long)]
         json: bool,
+
+        /// When used with --json, omit raw_markdown to keep payloads small
+        #[arg(long)]
+        compact_json: bool,
     },
 
     /// Show recent events from the event log
@@ -1352,7 +1356,11 @@ fn main() -> Result<()> {
             }
         }
         Commands::Schema => cmd_schema(),
-        Commands::Get { slug, json } => cmd_get(&slug, json, &config),
+        Commands::Get {
+            slug,
+            json,
+            compact_json,
+        } => cmd_get(&slug, json, compact_json, &config),
         Commands::Events { limit, since } => cmd_events(limit, since, &config),
         Commands::Insights {
             kind,
@@ -5575,7 +5583,7 @@ fn cmd_schema() -> Result<()> {
     Ok(())
 }
 
-fn cmd_get(slug_or_path: &str, json: bool, config: &Config) -> Result<()> {
+fn cmd_get(slug_or_path: &str, json: bool, compact_json: bool, config: &Config) -> Result<()> {
     // Accept either a slug ("2026-03-17-advisor-call") or a path to the
     // meeting markdown. MCP and Tauri pass paths; humans pass slugs. Paths —
     // whether absolute or relative to cwd — must resolve to a .md file
@@ -5629,9 +5637,15 @@ fn cmd_get(slug_or_path: &str, json: bool, config: &Config) -> Result<()> {
         "path": path.to_string_lossy(),
         "frontmatter": frontmatter,
         "body": body,
-        "raw_markdown": content,
         "overlay_applied": overlay_applied,
     });
+    let payload = if compact_json {
+        payload
+    } else {
+        let mut payload = payload;
+        payload["raw_markdown"] = serde_json::Value::String(content);
+        payload
+    };
     println!("{}", serde_json::to_string_pretty(&payload)?);
     Ok(())
 }

@@ -1,6 +1,7 @@
 use serde::Serialize;
 
-pub const OPENAI_COMPATIBLE_API_KEY_ENV: &str = "MINUTES_OPENAI_COMPATIBLE_API_KEY";
+pub const OPENAI_COMPATIBLE_API_KEY_ENV: &str =
+    minutes_core::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV;
 
 const OPENAI_COMPATIBLE_SERVICE: &str = "Minutes OpenAI-compatible Summaries";
 const OPENAI_COMPATIBLE_ACCOUNT: &str = "default";
