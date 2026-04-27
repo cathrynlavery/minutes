@@ -297,6 +297,200 @@ post_record_skill: minutes-soap-review
 ---
 ```
 
+### US clinical family (`soap` + `psych-soap` + `pediatric-soap`)
+
+A second clinical family, parallel to `medical-fr-base`. The two families are deliberately independent, rather than sharing a `clinical-base` parent: US HIPAA obligations and French HDS/RGPD obligations do not share a clean common base yet, and forcing one would lock in lowest-common-denominator design before either family is mature. If convergent patterns emerge, a shared parent can be extracted later.
+
+The `soap` parent encodes a widely used SOAP structure described in StatPearls/NCBI Bookshelf. Two specialty children pressure-test inheritance: `psych-soap` reorganizes Objective around the Mental Status Exam, and `pediatric-soap` introduces growth percentiles, developmental screening, and immunization fields that do not exist in the adult parent.
+
+Compliance scope note: these templates are HIPAA-aware, not HIPAA-compliant in a regulated deployment. HIPAA compliance is ultimately a property of deployment (BAAs, infrastructure, access controls), not file format. Open Question 9 covers this explicitly. The bundled `soap` markdown body includes an explicit compliance scope statement: `audit_log: true` and `require_local_processing: true` are tool-level safety behaviors, not deployment-level certifications, and medical-record / audit-log retention are governed by state law and other applicable retention obligations.
+
+#### `soap` (community, US clinical baseline)
+
+```yaml
+---
+name: SOAP Note (US Clinical, Outpatient)
+slug: soap
+version: 1.0.0
+author: silverstein
+license: MIT
+description: SOAP note for US outpatient clinical encounters. Inpatient progress notes have additional structure (interval events, I/O, lines, prophylaxis) and would be a separate child template.
+keywords: [soap, medical, clinical, hipaa, us, outpatient]
+extends_base: true
+triggers:
+  calendar_keywords: [patient, consultation, visit, "follow-up", appointment, encounter]
+  transcript_keywords: ["chief complaint", vitals, assessment, plan]
+extract:
+  patient_context:
+    age_sex: "Patient age and sex/gender if clinically relevant"
+    visit_type: "New, follow-up, urgent, telehealth"
+    historian: "Patient, parent, caregiver; reliability if relevant"
+  subjective:
+    chief_complaint: "Patient-reported reason for visit, in their own words"
+    history_present_illness: "HPI using OLDCARTS (onset, location, duration, character, alleviating/aggravating, radiation, timing, severity), associated symptoms, and pertinent negatives"
+    past_medical_history: "Active and past chronic conditions"
+    past_surgical_history: "Prior surgeries with year when known"
+    family_history: "Pertinent first-degree family conditions"
+    social_history: "Occupation, living situation, tobacco/alcohol/substance use, sexual history (HEADSS framework in adolescents)"
+    medications: "Current medications with reconciliation and adherence: name, dose, route, frequency"
+    allergies: "Drug, food, environmental allergies with reaction and severity; NKDA if explicitly stated"
+    review_of_systems: "Pertinent positives and negatives by organ system"
+  objective:
+    vitals: "BP, HR, RR, temperature, SpO2, weight, height, BMI"
+    physical_exam:
+      general: "General appearance, distress level, alertness"
+      cardiovascular: "Rate, rhythm, murmurs, peripheral pulses"
+      neurological: "Mental status, cranial nerves, motor, sensory, reflexes"
+      # Additional systems (HEENT, respiratory, abdominal, MSK, skin) in the bundled template; abbreviated here.
+    labs: "Relevant lab results with reference ranges"
+    imaging: "Imaging studies and impressions"
+  assessment:
+    primary_diagnosis: "Most likely diagnosis with explicit clinical reasoning"
+    differential_diagnoses: "Ranked differentials, including dangerous diagnoses even when less likely"
+    problem_list: "Active problems ordered by clinical importance"
+  plan:
+    diagnostic: "Further workup ordered with rationale, indexed to the assessment problem"
+    therapeutic: "Medications, procedures, non-pharmacologic interventions, indexed to the assessment problem"
+    education: "Patient education, counseling, shared decision-making notes"
+    return_precautions: "Symptoms or thresholds that should prompt earlier return or ED visit"
+    referrals: "Specialist consults requested"
+    follow_up: "Disposition and follow-up timing"
+compliance:
+  redact_phi: true
+  forbid_in_summary: [full_ssn, mrn, full_date_of_birth, full_name]
+  require_local_processing: true
+  audit_log: true
+post_record_skill: minutes-soap-review
+agent_context: |
+  This is a clinical SOAP summary. Treat all content as protected health information and default to redaction-friendly phrasing in agent responses (refer to "the patient" rather than identifiers). Do not echo SSNs, MRNs, dates of birth, or full names into responses.
+additional_instructions: |
+  Document pertinent positives AND pertinent negatives in ROS and physical exam. Order differentials most-to-least likely with explicit clinical reasoning for the leading diagnosis, and include dangerous diagnoses even when less likely. Plan items should reference the assessment problem they address.
+language: en
+---
+```
+
+The `forbid_in_summary` default includes `full_name` because Minutes outputs are agent-readable summaries on local disk, not the canonical clinical record; the conservative default is to PHI-redact the summary even though the canonical record (in an EHR) is identified. Deployments that need identified working documents can override `redact_phi: false` if the surrounding deployment is hardened to support it. `require_local_processing: true` is a Minutes product/safety policy; HIPAA itself permits cloud processing under appropriate Business Associate Agreements.
+
+#### `psych-soap` (community, extends `soap`)
+
+Reorganizes Objective around the Mental Status Exam, using APA Practice Guidelines / StatPearls-aligned domains. Inherits `compliance`, `agent_context`, `additional_instructions`, `language` from `soap`.
+
+```yaml
+---
+name: Psychiatric SOAP Note
+slug: psych-soap
+extends: soap
+version: 1.0.0
+description: Psychiatric SOAP note with Mental Status Exam and DSM-5-TR diagnostic framework.
+keywords: [psychiatry, "mental health", "mental status exam", "dsm-5-tr", soap]
+triggers:
+  calendar_keywords: [psych, psychiatry, therapy, counseling, "mental health"]
+  transcript_keywords: [mood, affect, "mental status", "suicidal ideation", hallucinations]
+extract:
+  patient_context:
+    age_sex: "Patient age and sex/gender if clinically relevant"
+    visit_type: "Initial evaluation, medication management, follow-up, crisis"
+    historian: "Patient, family member, prior records; reliability"
+  subjective:
+    chief_complaint: "Patient-reported reason for visit, in their own words"
+    history_present_illness: "Mood, anxiety, sleep, appetite, energy, concentration, suicidal/homicidal ideation, psychotic symptoms, stressors, course since last visit"
+    psychiatric_history: "Prior psychiatric diagnoses, hospitalizations, treatments, medication trials and responses"
+    substance_use: "Alcohol, tobacco, cannabis, other substances; frequency and amount"
+    trauma_history: "History of abuse, neglect, PTSD-related events"
+    family_psychiatric_history: "Mental illness, suicide, substance use in family"
+    social_history: "Living situation, supports, employment, legal involvement"
+    medications: "Current psychiatric and medical medications with adherence"
+    allergies: "Drug allergies and adverse reactions"
+  objective:
+    vitals: "BP, HR, weight, BMI for atypical antipsychotic monitoring"
+    mental_status_exam:
+      appearance: "Grooming, hygiene, dress, apparent age"
+      behavior: "Eye contact, cooperativeness, attitude toward examiner"
+      motor_activity: "Psychomotor agitation or retardation, abnormal movements (EPS, tardive dyskinesia, tremor)"
+      speech: "Rate, rhythm, volume, prosody, latency"
+      mood_affect: "Mood (patient-reported emotional state) and affect (observed range, intensity, congruence with mood)"
+      thought_process: "Linear, tangential, circumstantial, flight of ideas, loose associations"
+      thought_content: "Suicidal ideation, homicidal ideation, delusions, obsessions, paranoia"
+      perceptual_disturbances: "Hallucinations (auditory, visual, tactile), illusions, depersonalization or derealization"
+      sensorium_and_cognition: "Level of consciousness/alertness, orientation, attention, memory, fund of knowledge, abstract thinking"
+      insight: "Awareness of illness and need for treatment"
+      judgment: "Practical decision-making and ability to use information in current context"
+    labs: "Medication levels (lithium, valproate, other AEDs); metabolic monitoring on antipsychotics (fasting glucose or A1c, lipid panel, basic metabolic panel); TSH, B12, drug screen if indicated"
+  assessment:
+    dsm5tr_diagnoses: "Active DSM-5-TR diagnoses with specifiers"
+    differential_diagnoses: "Ranked differentials including medical mimics"
+    risk_assessment: "Suicide risk, violence risk, self-care capacity"
+    formulation: "Biopsychosocial formulation linking history to current presentation"
+  plan:
+    medication_management: "Psychiatric medications: starts, stops, dose changes, rationale, side-effect monitoring"
+    psychotherapy: "Therapy modality, frequency, focus areas"
+    safety_planning: "Safety plan, means restriction, crisis contacts if elevated risk"
+    referrals: "Therapy, case management, substance treatment, medical workup"
+    follow_up: "Next visit timing and contingencies"
+post_record_skill: minutes-psych-review
+---
+```
+
+ASEPTIC is a commonly taught mnemonic for the MSE; it is not APA-canonical. The field set above follows APA Practice Guidelines and StatPearls rather than the mnemonic. Mood and affect are grouped because clinicians frequently document them together; deployments that prefer them split can override.
+
+#### `pediatric-soap` (community, extends `soap`)
+
+Aligned with AAP Bright Futures well-child visit components. Adds growth percentiles, developmental screening, and an immunization-aware Plan section.
+
+```yaml
+---
+name: Pediatric SOAP Note
+slug: pediatric-soap
+extends: soap
+version: 1.0.0
+description: Pediatric SOAP note covering acute visits and Bright Futures-aligned well-child checks.
+keywords: [pediatrics, "well-child", "bright futures", soap]
+triggers:
+  calendar_keywords: [pediatric, peds, "well-child", infant, child, immunization]
+  transcript_keywords: [milestones, growth, immunizations, "parent reports"]
+extract:
+  patient_context:
+    age_sex: "Patient age and sex"
+    visit_type: "Well-child visit, acute, follow-up"
+    historian: "Caregiver and reliability; child if age-appropriate"
+  subjective:
+    chief_complaint: "Reason for visit (acute symptom or scheduled well-child check)"
+    history_present_illness: "HPI; for infants and young children, primarily caregiver-reported"
+    birth_history: "Gestational age, delivery, birth weight, neonatal complications"
+    feeding_history: "Breast, formula, solids; intake patterns and weight gain"
+    developmental_history: "Milestone status: gross motor, fine motor, language, social"
+    past_medical_history: "Chronic conditions, prior hospitalizations, ED visits"
+    immunization_status: "Up to date per CDC/AAP schedule, or specific gaps"
+    family_history: "Pertinent inherited conditions, maternal pregnancy complications"
+    social_history: "Caregivers in home, daycare, school grade, screen time, food security"
+    medications: "Current medications and recent antibiotics"
+    allergies: "Drug, food, environmental allergies with reaction and severity"
+  objective:
+    vitals: "Weight, length/height, head circumference (birth through 24 months), BMI-for-age (from 24 months), temperature, HR, RR, SpO2; BP risk-based before age 3 and routine from age 3 onward"
+    growth_percentiles: "Weight-for-age, length-for-age, weight-for-length (birth through 24 months) or BMI-for-age (from 24 months) on WHO (birth to 2 years) or CDC (2 years and older) curves"
+    developmental_screen: "Standardized screen result (ASQ, M-CHAT-R, PEDS, Survey of Wellbeing of Young Children) when administered"
+    physical_exam:
+      general: "Appearance, hydration, alertness, interaction with caregiver"
+      heent: "Fontanelles (infant), tympanic membranes, oropharynx, dentition"
+      cardiovascular: "Rate, rhythm, murmurs, femoral pulses (infant)"
+      # Additional systems (respiratory, abdominal, GU, neuro, MSK, skin) in the bundled template; abbreviated here.
+    labs: "Lead screen, hemoglobin, newborn screen status, other indicated labs"
+  assessment:
+    primary_diagnosis: "Most likely diagnosis or well-child status"
+    differential_diagnoses: "Ranked differentials when symptomatic"
+    well_child_findings: "Growth, development, nutrition, behavior status"
+    risk_factors: "Identified social, developmental, or medical concerns"
+  plan:
+    diagnostic: "Tests ordered or recommended"
+    therapeutic: "Medications, supportive care"
+    immunizations_administered: "Per NCVIA/CDC documentation: vaccine name, date administered, manufacturer, lot number, VIS edition date and date provided to parent/legal representative/patient as applicable, administrator name and address and title; route, dose, and site as best practice"
+    anticipatory_guidance: "Visit-specific Bright Futures priorities for this age, including the family's stated agenda and counseling topics actually covered"
+    referrals: "Subspecialty, early intervention, developmental services"
+    follow_up: "Next well-child or follow-up timing"
+post_record_skill: minutes-pediatric-review
+---
+```
+
 ## Implementation phases
 
 ### Phase 1: shippable, resolves #143
@@ -319,7 +513,8 @@ post_record_skill: minutes-soap-review
 - Compliance rules enforced pre-persistence (redaction, validation)
 - `post_record_skill` wired into post-record hook
 - `agent_context` injected into MCP responses
-- Ship regulated verticals: `soap`, `medical-fr-base`, `consultation-fr`, `soap-fr`, `therapy-intake`, `legal-consult`
+- Ship standalone compliance-aware example templates: `soap`, `medical-fr-base`, `therapy-intake`, `legal-consult`
+- The US (`soap`) and FR (`medical-fr-base`) families ship independently within Phase 3; a stalled review on one does not block the other.
 - Audit log infrastructure
 
 ### Phase 4: calendar routing, community gallery, inheritance
@@ -328,6 +523,7 @@ post_record_skill: minutes-soap-review
 - Template validation in CI (schema + smoke test against `example.md`)
 - `minutes template install` for gh repos + gists
 - `extends:` inheritance resolution
+- Inherited specialty children: `psych-soap`, `pediatric-soap` (US family); `consultation-fr`, `soap-fr` (FR family)
 - Gallery landing page on useminutes.app
 
 ### Phase 5: graph schema extensions
@@ -355,13 +551,16 @@ These are the areas where community input most changes the shape. Comments welco
 
 8. **Template search / discovery**: CLI `minutes template search` queries bundled + installed; should it also query the gh repo's `templates/` directory? My lean: yes, via a periodic index refresh, not live queries per search.
 
+9. **HIPAA scope of the `soap` template family**: Should the bundled `soap` template explicitly disclaim certification scope in its docstring section, or is the distinction implicit enough that disclaiming risks sounding apologetic? `audit_log: true` and `require_local_processing: true` are tool-level safety behaviors, not deployment-level certifications. HIPAA compliance is ultimately a property of deployment (BAAs, infrastructure, access controls, workforce training), not file format. The Security Rule's six-year retention requirement (45 CFR 164.316(b)(2)(i)) applies to required Security Rule documentation, not raw audit logs or medical records, and medical-record retention is governed by state law and other applicable retention obligations. The audit-controls citation (45 CFR 164.312(b)) and the activity-review citation (45 CFR 164.308(a)(1)(ii)(D)) support a richer audit_log design, and 45 CFR 164.312(a)(2)(i) covers unique user identification, but those references support a richer design rather than spelling out specific required fields. My lean: explicit, terse disclaimer in the bundled template's human-readable section. A follow-up open question (possibly Q10 in a later revision) on whether `audit_log` should expand to capture actor identity and per-record access for deployments that want a stronger trail.
+
 ## Acknowledgments
 
 - **@ed0c** (#143) surfaced the limitation and agreed to co-author the regulated-vertical reference implementation. The HDS + RGPD constraints shaped the compliance field directly.
+- The `soap` US clinical family draws on published clinical references: StatPearls/NCBI for SOAP structure, AAP Bright Futures for pediatrics, and APA Practice Guidelines for the Mental Status Exam. Clinical reviewers welcome; comment on PR #147.
 
 ## Next steps
 
-- Collect feedback on this RFC for ~2 weeks
-- @ed0c and @silverstein co-author first draft of `medical-fr-base`, `consultation-fr`, `soap-fr`
+- Collect feedback on this RFC from clinical reviewers (US and FR families), particularly on inheritance and compliance shapes
+- @ed0c and @silverstein converge on `medical-fr-base`, `consultation-fr`, `soap-fr`
 - Begin Phase 1 implementation on a separate branch
 - RFC merges once feedback has converged
