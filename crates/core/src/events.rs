@@ -154,6 +154,15 @@ pub enum MinutesEvent {
         facts_skipped: usize,
         people_updated: Vec<String>,
     },
+    /// User muted their microphone for the current dual-source recording.
+    /// System audio continues to capture; mic samples are zeroed.
+    MicMuted {
+        source: String,
+    },
+    /// User unmuted their microphone for the current dual-source recording.
+    MicUnmuted {
+        source: String,
+    },
 }
 
 fn events_path() -> PathBuf {

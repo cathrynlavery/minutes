@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 // Config file is OPTIONAL. minutes works without one.
 // ──────────────────────────────────────────────────────────────
 
+/// Desktop-only fallback env var used when the Tauri app hydrates an
+/// OpenAI-compatible gateway key from macOS Keychain for non-local endpoints.
+pub const OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV: &str = "MINUTES_OPENAI_COMPATIBLE_API_KEY";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -23,6 +27,7 @@ pub struct Config {
     pub assistant: AssistantConfig,
     pub privacy: PrivacyConfig,
     pub screen_context: ScreenContextConfig,
+    pub desktop_context: DesktopContextConfig,
     pub calendar: CalendarConfig,
     pub call_detection: CallDetectionConfig,
     pub identity: IdentityConfig,
@@ -97,7 +102,8 @@ impl Default for VoiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranscriptionConfig {
-    /// Transcription engine: "whisper" (default) or "parakeet".
+    /// Transcription engine: "whisper" (default), "parakeet", or
+    /// "apple-speech" (experimental live-transcript-only path on macOS 26+).
     pub engine: String,
     pub model: String,
     pub model_path: PathBuf,
@@ -155,6 +161,16 @@ pub struct DiarizationConfig {
     /// similarities, so `voice.match_threshold` must be lowered (~0.1–0.2)
     /// for voice enrollment matching to work reliably.
     pub embedding_model: String,
+    /// Correlation threshold (0.0–1.0) above which stem-based diarization
+    /// collapses voice + system stems to a single speaker. The check
+    /// assumes high cross-stem correlation means one person bleeding into
+    /// both sources (self-monitor / headphone leak), but it misfires for
+    /// open-speaker mic setups (Studio Display Mic, laptop mic, desk USB
+    /// mic near speakers) where the mic acoustically picks up multi-
+    /// speaker system audio from a Zoom/Meet call. Raise to 1.0 or higher
+    /// to disable the collapse and rely on per-window energy attribution.
+    /// Default 0.85 preserves historical behavior.
+    pub stem_correlation_threshold: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +181,9 @@ pub struct SummarizationConfig {
     pub chunk_max_tokens: usize,
     pub ollama_url: String,
     pub ollama_model: String,
+    pub openai_compatible_base_url: String,
+    pub openai_compatible_model: String,
+    pub openai_compatible_api_key_env: String,
     pub mistral_model: String,
     pub language: String,
 }
@@ -211,6 +230,18 @@ pub struct ScreenContextConfig {
     pub keep_after_summary: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopContextConfig {
+    pub enabled: bool,
+    pub capture_window_titles: bool,
+    pub capture_browser_context: bool,
+    pub allowed_apps: Vec<String>,
+    pub denied_apps: Vec<String>,
+    pub allowed_domains: Vec<String>,
+    pub denied_domains: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PrivacyConfig {
@@ -240,6 +271,20 @@ impl Default for PrivacyConfig {
     fn default() -> Self {
         Self {
             hide_from_screen_share: true,
+        }
+    }
+}
+
+impl Default for DesktopContextConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            capture_window_titles: true,
+            capture_browser_context: false,
+            allowed_apps: vec![],
+            denied_apps: vec![],
+            allowed_domains: vec![],
+            denied_domains: vec![],
         }
     }
 }
@@ -489,6 +534,13 @@ pub struct HooksConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LiveTranscriptConfig {
+    /// Standalone live transcript backend selection.
+    ///
+    /// - `"inherit"` (default): follow `transcription.engine`
+    /// - `"whisper"`: force Whisper for standalone live transcript
+    /// - `"parakeet"`: force Parakeet for standalone live transcript
+    /// - `"apple-speech"`: experimental macOS standalone-live-only path
+    pub backend: String,
     /// Whisper model to use for live transcription.
     /// Empty string means "use the dictation model".
     pub model: String,
@@ -505,6 +557,7 @@ pub struct LiveTranscriptConfig {
 impl Default for LiveTranscriptConfig {
     fn default() -> Self {
         Self {
+            backend: LIVE_TRANSCRIPT_BACKEND_INHERIT.into(),
             model: String::new(), // empty = use dictation model
             max_utterance_secs: 30,
             save_wav: true,
@@ -513,6 +566,14 @@ impl Default for LiveTranscriptConfig {
         }
     }
 }
+
+pub const LIVE_TRANSCRIPT_BACKEND_INHERIT: &str = "inherit";
+pub const VALID_LIVE_TRANSCRIPT_BACKENDS: &[&str] = &[
+    LIVE_TRANSCRIPT_BACKEND_INHERIT,
+    "whisper",
+    "parakeet",
+    "apple-speech",
+];
 
 impl Default for ScreenContextConfig {
     fn default() -> Self {
@@ -598,6 +659,7 @@ impl Default for Config {
             assistant: AssistantConfig::default(),
             privacy: PrivacyConfig::default(),
             screen_context: ScreenContextConfig::default(),
+            desktop_context: DesktopContextConfig::default(),
             calendar: CalendarConfig::default(),
             call_detection: CallDetectionConfig::default(),
             identity: IdentityConfig::default(),
@@ -642,6 +704,7 @@ impl Default for DiarizationConfig {
             model_path: minutes_dir().join("models").join("diarization"),
             threshold: 0.4,
             embedding_model: "cam++".into(),
+            stem_correlation_threshold: 0.85,
         }
     }
 }
@@ -649,11 +712,14 @@ impl Default for DiarizationConfig {
 impl Default for SummarizationConfig {
     fn default() -> Self {
         Self {
-            engine: "auto".into(),
+            engine: "none".into(),
             agent_command: "claude".into(),
             chunk_max_tokens: 4000,
             ollama_url: "http://localhost:11434".into(),
             ollama_model: "llama3.2".into(),
+            openai_compatible_base_url: "http://localhost:11434/v1".into(),
+            openai_compatible_model: "llama3.2".into(),
+            openai_compatible_api_key_env: String::new(),
             mistral_model: "mistral-large-latest".into(),
             language: "auto".into(),
         }
@@ -706,6 +772,39 @@ impl Default for WatchConfig {
 // ── Loading ──────────────────────────────────────────────────
 
 impl Config {
+    /// Effective backend for the standalone live transcript path.
+    ///
+    /// `live_transcript.backend = "inherit"` follows `transcription.engine`,
+    /// except for the legacy `transcription.engine = "apple-speech"` case,
+    /// which older configs used to express the standalone-live-only Apple
+    /// experiment. We keep honoring that value here so non-Tauri consumers
+    /// preserve behavior even before the migration has rewritten the file.
+    pub fn effective_live_transcript_backend(&self) -> &str {
+        let backend = self.live_transcript.backend.trim();
+        if backend.is_empty() || backend == LIVE_TRANSCRIPT_BACKEND_INHERIT {
+            if self
+                .transcription
+                .engine
+                .eq_ignore_ascii_case("apple-speech")
+            {
+                "apple-speech"
+            } else {
+                &self.transcription.engine
+            }
+        } else {
+            &self.live_transcript.backend
+        }
+    }
+
+    pub fn standalone_live_backend_setting(&self) -> &str {
+        let backend = self.live_transcript.backend.trim();
+        if backend.is_empty() {
+            LIVE_TRANSCRIPT_BACKEND_INHERIT
+        } else {
+            &self.live_transcript.backend
+        }
+    }
+
     /// Standard config file location.
     pub fn config_path() -> PathBuf {
         config_base_dir().join("minutes").join("config.toml")
@@ -764,9 +863,70 @@ impl Config {
         } else {
             None
         };
+        let raw_compat = raw_toml
+            .as_deref()
+            .map(inspect_raw_toml_compat)
+            .unwrap_or_default();
 
-        let config = Self::load_from(path);
+        let mut config = Self::load_from(path);
         let mut migrated_toml: Option<String> = None;
+
+        // Apple Speech migration: older configs overloaded
+        // `transcription.engine = "apple-speech"` to mean "standalone live
+        // transcript should try Apple Speech". That was always a product/model
+        // mismatch because batch and recording-sidecar flows never actually
+        // used Apple Speech. Normalize those existing configs to:
+        //
+        //   [transcription]
+        //   engine = "whisper"
+        //
+        //   [live_transcript]
+        //   backend = "apple-speech"
+        //
+        // We intentionally persist the migrated config back to disk so the
+        // desktop app stops carrying the old overload forward after the first
+        // upgraded launch.
+        if file_existed
+            && config
+                .transcription
+                .engine
+                .eq_ignore_ascii_case("apple-speech")
+            && raw_toml.as_deref().is_some_and(|raw| {
+                !raw_toml_has_setting_in_section(raw, "live_transcript", "backend")
+            })
+        {
+            config.transcription.engine = "whisper".into();
+            config.live_transcript.backend = "apple-speech".into();
+            migrated_toml = toml::to_string_pretty(&config).ok();
+            tracing::info!(
+                "live transcript backend migration: moved legacy apple-speech engine setting into [live_transcript].backend at {}",
+                path.display()
+            );
+        }
+
+        // Summarization upgrade safety:
+        //
+        // 1. Preserve the historical `"auto"` engine for existing sparse
+        //    configs that never wrote `[summarization].engine`. This stays
+        //    in-memory so we do not force-rewrite otherwise healthy files and
+        //    drop comments / unknown keys just to preserve legacy behavior.
+        // 2. Clear the desktop-only key env marker out of shared config files.
+        if file_existed {
+            if raw_compat.preserve_legacy_auto_summarization {
+                tracing::info!(
+                    "summarization migration: preserving legacy auto engine for sparse config at {}",
+                    path.display()
+                );
+            }
+
+            if raw_compat.clear_desktop_openai_compatible_env_marker {
+                tracing::info!(
+                    "summarization migration: clearing desktop-only key env marker from shared config at {}",
+                    path.display()
+                );
+                migrated_toml = toml::to_string_pretty(&config).ok();
+            }
+        }
 
         // Palette section persistence: if the config file exists but
         // has no `[palette]` section, write the default section out
@@ -782,7 +942,7 @@ impl Config {
         // fills missing sections with `Default`, so the parsed struct
         // alone cannot distinguish "user opted out" from "field never
         // seen" — only a text check on the raw TOML can.
-        if file_existed {
+        if file_existed && migrated_toml.is_none() {
             if let Some(raw) = raw_toml.as_deref() {
                 if !raw_toml_has_section(raw, "palette") {
                     migrated_toml = Some(append_palette_section(raw, &config.palette));
@@ -816,7 +976,10 @@ impl Config {
 
         match std::fs::read_to_string(path) {
             Ok(contents) => match toml::from_str(&contents) {
-                Ok(config) => config,
+                Ok(mut config) => {
+                    apply_raw_toml_compat(&mut config, inspect_raw_toml_compat(&contents));
+                    config
+                }
                 Err(e) => {
                     tracing::warn!(
                         "invalid config at {}: {}. Using defaults.",
@@ -886,6 +1049,61 @@ impl Config {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct RawTomlCompat {
+    preserve_legacy_auto_summarization: bool,
+    clear_desktop_openai_compatible_env_marker: bool,
+}
+
+fn inspect_raw_toml_compat(raw: &str) -> RawTomlCompat {
+    RawTomlCompat {
+        preserve_legacy_auto_summarization: !raw_toml_has_setting_in_section(
+            raw,
+            "summarization",
+            "engine",
+        ),
+        clear_desktop_openai_compatible_env_marker: raw_toml_setting_equals_in_section(
+            raw,
+            "summarization",
+            "openai_compatible_api_key_env",
+            OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV,
+        ),
+    }
+}
+
+fn apply_raw_toml_compat(config: &mut Config, compat: RawTomlCompat) {
+    if compat.preserve_legacy_auto_summarization {
+        config.summarization.engine = "auto".into();
+    }
+    if compat.clear_desktop_openai_compatible_env_marker {
+        config.summarization.openai_compatible_api_key_env.clear();
+    }
+}
+
+pub fn openai_compatible_base_url_is_local(base_url: &str) -> bool {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let without_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(stripped) = host_port.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or(stripped)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+
+    matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "::1"
+    )
+}
+
 /// Return `true` iff the raw TOML text contains a top-level `[section]`
 /// header. This is a deliberately primitive text check — we cannot use
 /// `toml::from_str` to answer this question because serde's `#[serde(default)]`
@@ -908,6 +1126,47 @@ fn raw_toml_has_section(raw: &str, section: &str) -> bool {
         }
         if trimmed == target {
             return true;
+        }
+    }
+    false
+}
+
+fn raw_toml_has_setting_in_section(raw: &str, section: &str, key: &str) -> bool {
+    let target = format!("[{}]", section);
+    let key_prefix = format!("{} =", key);
+    let mut in_section = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_section = trimmed == target;
+            continue;
+        }
+        if in_section && trimmed.starts_with(&key_prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+fn raw_toml_setting_equals_in_section(raw: &str, section: &str, key: &str, expected: &str) -> bool {
+    let target = format!("[{}]", section);
+    let key_prefix = format!("{} =", key);
+    let expected_value = toml::Value::String(expected.to_string()).to_string();
+    let mut in_section = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_section = trimmed == target;
+            continue;
+        }
+        if in_section && trimmed.starts_with(&key_prefix) {
+            return trimmed[key_prefix.len()..].trim() == expected_value;
         }
     }
     false
@@ -939,6 +1198,10 @@ mod tests {
     fn default_config_is_valid() {
         let config = Config::default();
         assert_eq!(config.transcription.engine, "whisper");
+        assert_eq!(
+            config.live_transcript.backend,
+            LIVE_TRANSCRIPT_BACKEND_INHERIT
+        );
         assert_eq!(config.transcription.model, "small");
         assert_eq!(config.transcription.min_words, 3);
         assert_eq!(config.transcription.parakeet_binary, "parakeet");
@@ -952,7 +1215,7 @@ mod tests {
             "tdt-600m.tokenizer.vocab"
         );
         assert_eq!(config.diarization.engine, "auto");
-        assert_eq!(config.summarization.engine, "auto");
+        assert_eq!(config.summarization.engine, "none");
         assert_eq!(config.search.engine, "builtin");
         assert!(!config.daily_notes.enabled);
         assert!(config.dictation.accumulate);
@@ -1115,6 +1378,46 @@ model = "tiny"
     }
 
     #[test]
+    fn effective_live_transcript_backend_inherits_batch_engine_by_default() {
+        let mut config = Config::default();
+        config.transcription.engine = "parakeet".into();
+
+        assert_eq!(config.standalone_live_backend_setting(), "inherit");
+        assert_eq!(config.effective_live_transcript_backend(), "parakeet");
+    }
+
+    #[test]
+    fn effective_live_transcript_backend_preserves_legacy_apple_engine_configs() {
+        let mut config = Config::default();
+        config.transcription.engine = "apple-speech".into();
+
+        assert_eq!(config.standalone_live_backend_setting(), "inherit");
+        assert_eq!(config.effective_live_transcript_backend(), "apple-speech");
+    }
+
+    #[test]
+    fn live_transcript_backend_can_be_set_from_toml() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+engine = "whisper"
+
+[live_transcript]
+backend = "apple-speech"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert_eq!(config.live_transcript.backend, "apple-speech");
+        assert_eq!(config.effective_live_transcript_backend(), "apple-speech");
+        assert_eq!(config.transcription.engine, "whisper");
+    }
+
+    #[test]
     fn parakeet_sidecar_flag_can_be_enabled_from_toml() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("config.toml");
@@ -1244,6 +1547,26 @@ enabled = true
     fn raw_toml_has_section_rejects_non_matching_sections() {
         assert!(!raw_toml_has_section("[dictation]\n", "palette"));
         assert!(!raw_toml_has_section("[palette.inner]\n", "palette"));
+    }
+
+    #[test]
+    fn raw_toml_has_setting_in_section_matches_exact_key() {
+        let raw = r#"
+[live_transcript]
+backend = "apple-speech"
+shortcut = "CmdOrCtrl+Shift+L"
+"#;
+
+        assert!(raw_toml_has_setting_in_section(
+            raw,
+            "live_transcript",
+            "backend"
+        ));
+        assert!(!raw_toml_has_setting_in_section(
+            raw,
+            "live_transcript",
+            "missing"
+        ));
     }
 
     #[test]
@@ -1385,6 +1708,162 @@ shortcut_enabled = false
         assert!(reloaded.contains("# top comment"));
         assert!(reloaded.contains("mystery = \"keep-me\""));
         assert!(raw_toml_has_section(&reloaded, "palette"));
+    }
+
+    #[test]
+    fn upgrade_migrates_legacy_apple_engine_into_live_backend() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+engine = "apple-speech"
+model = "small"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_migrations_from(&config_path);
+        assert_eq!(config.transcription.engine, "whisper");
+        assert_eq!(config.live_transcript.backend, "apple-speech");
+        assert_eq!(config.effective_live_transcript_backend(), "apple-speech");
+
+        let reloaded = std::fs::read_to_string(&config_path).unwrap();
+        assert!(reloaded.contains("engine = \"whisper\""));
+        assert!(reloaded.contains("[live_transcript]"));
+        assert!(reloaded.contains("backend = \"apple-speech\""));
+    }
+
+    #[test]
+    fn upgrade_does_not_override_explicit_live_backend_setting() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+engine = "apple-speech"
+
+[live_transcript]
+backend = "whisper"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_migrations_from(&config_path);
+        assert_eq!(config.transcription.engine, "apple-speech");
+        assert_eq!(config.live_transcript.backend, "whisper");
+        assert_eq!(config.effective_live_transcript_backend(), "whisper");
+    }
+
+    #[test]
+    fn upgrade_preserves_legacy_auto_summarization_when_engine_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+model = "small"
+
+[palette]
+shortcut_enabled = true
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_with_migrations_from(&config_path);
+        assert_eq!(config.summarization.engine, "auto");
+
+        let reloaded = std::fs::read_to_string(&config_path).unwrap();
+        assert!(reloaded.contains("[transcription]\nmodel = \"small\""));
+        assert!(reloaded.contains("[palette]\nshortcut_enabled = true"));
+        assert!(!reloaded.contains("[summarization]"));
+    }
+
+    #[test]
+    fn load_from_preserves_legacy_auto_summarization_when_engine_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[transcription]
+model = "small"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert_eq!(config.summarization.engine, "auto");
+    }
+
+    #[test]
+    fn upgrade_clears_desktop_only_openai_compatible_env_marker() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[summarization]
+engine = "openai-compatible"
+openai_compatible_base_url = "https://openrouter.ai/api/v1"
+openai_compatible_model = "openai/gpt-4o-mini"
+openai_compatible_api_key_env = "{}"
+"#,
+                OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load_with_migrations_from(&config_path);
+        assert!(config
+            .summarization
+            .openai_compatible_api_key_env
+            .is_empty());
+
+        let reloaded = std::fs::read_to_string(&config_path).unwrap();
+        assert!(reloaded.contains("openai_compatible_api_key_env = \"\""));
+    }
+
+    #[test]
+    fn load_from_clears_desktop_only_openai_compatible_env_marker() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[summarization]
+engine = "openai-compatible"
+openai_compatible_api_key_env = "{}"
+"#,
+                OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert!(config
+            .summarization
+            .openai_compatible_api_key_env
+            .is_empty());
+    }
+
+    #[test]
+    fn openai_compatible_base_url_detects_local_hosts() {
+        assert!(openai_compatible_base_url_is_local(
+            "http://localhost:11434/v1"
+        ));
+        assert!(openai_compatible_base_url_is_local(
+            "http://127.0.0.1:11434/v1"
+        ));
+        assert!(openai_compatible_base_url_is_local("http://[::1]:11434/v1"));
+        assert!(!openai_compatible_base_url_is_local(
+            "https://openrouter.ai/api/v1"
+        ));
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod commands;
 mod context;
 mod palette_dispatch;
 mod pty;
+mod secret_store;
 mod shortcut_manager;
 
 const MINUTES_WEBSITE_URL: &str = "https://useminutes.app";
@@ -788,6 +789,7 @@ fn main() {
     // Load with first-run and upgrade migrations so palette defaults
     // stay enabled across upgrades and fresh installs.
     let startup_config_snapshot = minutes_core::config::Config::load_with_migrations();
+    let _ = secret_store::hydrate_openai_compatible_api_key_env();
     let recording = Arc::new(AtomicBool::new(false));
     let starting = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -1293,6 +1295,23 @@ fn main() {
                 None::<&str>,
             )?;
             let stop_item_ref = stop_item.clone();
+            // Enabled regardless of recording state: toggling when no recording
+            // is active primes the sentinel so the NEXT dual-source recording
+            // starts muted. During a recording, the toggle takes effect on the
+            // next loop iteration of record_to_wav_dual_source.
+            let initial_mic_muted = minutes_core::streaming::is_mic_muted();
+            let mic_mute_item = MenuItem::with_id(
+                app,
+                "mic-mute-toggle",
+                if initial_mic_muted {
+                    "Mute My Mic (Recording Only) ✓"
+                } else {
+                    "Mute My Mic (Recording Only)"
+                },
+                true,
+                None::<&str>,
+            )?;
+            let mic_mute_item_ref = mic_mute_item.clone();
             let sep = MenuItem::with_id(app, "sep1", "──────────", false, None::<&str>)?;
             let note_item = MenuItem::with_id(app, "note", "Add Note...", true, None::<&str>)?;
             let list_item =
@@ -1341,6 +1360,7 @@ fn main() {
                 &record_item,
                 &quick_thought_item,
                 &stop_item,
+                &mic_mute_item,
                 &sep,
                 &note_item,
                 &assistant_item,
@@ -1367,6 +1387,7 @@ fn main() {
                     let stp_item = stop_item_ref.clone();
                     let screen_share_hidden = screen_share_hidden.clone();
                     let screen_share_item_ref = screen_share_item_ref.clone();
+                    let mic_mute_item_ref = mic_mute_item_ref.clone();
                     match event.id.as_ref() {
                         "open" => {
                             show_main_window(app);
@@ -1461,6 +1482,16 @@ fn main() {
                                     update_tray_state(&app_done, false);
                                 }
                             });
+                        }
+                        "mic-mute-toggle" => {
+                            let new_state =
+                                minutes_core::streaming::toggle_mic_mute_with_sentinel();
+                            let label = if new_state {
+                                "Mute My Mic (Recording Only) ✓"
+                            } else {
+                                "Mute My Mic (Recording Only)"
+                            };
+                            mic_mute_item_ref.set_text(label).ok();
                         }
                         "note" => {
                             show_note_window(app);
@@ -1737,6 +1768,8 @@ fn main() {
             commands::cmd_stop_recording,
             commands::cmd_cancel_call_end_countdown,
             commands::cmd_extend_recording,
+            commands::cmd_toggle_mic_mute,
+            commands::cmd_mic_mute_state,
             commands::cmd_open_file,
             commands::cmd_read_text_file,
             commands::cmd_get_text_file_access,
@@ -1780,6 +1813,9 @@ fn main() {
             commands::cmd_terminal_info,
             commands::cmd_get_settings,
             commands::cmd_warm_parakeet,
+            commands::cmd_openai_compatible_secret_status,
+            commands::cmd_set_openai_compatible_api_key,
+            commands::cmd_clear_openai_compatible_api_key,
             commands::cmd_set_setting,
             commands::cmd_set_screen_share_hidden,
             commands::cmd_get_autostart,

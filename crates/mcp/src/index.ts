@@ -12,6 +12,9 @@
  *   - get_meeting: Get full transcript of a specific meeting
  *   - process_audio: Process an audio file through the pipeline
  *   - add_note: Add a timestamped note to a recording or meeting
+ *   - activity_summary: Summarize meeting-adjacent desktop context for a session/path/window
+ *   - search_context: Search app and captured window-title desktop context
+ *   - get_moment: Show the local rewind around a linked artifact, session, or timestamp
  *   - consistency_report: Flag conflicting decisions and stale commitments
  *   - get_person_profile: Rich relationship profile for a person (graph index)
  *   - track_commitments: List open/stale commitments, filter by person
@@ -27,6 +30,13 @@
  * No shell interpolation — safe from injection.
  */
 
+// ── Crash tracer must load before any other import (see ./crashTracer.ts) ──
+// Issue #149 — Claude Desktop 1.3109.0 with MCP protocol 2025-11-25 kills
+// the extension server with no stderr visible in the host log. The tracer
+// writes synchronously to ~/.minutes/logs/mcp-crash.log so a reinstall
+// produces a real trace instead of a silent exit.
+import { crashTrace, CRASH_LOG_PATH } from "./crashTracer.js";
+
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -38,7 +48,7 @@ import {
 import { z } from "zod";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
-import { existsSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from "fs";
 import { mkdir, readFile, rm, writeFile } from "fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -51,6 +61,92 @@ import {
   validatePathInDirectories,
   validatePathInDirectory,
 } from "./paths.js";
+import { isCliCompatible } from "./version.js";
+import {
+  hasFeature,
+  probeCapabilitiesSync,
+  type CapabilityProbeResult,
+} from "./capabilities.js";
+
+crashTrace("imports-complete");
+
+// ── Demo mode (--demo flag) ────────────────────────────────
+// `npx minutes-mcp --demo` is a one-shot setup: copies bundled fixture
+// meetings to ~/.minutes/demo/, prints the MCP config snippet with an explicit
+// MEETINGS_DIR env override, prints suggested questions, and exits 0.
+//
+// The printed config uses env:{ MEETINGS_DIR } pointing at the demo dir. No
+// separate --demo flag at runtime. The MCP host just launches standard
+// `minutes-mcp`; the env override is what routes it at the demo corpus. This
+// avoids the TTY-detection ambiguity that an earlier dual-mode design had.
+//
+// Guarded on `--demo` AND on being the actual entry point so importers don't
+// trigger disk side effects by mistake. Use the same realpath-aware guard as
+// `main()` so npm/.bin shims and symlinked entrypoints still execute demo mode.
+if (process.argv.includes("--demo") && shouldRunMainEntry(process.argv[1], fileURLToPath(import.meta.url))) {
+  handleDemoSetup();
+}
+
+function handleDemoSetup(): void {
+  const demoDir = join(homedir(), ".minutes", "demo");
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Package layout after build: dist/index.js; fixtures live at
+  // <pkg>/fixtures/demo/ next to dist/.
+  const fixturesSrc = resolve(here, "..", "fixtures", "demo");
+
+  if (!existsSync(fixturesSrc)) {
+    console.error(
+      `[minutes-mcp --demo] bundled fixtures not found at ${fixturesSrc}. ` +
+        `This build of minutes-mcp is missing the demo corpus. ` +
+        `Try upgrading with: npm install -g minutes-mcp@latest`
+    );
+    process.exit(1);
+  }
+
+  mkdirSync(demoDir, { recursive: true });
+  for (const entry of readdirSync(fixturesSrc)) {
+    if (!entry.endsWith(".md")) continue;
+    copyFileSync(join(fixturesSrc, entry), join(demoDir, entry));
+  }
+
+  // The config snippet embeds the fully-resolved demoDir so users don't have
+  // to fill it in manually. MCP hosts inject this env when launching the
+  // server; the server's existing MEETINGS_DIR logic (line ~800) picks it up.
+  const configSnippet = JSON.stringify(
+    {
+      mcpServers: {
+        "minutes-demo": {
+          command: "npx",
+          args: ["minutes-mcp"],
+          env: {
+            MEETINGS_DIR: demoDir,
+          },
+        },
+      },
+    },
+    null,
+    2
+  );
+
+  console.log("");
+  console.log("Demo corpus ready at: " + demoDir);
+  console.log("5 fixture meetings with a pricing reversal, a customer commitment that slips, and a feature cut.");
+  console.log("");
+  console.log("═══ MCP config (paste into Claude Desktop, Cursor, Claude Code, or any MCP client) ═══");
+  console.log(configSnippet);
+  console.log("");
+  console.log("═══ Try asking your agent ═══");
+  console.log("  • List the meetings in this corpus.");
+  console.log("  • What did we decide about pricing? Which decision is current?");
+  console.log("  • What got killed in the last product prioritization meeting?");
+  console.log("  • What action items are still open, and who owns each?");
+  console.log("  • Summarize the Northwind customer thread.");
+  console.log("");
+  console.log("Note: some structured tools (consistency report, person profile) auto-install the Minutes CLI on first use.");
+  console.log("Full setup (real audio capture, transcription, real meetings): https://useminutes.app");
+  console.log("");
+  process.exit(0);
+}
 
 const UI_RESOURCE_URI = "ui://minutes/dashboard";
 const MCP_TOOLS_DOCS_BASE_URL = "https://useminutes.app/docs/mcp/tools";
@@ -203,6 +299,25 @@ async function triggerQmdIndex(): Promise<void> {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function canonicalEntrypointPath(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+
+  const resolved = resolve(filePath);
+
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export function shouldRunMainEntry(argv1: string | null | undefined, moduleFilename: string): boolean {
+  const entryPath = canonicalEntrypointPath(argv1);
+  const modulePath = canonicalEntrypointPath(moduleFilename);
+
+  return !!entryPath && !!modulePath && entryPath === modulePath;
+}
+
 // ── Extension runtime detection ───────────────────────────────
 // When running as a Claude Desktop extension (.mcpb), Claude uses its built-in
 // Node.js runtime.  Child processes spawned from that runtime land in a
@@ -266,9 +381,33 @@ function findMinutesBinary(): string {
 
 let MINUTES_BIN = findMinutesBinary();
 
-// ── Expected CLI version (must match this MCP server release) ──
-const MCP_SERVER_VERSION = "0.13.0";
-const EXPECTED_CLI_VERSION = MCP_SERVER_VERSION;
+// ── Capability probe (Phase 2 of #183) ────────────────────────
+// Ask the CLI what it supports instead of inferring from version strings.
+// Synchronous so it can run before tool registrations at module load.
+// Distinguish a truly missing CLI (first-run auto-install can still recover
+// later in the session) from an already-installed CLI that does not support
+// the capabilities contract and should stay fail-closed.
+const CLI_CAPABILITIES: CapabilityProbeResult =
+  probeCapabilitiesSync(MINUTES_BIN);
+if (CLI_CAPABILITIES.kind === "report") {
+  crashTrace("cli-capabilities-probed", {
+    cliVersion: CLI_CAPABILITIES.report.version,
+    apiVersion: CLI_CAPABILITIES.report.api_version,
+    featureCount: Object.keys(CLI_CAPABILITIES.report.features).length,
+  });
+} else if (CLI_CAPABILITIES.kind === "missing-cli") {
+  crashTrace("cli-capabilities-cli-missing");
+} else {
+  crashTrace("cli-capabilities-unsupported");
+}
+
+// ── MCP server version ────────────────────────────────────────
+// Kept for capabilities handshake and user-facing log messages.
+// The compatibility decision against the installed CLI lives in
+// `./version.ts` (see issue #183). Hosted `.mcpb` bundles will run
+// against CLIs with different minor/patch numbers within the same
+// major; that is explicitly supported.
+const MCP_SERVER_VERSION = "0.14.1";
 
 export function parseKnowledgeConfig(configContent: string): KnowledgeConfigStatus | null {
   const knowledgeMatch = configContent.match(/\[knowledge\][\s\S]*?(?=\n\[|$)/);
@@ -289,9 +428,10 @@ export function parseKnowledgeConfig(configContent: string): KnowledgeConfigStat
     engine: engineMatch?.[1] || "none",
   };
 }
-const RELEASE_TAG = `v${EXPECTED_CLI_VERSION}`;
-
 // ── CLI auto-install ────────────────────────────────────────
+// Auto-install fetches from the GitHub `releases/latest/download/` redirect,
+// not a pinned tag, so hosted `.mcpb` bundles self-heal across our release
+// cadence. See issue #183 for context.
 // When installed via MCPB or `npx minutes-mcp`, the Rust CLI binary
 // may not be present. We attempt to install it automatically so
 // non-technical users don't hit a "binary not found" dead end.
@@ -326,13 +466,13 @@ async function tryAutoInstall(): Promise<boolean> {
   const binaryName = getReleaseBinaryName();
   if (binaryName) {
     try {
-      const url = `https://github.com/silverstein/minutes/releases/download/${RELEASE_TAG}/${binaryName}`;
+      const url = `https://github.com/silverstein/minutes/releases/latest/download/${binaryName}`;
       const installDir = getInstallDir();
       const isWindows = process.platform === "win32";
       const targetName = isWindows ? "minutes.exe" : "minutes";
       const targetPath = join(installDir, targetName);
 
-      console.error(`[Minutes] Downloading ${binaryName} from ${RELEASE_TAG} release...`);
+      console.error(`[Minutes] Downloading ${binaryName} from latest release...`);
 
       // Ensure install directory exists
       await execFileAsync("mkdir", ["-p", installDir], { timeout: 5000 }).catch(() => {});
@@ -392,21 +532,25 @@ async function tryAutoInstall(): Promise<boolean> {
 async function checkCliVersion(): Promise<void> {
   try {
     const { stdout } = await execFileAsync(MINUTES_BIN, ["--version"], { timeout: 5000, env: augmentedEnv() });
-    // Output is like "minutes 0.8.0" or just "0.8.0"
+    // Output is like "minutes 0.8.0" or just "0.8.0".
     const match = stdout.trim().match(/(\d+\.\d+\.\d+)/);
-    if (match) {
-      const installedVersion = match[1];
-      if (installedVersion !== EXPECTED_CLI_VERSION) {
-        console.error(
-          `[Minutes] ⚠ CLI version mismatch: installed ${installedVersion}, server expects ${EXPECTED_CLI_VERSION}. ` +
-          `Update with: brew upgrade minutes (or cargo install minutes-cli)`
-        );
-      } else {
-        console.error(`[Minutes] CLI v${installedVersion} — up to date`);
-      }
+    if (!match) return;
+
+    const installedVersion = match[1];
+    const result = isCliCompatible(installedVersion, MCP_SERVER_VERSION);
+
+    // Only surface logs the user should see. Same-major skew is silent-
+    // compatible, which is the whole point of issue #183 fix: hosted `.mcpb`
+    // bundles frequently run against a CLI with a different minor/patch
+    // and that is fine.
+    if (result.severity === "error") {
+      console.error(`[Minutes] ${result.message}`);
+    } else if (result.severity === "ok") {
+      console.error(`[Minutes] ${result.message}`);
     }
+    // "info" severity (compatible skew, unparseable version) stays silent.
   } catch {
-    // Version check is best-effort — don't block on failure
+    // Version check is best-effort. Don't block on failure.
   }
 }
 
@@ -683,10 +827,12 @@ function parseJsonOutput(stdout: string): any {
 
 // ── MCP Server ──────────────────────────────────────────────
 
+crashTrace("pre-mcp-server-construct");
 const server = new McpServer({
   name: "minutes",
   version: MCP_SERVER_VERSION,
 });
+crashTrace("post-mcp-server-construct");
 
 // Declare MCP Apps extension support so hosts classify this server as interactive.
 // The `extensions` field is part of the draft MCP spec (SEP-1724) — not yet in the
@@ -754,7 +900,7 @@ registerAppResource(
 
 registerTool(
  "start_recording",
-  "Start recording audio with call-aware preflight. When a known call app is active, Minutes can infer call intent and block silent mic-only call captures unless explicitly allowed.",
+  "Start recording audio with call-aware preflight. When a known call app is active, Minutes can infer call intent and block silent mic-only call captures unless explicitly allowed. Note: this server does not listen to audio content. Recordings are stopped by invoking stop_recording after the user types a request in chat — never promise the user they can speak a 'stop recording' voice command.",
   {
     title: z.string().optional().describe("Optional title for this recording"),
     mode: z
@@ -844,7 +990,7 @@ registerTool(
             {
               type: "text" as const,
               text: result.recording
-                ? `Recording started in the running Minutes desktop app (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${desktopLiveMsg} Say "stop recording" when done.`
+                ? `Recording started in the running Minutes desktop app (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${desktopLiveMsg} When the user asks to finish (typed in chat), invoke stop_recording to process the transcript and summary. This server does not listen to audio content, so do not tell the user they can speak a stop command.`
                 : response.detail,
             },
           ],
@@ -923,7 +1069,7 @@ registerTool(
         {
           type: "text" as const,
           text: result.recording
-            ? `${result.recording_mode === "quick-thought" ? "Quick thought" : "Recording"} started (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${liveMsg} Say "stop recording" when done.`
+            ? `${result.recording_mode === "quick-thought" ? "Quick thought" : "Recording"} started (PID: ${result.pid}).${Array.isArray(preflight.warnings) && preflight.warnings.length ? ` ${preflight.warnings[0]}` : ""}${liveMsg} When the user asks to finish (typed in chat), invoke stop_recording to process the transcript and summary. This server does not listen to audio content, so do not tell the user they can speak a stop command.`
             : "Recording failed to start. Check `minutes logs` for details.",
         },
       ],
@@ -1297,6 +1443,159 @@ registerDocsAppTool(
   }
 );
 
+// ── Tool: activity_summary ──────────────────────────────────
+// Feature-gated (#183 phase 2). Hidden when an already-installed CLI does not
+// report activity_summary support. If the CLI is missing at boot, the tool
+// stays visible so first-run auto-install can still make it usable without a
+// server restart.
+
+if (hasFeature(CLI_CAPABILITIES, "activity_summary"))
+registerDocsAppTool(
+  server,
+  "activity_summary",
+  {
+    description: "Summarize meeting-adjacent desktop context for a linked artifact, context session, or explicit time window.",
+    inputSchema: {
+      session_id: z.string().optional().describe("Explicit desktop-context session id"),
+      path: z.string().optional().describe("Linked artifact path, such as a meeting markdown file or live transcript JSONL"),
+      start: z.string().optional().describe("Window start (RFC3339); use with end when no session/path is provided"),
+      end: z.string().optional().describe("Window end (RFC3339); use with start when no session/path is provided"),
+    },
+    annotations: { title: "Activity Summary", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
+  },
+  async ({ session_id, path, start, end }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: `Desktop-context summaries require the full CLI.\n\n${CLI_INSTALL_MSG}` }] };
+    }
+
+    const args = ["context", "activity-summary", "--json"];
+    if (session_id) args.push("--session", session_id);
+    if (path) args.push("--path", path);
+    if (start) args.push("--start", start);
+    if (end) args.push("--end", end);
+
+    const { stdout, stderr } = await runMinutes(args);
+    const parsed = parseJsonOutput(stdout);
+    if (!parsed || typeof parsed !== "object") {
+      return { content: [{ type: "text" as const, text: stderr || stdout }] };
+    }
+
+    const apps = Array.isArray((parsed as any).top_apps) ? (parsed as any).top_apps : [];
+    const windows = Array.isArray((parsed as any).top_windows) ? (parsed as any).top_windows : [];
+    const events = Array.isArray((parsed as any).events) ? (parsed as any).events : [];
+    const lines = [
+      `Desktop context summary: ${(parsed as any).window?.start || "?"} -> ${(parsed as any).window?.end || "?"}`,
+      apps.length ? `Top apps: ${apps.map((entry: any) => `${entry.name} (${entry.count})`).join(", ")}` : "",
+      windows.length ? `Top windows: ${windows.map((entry: any) => `${entry.name} (${entry.count})`).join(", ")}` : "",
+      events.length ? `Events: ${events.length}` : "Events: 0",
+    ].filter(Boolean);
+
+    return {
+      content: [{ type: "text" as const, text: lines.join("\n") }],
+      structuredContent: { ...(parsed as any), kind: "activity_summary", view: "context" },
+      _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "context", kind: "activity_summary" },
+    };
+  }
+);
+
+// ── Tool: search_context ────────────────────────────────────
+// Feature-gated (#183 phase 2). See activity_summary comment above.
+
+if (hasFeature(CLI_CAPABILITIES, "search_context"))
+registerDocsAppTool(
+  server,
+  "search_context",
+  {
+    description: "Search desktop-context events across app focus and captured window titles, including opted-in browser titles.",
+    inputSchema: {
+      query: z.string().describe("Text query for app names, bundle ids, or captured window titles"),
+      limit: z.number().optional().default(20).describe("Maximum results"),
+    },
+    annotations: { title: "Search Context", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
+  },
+  async ({ query, limit }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: `Desktop-context search requires the full CLI.\n\n${CLI_INSTALL_MSG}` }] };
+    }
+
+    const { stdout, stderr } = await runMinutes(["context", "search", query, "--limit", String(limit), "--json"]);
+    const parsed = parseJsonOutput(stdout);
+    if (!parsed || typeof parsed !== "object") {
+      return { content: [{ type: "text" as const, text: stderr || stdout }] };
+    }
+
+    const results = Array.isArray((parsed as any).results) ? (parsed as any).results : [];
+    const text = results.length === 0
+      ? `No desktop-context events found for "${query}".`
+      : results
+          .map(
+            (event: any) =>
+              `${event.observed_at} — ${event.app_name || event.bundle_id || "unknown"}${event.window_title ? ` :: ${event.window_title}` : ""}`
+          )
+          .join("\n");
+
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: { query, results, view: "context", kind: "search_context" },
+      _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "context", kind: "search_context" },
+    };
+  }
+);
+
+// ── Tool: get_moment ────────────────────────────────────────
+// Feature-gated (#183 phase 2). See activity_summary comment above.
+
+if (hasFeature(CLI_CAPABILITIES, "get_moment"))
+registerDocsAppTool(
+  server,
+  "get_moment",
+  {
+    description: "Show the local rewind around a linked artifact, context session, or explicit timestamp.",
+    inputSchema: {
+      session_id: z.string().optional().describe("Explicit desktop-context session id"),
+      path: z.string().optional().describe("Linked artifact path, such as a meeting markdown file or live transcript JSONL"),
+      at: z.string().optional().describe("Explicit anchor timestamp (RFC3339)"),
+      before_minutes: z.number().optional().default(10).describe("Minutes before the anchor"),
+      after_minutes: z.number().optional().default(10).describe("Minutes after the anchor"),
+    },
+    annotations: { title: "Get Moment", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { resourceUri: UI_RESOURCE_URI } },
+  },
+  async ({ session_id, path, at, before_minutes, after_minutes }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: `Desktop-context rewind requires the full CLI.\n\n${CLI_INSTALL_MSG}` }] };
+    }
+
+    const args = ["context", "get-moment", "--json", "--before-minutes", String(before_minutes), "--after-minutes", String(after_minutes)];
+    if (session_id) args.push("--session", session_id);
+    if (path) args.push("--path", path);
+    if (at) args.push("--at", at);
+
+    const { stdout, stderr } = await runMinutes(args);
+    const parsed = parseJsonOutput(stdout);
+    if (!parsed || typeof parsed !== "object") {
+      return { content: [{ type: "text" as const, text: stderr || stdout }] };
+    }
+
+    const events = Array.isArray((parsed as any).events) ? (parsed as any).events : [];
+    const text = [
+      `Moment window: ${(parsed as any).window?.start || "?"} -> ${(parsed as any).window?.end || "?"}`,
+      ...events.map(
+        (event: any) =>
+          `${event.observed_at} — ${event.app_name || event.bundle_id || "unknown"}${event.window_title ? ` :: ${event.window_title}` : ""}`
+      ),
+    ].join("\n");
+
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: { ...(parsed as any), view: "context", kind: "get_moment" },
+      _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "context", kind: "get_moment" },
+    };
+  }
+);
+
 // ── Tool: consistency_report ───────────────────────────────
 
 registerDocsAppTool(
@@ -1583,7 +1882,7 @@ registerDocsAppTool(
   server,
   "get_meeting",
   {
-    description: "Get the full transcript and details of a specific meeting or memo.",
+    description: "Get the full transcript and details of a specific meeting or memo. Speaker attributions reflect sidecar overlay confirmations.",
     inputSchema: {
       path: z.string().describe("Path to the meeting markdown file"),
     },
@@ -1593,10 +1892,40 @@ registerDocsAppTool(
   async ({ path: filePath }) => {
     try {
       const resolved = validatePathInDirectory(filePath, await getEffectiveMeetingsDir(), [".md"]);
-      const content = await readFile(resolved, "utf-8");
+      const rawContent = await readFile(resolved, "utf-8");
+
+      // Ask the CLI for an overlay-applied structured view. Raw markdown on
+      // disk is never mutated — the CLI just layers ~/.minutes/overlays.db on
+      // top of the parsed frontmatter. If the CLI is unavailable or the call
+      // fails, degrade gracefully to raw content.
+      let structured: {
+        path: string;
+        view: string;
+        speaker_map?: unknown;
+        overlay_applied?: boolean;
+      } = { path: resolved, view: "detail" };
+
+      if (await isCliAvailable()) {
+        try {
+          const { stdout } = await runMinutes(["get", resolved, "--json"], 10000);
+          const parsed = parseJsonOutput(stdout);
+          if (parsed && typeof parsed === "object" && !parsed.raw) {
+            const speakerMap = parsed.frontmatter?.speaker_map;
+            structured = {
+              path: resolved,
+              view: "detail",
+              speaker_map: Array.isArray(speakerMap) ? speakerMap : [],
+              overlay_applied: Boolean(parsed.overlay_applied),
+            };
+          }
+        } catch {
+          // Non-fatal: fall through to raw content with no speaker_map enrichment.
+        }
+      }
+
       return {
-        content: [{ type: "text" as const, text: content }],
-        structuredContent: { path: resolved, view: "detail" },
+        content: [{ type: "text" as const, text: rawContent }],
+        structuredContent: structured,
         _meta: { ui: { resourceUri: UI_RESOURCE_URI }, view: "detail", path: resolved },
       };
     } catch (error: any) {
@@ -2211,7 +2540,7 @@ registerTool(
 
 registerTool(
   "confirm_speaker",
-  "Confirm or correct a speaker attribution in a meeting. Promotes the attribution to High confidence and rewrites the transcript label. Optionally saves the speaker's voice profile for future meetings.",
+  "Confirm or correct a speaker attribution in a meeting. Stores the correction in Minutes' sidecar overlay store so the original markdown capture stays immutable. Optionally saves the speaker's voice profile for future meetings.",
   {
     meeting: z.string().describe("Path to the meeting markdown file"),
     speaker_label: z.string().describe("Speaker label to confirm (e.g., SPEAKER_1)"),
@@ -2608,14 +2937,27 @@ registerTool(
 // ── Start server ────────────────────────────────────────────
 
 async function main() {
+  crashTrace("main-start");
   const transport = new StdioServerTransport();
+  crashTrace("transport-created");
   await server.connect(transport);
+  crashTrace("transport-connected");
   console.error("Minutes MCP server running on stdio");
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+crashTrace("pre-main-guard", {
+  argv1: process.argv[1] ?? null,
+  resolvedArgv1: process.argv[1] ? resolve(process.argv[1]) : null,
+  __filename,
+  match: shouldRunMainEntry(process.argv[1], __filename),
+});
+
+if (shouldRunMainEntry(process.argv[1], __filename)) {
   main().catch((error) => {
+    crashTrace("main-rejected", error);
     console.error("Fatal error:", error);
     process.exit(1);
   });
+} else {
+  crashTrace("main-skipped-argv-mismatch");
 }

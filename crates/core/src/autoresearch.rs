@@ -51,6 +51,18 @@ pub struct DecodeHintEvalCase {
     pub forbid_hinted_terms: Vec<String>,
     #[serde(default)]
     pub allowed_failure_substrings: Vec<String>,
+    #[serde(default)]
+    pub disable_identity_hints: bool,
+    #[serde(default)]
+    pub disable_attendee_hints: bool,
+    #[serde(default)]
+    pub disable_context_hints: bool,
+    #[serde(default)]
+    pub disable_extra_priority_hints: bool,
+    #[serde(default)]
+    pub disable_extra_context_hints: bool,
+    #[serde(default)]
+    pub force_extra_context_hints_for_decode: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -194,6 +206,10 @@ pub struct DecodeHintEvalComparisonCase {
     pub lost_focus_hits: Vec<String>,
     pub newly_missing_terms: Vec<String>,
     pub resolved_failures: Vec<String>,
+    #[serde(default)]
+    pub newly_allowed_failures: Vec<String>,
+    #[serde(default)]
+    pub resolved_allowed_failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -300,14 +316,7 @@ pub fn run_decode_hint_eval_corpus(
         config.identity.aliases = case.identity_aliases.clone();
 
         let reference = eval_text_for_compare(&load_reference_text(&case)?);
-        let hints = build_decode_hints(
-            case.title.as_deref(),
-            case.calendar_event_title.as_deref(),
-            case.pre_context.as_deref(),
-            &case.attendees,
-            Some(&config.identity),
-        )
-        .with_additional_candidates(&case.extra_priority_hints, &case.extra_context_hints);
+        let hints = build_eval_case_hints(&case, &config);
         let hint_debug = DecodeHintEvalHintDebug {
             priority_phrases: hints.debug_priority_phrases(),
             contextual_phrases: hints.debug_contextual_phrases(),
@@ -576,6 +585,10 @@ pub fn compare_decode_hint_eval_reports(
                     left_case.failure_reasons.iter().cloned().collect();
                 let right_failures: std::collections::BTreeSet<_> =
                     right_case.failure_reasons.iter().cloned().collect();
+                let left_allowed_failures: std::collections::BTreeSet<_> =
+                    left_case.allowed_failure_reasons.iter().cloned().collect();
+                let right_allowed_failures: std::collections::BTreeSet<_> =
+                    right_case.allowed_failure_reasons.iter().cloned().collect();
 
                 DecodeHintEvalComparisonCase {
                     id,
@@ -592,6 +605,14 @@ pub fn compare_decode_hint_eval_reports(
                         .cloned()
                         .collect(),
                     resolved_failures: left_failures.difference(&right_failures).cloned().collect(),
+                    newly_allowed_failures: right_allowed_failures
+                        .difference(&left_allowed_failures)
+                        .cloned()
+                        .collect(),
+                    resolved_allowed_failures: left_allowed_failures
+                        .difference(&right_allowed_failures)
+                        .cloned()
+                        .collect(),
                 }
             }
             (None, Some(right_case)) => {
@@ -608,6 +629,8 @@ pub fn compare_decode_hint_eval_reports(
                     lost_focus_hits: Vec::new(),
                     newly_missing_terms: right_case.failure_reasons.clone(),
                     resolved_failures: Vec::new(),
+                    newly_allowed_failures: right_case.allowed_failure_reasons.clone(),
+                    resolved_allowed_failures: Vec::new(),
                 }
             }
             (Some(left_case), None) => {
@@ -624,6 +647,8 @@ pub fn compare_decode_hint_eval_reports(
                     lost_focus_hits: left_case.candidate.focus_hits.clone(),
                     newly_missing_terms: Vec::new(),
                     resolved_failures: left_case.failure_reasons.clone(),
+                    newly_allowed_failures: Vec::new(),
+                    resolved_allowed_failures: left_case.allowed_failure_reasons.clone(),
                 }
             }
             (None, None) => continue,
@@ -675,10 +700,12 @@ pub fn write_decode_hint_eval_comparison_artifacts(
 }
 
 pub fn render_decode_hint_eval_summary(report: &DecodeHintEvalReport) -> String {
-    let verdict = if report.failure_messages.is_empty() {
-        "PASS"
-    } else {
+    let verdict = if !report.failure_messages.is_empty() {
         "FAIL"
+    } else if report.totals.cases_allowed_failures > 0 {
+        "PASS WITH ALLOWED FAILURES"
+    } else {
+        "PASS"
     };
     let mut lines = vec![
         "# Decode Hint Eval Summary".to_string(),
@@ -800,6 +827,18 @@ pub fn render_decode_hint_eval_comparison_summary(
                 case.newly_missing_terms.join("; ")
             ));
         }
+        if !case.newly_allowed_failures.is_empty() {
+            lines.push(format!(
+                "  new allowed failures: {}",
+                case.newly_allowed_failures.join("; ")
+            ));
+        }
+        if !case.resolved_allowed_failures.is_empty() {
+            lines.push(format!(
+                "  resolved allowed failures: {}",
+                case.resolved_allowed_failures.join("; ")
+            ));
+        }
     }
 
     lines.join("\n")
@@ -832,6 +871,28 @@ fn collect_decode_hint_runs(
     Ok(runs)
 }
 
+fn eval_run_status(report: &DecodeHintEvalReport) -> &'static str {
+    if !report.failure_messages.is_empty() {
+        "fail"
+    } else if report.totals.cases_allowed_failures > 0 {
+        "allowed-failure"
+    } else {
+        "pass"
+    }
+}
+
+fn comparison_run_status(report: &DecodeHintEvalComparisonReport) -> &'static str {
+    if report.totals.newly_failing_cases > 0 || report.totals.regressed_cases > 0 {
+        "mixed"
+    } else if report.cases.iter().any(|case| {
+        !case.newly_allowed_failures.is_empty() || !case.resolved_allowed_failures.is_empty()
+    }) {
+        "allowed-failure-changed"
+    } else {
+        "improved-or-stable"
+    }
+}
+
 fn collect_eval_runs(root: &Path) -> Result<Vec<DecodeHintRunIndexEntry>> {
     let mut runs = Vec::new();
     if !root.exists() {
@@ -853,15 +914,12 @@ fn collect_eval_runs(root: &Path) -> Result<Vec<DecodeHintRunIndexEntry>> {
             continue;
         }
         let report = load_decode_hint_eval_report(&results_path)?;
+        let status = eval_run_status(&report).to_string();
         runs.push(DecodeHintRunIndexEntry {
             kind: "decode-hints".into(),
             run_dir: path,
             generated_at: report.generated_at,
-            status: if report.failure_messages.is_empty() {
-                "pass".into()
-            } else {
-                "fail".into()
-            },
+            status,
             source_path: report.corpus_path,
             cases_total: report.totals.cases_total,
             cases_failed: report.totals.cases_failed,
@@ -896,15 +954,12 @@ fn collect_comparison_runs(root: &Path) -> Result<Vec<DecodeHintRunIndexEntry>> 
         let raw = fs::read_to_string(&comparison_path)?;
         let report: DecodeHintEvalComparisonReport =
             serde_json::from_str(&raw).map_err(invalid_data_error)?;
+        let status = comparison_run_status(&report).to_string();
         runs.push(DecodeHintRunIndexEntry {
             kind: "decode-hints-comparison".into(),
             run_dir: path,
             generated_at: report.generated_at,
-            status: if report.totals.newly_failing_cases > 0 || report.totals.regressed_cases > 0 {
-                "mixed".into()
-            } else {
-                "improved-or-stable".into()
-            },
+            status,
             source_path: report.right_path,
             cases_total: report.totals.shared_cases + report.totals.added_cases,
             cases_failed: report.totals.newly_failing_cases + report.totals.regressed_cases,
@@ -931,6 +986,46 @@ fn invalid_data_error(error: impl std::fmt::Display) -> MinutesError {
         std::io::ErrorKind::InvalidData,
         error.to_string(),
     ))
+}
+
+fn build_eval_case_hints(case: &DecodeHintEvalCase, config: &Config) -> DecodeHints {
+    let identity = &config.identity;
+    let identity_for_hints = (!case.disable_identity_hints).then_some(identity);
+    let attendees = if case.disable_attendee_hints {
+        &[][..]
+    } else {
+        case.attendees.as_slice()
+    };
+    let title = (!case.disable_context_hints)
+        .then_some(case.title.as_deref())
+        .flatten();
+    let calendar_event_title = (!case.disable_context_hints)
+        .then_some(case.calendar_event_title.as_deref())
+        .flatten();
+    let pre_context = (!case.disable_context_hints)
+        .then_some(case.pre_context.as_deref())
+        .flatten();
+    let extra_priority_hints = if case.disable_extra_priority_hints {
+        &[][..]
+    } else {
+        case.extra_priority_hints.as_slice()
+    };
+    let allow_extra_context_hints = !case.disable_extra_context_hints
+        && (config.transcription.engine != "parakeet" || case.force_extra_context_hints_for_decode);
+    let extra_context_hints = if !allow_extra_context_hints {
+        &[][..]
+    } else {
+        case.extra_context_hints.as_slice()
+    };
+
+    build_decode_hints(
+        title,
+        calendar_event_title,
+        pre_context,
+        attendees,
+        identity_for_hints,
+    )
+    .with_additional_candidates(extra_priority_hints, extra_context_hints)
 }
 
 fn transcribe_case(
@@ -1091,12 +1186,149 @@ mod tests {
         }
     }
 
+    fn sample_allowed_failure_report() -> DecodeHintEvalReport {
+        DecodeHintEvalReport {
+            generated_at: "2026-04-15T12:00:00Z".into(),
+            corpus_path: PathBuf::from("/tmp/corpus.json"),
+            options: DecodeHintEvalOptions::default(),
+            totals: DecodeHintEvalTotals {
+                cases_total: 1,
+                cases_passed: 1,
+                cases_failed: 0,
+                cases_allowed_failures: 1,
+                improved_cases: 0,
+                regressed_cases: 0,
+                average_delta_wer: 0.0,
+            },
+            cases: vec![DecodeHintEvalCaseResult {
+                id: "research-case".into(),
+                engine: "parakeet".into(),
+                hint_debug: DecodeHintEvalHintDebug::default(),
+                baseline: DecodeHintEvalTranscriptMetrics {
+                    wer: 0.12,
+                    focus_hits: vec![],
+                    forbidden_hits: vec![],
+                },
+                candidate: DecodeHintEvalTranscriptMetrics {
+                    wer: 0.12,
+                    focus_hits: vec!["pdf toolkit".into()],
+                    forbidden_hits: vec![],
+                },
+                delta_wer: 0.0,
+                max_wer_regression: Some(0.02),
+                required_terms: vec!["casey rowan".into()],
+                forbidden_terms: vec![],
+                passed: true,
+                status: "allowed-failure".into(),
+                failure_reasons: vec![],
+                allowed_failure_reasons: vec!["missing required hinted term 'casey rowan'".into()],
+            }],
+            failure_messages: vec![],
+        }
+    }
+
+    fn sample_eval_case() -> DecodeHintEvalCase {
+        DecodeHintEvalCase {
+            id: "case-1".into(),
+            audio_path: PathBuf::from("/tmp/audio.wav"),
+            content_type: ContentType::Meeting,
+            reference_text: "reference".into(),
+            reference_path: None,
+            title: Some("X1 / Planning Review".into()),
+            calendar_event_title: Some("Mat with Alex Chen".into()),
+            pre_context: Some("Asana migration with Box".into()),
+            extra_priority_hints: vec!["Casey Rowan".into()],
+            extra_context_hints: vec!["Northstar Studio".into()],
+            attendees: vec!["mat@example.com".into(), "alex.chen@example.com".into()],
+            identity_name: Some("Mat".into()),
+            identity_aliases: vec!["Mathieu".into(), "Matthew".into()],
+            language: Some("en".into()),
+            engine: Some("whisper".into()),
+            parakeet_boost_score_override: None,
+            max_wer_regression: Some(0.02),
+            require_hinted_terms: vec!["mat".into()],
+            forbid_hinted_terms: vec!["matt mullenweg".into()],
+            allowed_failure_substrings: vec![],
+            disable_identity_hints: false,
+            disable_attendee_hints: false,
+            disable_context_hints: false,
+            disable_extra_priority_hints: false,
+            disable_extra_context_hints: false,
+            force_extra_context_hints_for_decode: false,
+        }
+    }
+
     #[test]
     fn render_summary_surfaces_failures() {
         let summary = render_decode_hint_eval_summary(&sample_report());
         assert!(summary.contains("Verdict: **FAIL**"));
         assert!(summary.contains("case-1"));
         assert!(summary.contains("matt mullenweg"));
+    }
+
+    #[test]
+    fn render_summary_surfaces_allowed_failure_verdict() {
+        let summary = render_decode_hint_eval_summary(&sample_allowed_failure_report());
+        assert!(summary.contains("Verdict: **PASS WITH ALLOWED FAILURES**"));
+        assert!(summary.contains("Allowed failures: 1"));
+        assert!(summary.contains("allowed failures: missing required hinted term 'casey rowan'"));
+    }
+
+    #[test]
+    fn build_eval_case_hints_respects_ablation_flags() {
+        let mut whisper_config = Config::default();
+        whisper_config.transcription.engine = "whisper".into();
+        whisper_config.identity.name = Some("Mat".into());
+        whisper_config.identity.aliases = vec!["Mathieu".into(), "Matthew".into()];
+
+        let full = build_eval_case_hints(&sample_eval_case(), &whisper_config);
+        assert!(full.debug_priority_phrases().iter().any(|v| v == "Mat"));
+        assert!(full
+            .debug_priority_phrases()
+            .iter()
+            .any(|v| v == "Alex Chen"));
+        assert!(full
+            .debug_contextual_phrases()
+            .iter()
+            .any(|v| v == "Asana migration"));
+        assert!(full
+            .debug_priority_phrases()
+            .iter()
+            .any(|v| v == "Casey Rowan"));
+        assert!(full
+            .debug_contextual_phrases()
+            .iter()
+            .any(|v| v == "Northstar Studio"));
+
+        let mut ablated = sample_eval_case();
+        ablated.disable_identity_hints = true;
+        ablated.disable_attendee_hints = true;
+        ablated.disable_context_hints = true;
+        ablated.disable_extra_priority_hints = true;
+        ablated.disable_extra_context_hints = true;
+        let suppressed = build_eval_case_hints(&ablated, &whisper_config);
+        assert!(suppressed.debug_priority_phrases().is_empty());
+        assert!(suppressed.debug_contextual_phrases().is_empty());
+
+        let mut parakeet_config = whisper_config.clone();
+        parakeet_config.transcription.engine = "parakeet".into();
+        let parakeet_default = build_eval_case_hints(&sample_eval_case(), &parakeet_config);
+        assert!(!parakeet_default
+            .debug_priority_phrases()
+            .iter()
+            .any(|v| v == "Northstar Studio"));
+        assert!(!parakeet_default
+            .debug_contextual_phrases()
+            .iter()
+            .any(|v| v == "Northstar Studio"));
+
+        let mut forced = sample_eval_case();
+        forced.force_extra_context_hints_for_decode = true;
+        let forced_hints = build_eval_case_hints(&forced, &parakeet_config);
+        assert!(forced_hints
+            .debug_contextual_phrases()
+            .iter()
+            .any(|v| v == "Northstar Studio"));
     }
 
     #[test]
@@ -1129,6 +1361,8 @@ mod tests {
         right.cases[0].candidate.focus_hits.push("mat".into());
         right.cases[0].failure_reasons =
             vec!["missing required hinted term 'pdf extension'".into()];
+        right.cases[0].allowed_failure_reasons =
+            vec!["missing required hinted term 'casey rowan'".into()];
         right.failure_messages = right.cases[0]
             .failure_reasons
             .iter()
@@ -1156,6 +1390,54 @@ mod tests {
             .resolved_failures
             .iter()
             .any(|reason| reason.contains("matt mullenweg")));
+        assert!(comparison.cases[0]
+            .newly_allowed_failures
+            .iter()
+            .any(|reason| reason.contains("casey rowan")));
+    }
+
+    #[test]
+    fn comparison_summary_surfaces_allowed_failure_transitions() {
+        let report = DecodeHintEvalComparisonReport {
+            generated_at: "2026-04-16T13:00:00Z".into(),
+            left_path: PathBuf::from("/tmp/left.json"),
+            right_path: PathBuf::from("/tmp/right.json"),
+            totals: DecodeHintEvalComparisonTotals {
+                shared_cases: 1,
+                added_cases: 0,
+                removed_cases: 0,
+                improved_cases: 0,
+                regressed_cases: 0,
+                newly_passing_cases: 0,
+                newly_failing_cases: 0,
+                unchanged_cases: 1,
+            },
+            cases: vec![DecodeHintEvalComparisonCase {
+                id: "external-proper-noun-research".into(),
+                status: "shared".into(),
+                left_candidate_wer: Some(0.10),
+                right_candidate_wer: Some(0.10),
+                candidate_wer_delta: Some(0.0),
+                left_passed: Some(true),
+                right_passed: Some(true),
+                gained_focus_hits: vec![],
+                lost_focus_hits: vec![],
+                newly_missing_terms: vec![],
+                resolved_failures: vec![],
+                newly_allowed_failures: vec!["missing required hinted term 'casey rowan'".into()],
+                resolved_allowed_failures: vec![
+                    "missing required hinted term 'northstar studio'".into()
+                ],
+            }],
+        };
+
+        let summary = render_decode_hint_eval_comparison_summary(&report);
+        assert!(
+            summary.contains("new allowed failures: missing required hinted term 'casey rowan'")
+        );
+        assert!(summary.contains(
+            "resolved allowed failures: missing required hinted term 'northstar studio'"
+        ));
     }
 
     #[test]
@@ -1189,7 +1471,21 @@ mod tests {
                 newly_failing_cases: 0,
                 unchanged_cases: 0,
             },
-            cases: vec![],
+            cases: vec![DecodeHintEvalComparisonCase {
+                id: "external-proper-noun-research".into(),
+                status: "shared".into(),
+                left_candidate_wer: Some(0.10),
+                right_candidate_wer: Some(0.10),
+                candidate_wer_delta: Some(0.0),
+                left_passed: Some(true),
+                right_passed: Some(true),
+                gained_focus_hits: vec![],
+                lost_focus_hits: vec![],
+                newly_missing_terms: vec![],
+                resolved_failures: vec![],
+                newly_allowed_failures: vec!["missing required hinted term 'casey rowan'".into()],
+                resolved_allowed_failures: vec![],
+            }],
         };
         let comparison_dir = comparison_root.join("2026-04-16T13-00-00Z");
         fs::create_dir_all(&comparison_dir).unwrap();
@@ -1203,8 +1499,62 @@ mod tests {
         let runs = collect_decode_hint_runs(&eval_root, &comparison_root).unwrap();
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].kind, "decode-hints-comparison");
+        assert_eq!(runs[0].status, "allowed-failure-changed");
         assert_eq!(runs[0].source_path, PathBuf::from("/tmp/right.json"));
         assert_eq!(runs[1].kind, "decode-hints");
+        assert_eq!(runs[1].status, "fail");
         assert_eq!(runs[1].source_path, PathBuf::from("/tmp/corpus.json"));
+    }
+
+    #[test]
+    fn eval_run_status_distinguishes_allowed_failures_from_clean_passes() {
+        assert_eq!(eval_run_status(&sample_report()), "fail");
+        assert_eq!(
+            eval_run_status(&sample_allowed_failure_report()),
+            "allowed-failure"
+        );
+
+        let clean_pass = DecodeHintEvalReport {
+            generated_at: "2026-04-15T12:00:00Z".into(),
+            corpus_path: PathBuf::from("/tmp/corpus.json"),
+            options: DecodeHintEvalOptions::default(),
+            totals: DecodeHintEvalTotals {
+                cases_total: 1,
+                cases_passed: 1,
+                cases_failed: 0,
+                cases_allowed_failures: 0,
+                improved_cases: 1,
+                regressed_cases: 0,
+                average_delta_wer: -0.02,
+            },
+            cases: vec![],
+            failure_messages: vec![],
+        };
+        assert_eq!(eval_run_status(&clean_pass), "pass");
+    }
+
+    #[test]
+    fn checked_in_example_corpus_matches_supported_gate_shape() {
+        let fixture = include_str!("../../../tests/fixtures/proper-name-eval.example.json");
+        let cases: Vec<DecodeHintEvalCase> =
+            serde_json::from_str(fixture).expect("example corpus should parse");
+
+        assert_eq!(cases.len(), 3, "keep the public starter corpus intentional");
+        assert!(
+            cases.iter().any(|case| case.id == "self-intro-parakeet"),
+            "starter corpus should include a parakeet self-name case"
+        );
+        assert!(
+            cases.iter().any(|case| case.id == "self-intro-whisper"),
+            "starter corpus should include a whisper self-name case"
+        );
+        let research_case = cases
+            .iter()
+            .find(|case| case.id == "external-proper-noun-research")
+            .expect("starter corpus should include the external proper-noun research case");
+        assert!(
+            !research_case.allowed_failure_substrings.is_empty(),
+            "external proper-noun example should stay explicitly scoped as research"
+        );
     }
 }

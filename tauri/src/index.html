@@ -3537,6 +3537,10 @@
       display: none;
     }
 
+    .is-deferred {
+      opacity: 0.55;
+    }
+
     .footer-hidden {
       display: none;
     }
@@ -3654,6 +3658,18 @@
       color: var(--text);
       font-size: 13px;
       box-sizing: border-box;
+    }
+
+    .settings-secret-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: end;
+      margin-top: 6px;
+    }
+
+    .settings-secret-row .settings-field {
+      margin-top: 0;
     }
 
     .settings-meta-inline {
@@ -4300,6 +4316,18 @@
         <div class="about-item-title">LIVE TRANSCRIPT</div>
         <div class="about-controls">
           <div class="about-controls-group">
+            <div class="about-controls-copy">Backend</div>
+            <select id="settings-live-backend" class="settings-field">
+              <option value="inherit">Inherit main transcription engine</option>
+              <option value="whisper">Whisper — built-in, broad language support</option>
+              <option value="parakeet">Parakeet — lower WER, fast on Apple Silicon</option>
+              <option value="apple-speech">Apple Speech — experimental standalone live transcript</option>
+            </select>
+            <div class="about-controls-meta" id="settings-live-backend-detail">Standalone live transcript currently inherits your main transcription engine.</div>
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
             <div class="about-controls-copy">Keyboard shortcut</div>
             <select class="shortcut-select settings-field" id="settings-live-shortcut-select">
               <option value="CmdOrCtrl+Shift+L">Cmd+Shift+L</option>
@@ -4339,6 +4367,7 @@
               <option value="whisper">Whisper — broad language support, built-in</option>
               <option value="parakeet">Parakeet — lower WER, fast on Apple Silicon</option>
             </select>
+            <div class="about-controls-meta" id="settings-transcription-engine-detail">Whisper and Parakeet control batch, recording, and recording-sidecar transcription. Standalone live transcript has its own backend setting above.</div>
           </div>
         </div>
         <div class="about-controls" id="settings-whisper-section">
@@ -4498,8 +4527,10 @@
               automatically in the recording pipeline.</div>
             <select id="settings-summarization-engine" class="settings-field">
               <option value="none">Off — Claude summarizes when you ask (recommended)</option>
-              <option value="agent">Agent CLI — uses your Claude Code or Codex subscription</option>
+              <option value="auto">Auto-detect an agent CLI — advanced</option>
+              <option value="agent">Agent CLI — uses your Claude Code, Codex, OpenCode, or Pi subscription</option>
               <option value="ollama">Ollama — local, free, runs on your machine</option>
+              <option value="openai-compatible">OpenAI-compatible API — gateways and local servers</option>
               <option value="claude">Claude API — direct API key (legacy)</option>
               <option value="openai">OpenAI API — direct API key (legacy)</option>
             </select>
@@ -4527,6 +4558,52 @@
             <div class="about-controls-copy">Ollama model</div>
             <div class="about-controls-meta">Name of a model you've pulled in Ollama (e.g. llama3.2, qwen2.5, gemma3).</div>
             <input type="text" id="settings-ollama-model" class="settings-field" placeholder="llama3.2" spellcheck="false">
+          </div>
+        </div>
+        <div class="about-controls is-hidden" id="settings-openai-compatible-preset-row">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Connection type</div>
+            <div class="about-controls-meta">Pick the closest match. Minutes will fill the technical fields below.</div>
+            <select id="settings-openai-compatible-preset" class="settings-field">
+              <option value="local">Local server — Ollama, LM Studio, llama.cpp</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="vercel">Vercel AI Gateway</option>
+              <option value="cloudflare">Cloudflare AI Gateway</option>
+              <option value="custom">Custom OpenAI-compatible URL</option>
+            </select>
+          </div>
+        </div>
+        <div class="about-controls is-hidden" id="settings-openai-compatible-base-url-row">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Connection URL</div>
+            <div class="about-controls-meta">Paste the base URL ending in /v1, /openai, or /compat. Minutes adds /chat/completions automatically.</div>
+            <input type="text" id="settings-openai-compatible-base-url" class="settings-field" placeholder="http://localhost:11434/v1" spellcheck="false">
+            <div class="about-controls-meta" id="settings-openai-compatible-status"></div>
+          </div>
+        </div>
+        <div class="about-controls is-hidden" id="settings-openai-compatible-model-row">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Model</div>
+            <div class="about-controls-meta">Use the model name your server or gateway expects.</div>
+            <input type="text" id="settings-openai-compatible-model" class="settings-field" placeholder="llama3.2" spellcheck="false">
+          </div>
+        </div>
+        <div class="about-controls is-hidden" id="settings-openai-compatible-secret-row">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">API key</div>
+            <div class="about-controls-meta" id="settings-openai-compatible-key-status">Paste a key once. Minutes stores it securely.</div>
+            <div class="settings-secret-row">
+              <input type="password" id="settings-openai-compatible-api-key" class="settings-field" placeholder="Paste API key" autocomplete="off" spellcheck="false">
+              <button class="btn btn-secondary btn-sm" id="settings-openai-compatible-save-key" type="button">Save</button>
+              <button class="btn btn-secondary btn-sm" id="settings-openai-compatible-clear-key" type="button">Forget</button>
+            </div>
+          </div>
+        </div>
+        <div class="about-controls is-hidden" id="settings-openai-compatible-api-key-row">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Advanced: env var fallback</div>
+            <div class="about-controls-meta">Optional. Use this only if you prefer launching Minutes with a shell-managed secret.</div>
+            <input type="text" id="settings-openai-compatible-api-key-env" class="settings-field" placeholder="MINUTES_OPENAI_COMPATIBLE_API_KEY" spellcheck="false">
           </div>
         </div>
       </div>
@@ -4609,6 +4686,43 @@
         </div>
         <div class="about-controls">
           <div class="about-controls-group">
+            <div class="about-controls-copy">Meeting-adjacent desktop context</div>
+            <div class="about-controls-meta" id="settings-desktop-context-status">
+              Off. App/window context stays disabled until you turn it on.
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-desktop-context">Off</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Focused window titles</div>
+            <div class="about-controls-meta">Uses the best available platform APIs for focused-window titles. On macOS, missing Accessibility permission limits title capture.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-desktop-window-titles">Off</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Browser title context</div>
+            <div class="about-controls-meta">Opt-in browser tab and window titles only. URLs and domains are not collected in v1.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm toggle-btn" id="settings-desktop-browser-context">Off</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Allowed apps</div>
+            <div class="about-controls-meta">Optional comma-separated allowlist. Leave empty to allow all apps except denied ones.</div>
+            <input type="text" id="settings-desktop-allowed-apps" placeholder="e.g. zoom.us, Arc, Safari" class="settings-field">
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Denied apps</div>
+            <div class="about-controls-meta">Comma-separated app or bundle-id fragments to suppress from desktop context capture.</div>
+            <input type="text" id="settings-desktop-denied-apps" placeholder="e.g. 1password, Messages" class="settings-field">
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
             <div class="about-controls-copy">Capture screen context during recordings</div>
             <div class="about-controls-meta">Screenshots sent to vision LLM for context. Requires Screen Recording
               permission.</div>
@@ -4665,6 +4779,7 @@
             <div class="about-controls-meta">Additional CLI arguments passed when starting the agent</div>
             <input type="text" id="settings-agent-args" placeholder="e.g. --model sonnet" class="settings-field">
             <div class="about-controls-meta settings-meta-inline" id="settings-agent-args-status"></div>
+            <div class="about-controls-meta" id="settings-agent-args-help"></div>
           </div>
         </div>
       </div>
@@ -4689,6 +4804,25 @@
           <div class="about-controls-copy">Retry failed captures and unprocessed audio files</div>
           <button class="btn btn-secondary btn-sm"
             onclick="document.getElementById('settings-overlay').classList.remove('active');document.getElementById('btn-recovery').click();">Recovery</button>
+        </div>
+      </div>
+
+      <!-- Advanced -->
+      <div class="settings-section">
+        <div class="about-item-title">ADVANCED</div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Edit config.toml</div>
+            <div class="about-controls-meta">Tuning knobs not shown in this panel — silence thresholds, diarization parameters, watcher paths, knowledge-base integration, and more — live in your config file.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="settings-open-config-file">Open</button>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Configuration reference</div>
+            <div class="about-controls-meta">Full list of every config key, its default, and what it does.</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="settings-open-config-docs">View docs</button>
         </div>
       </div>
 
@@ -5121,6 +5255,16 @@
       }
     }
 
+    function renderStandaloneLiveNote(setup) {
+      const live = setup?.standalone_live || null;
+      if (!live) return '';
+      const configured = live.configured_backend || 'inherit';
+      if (configured === 'inherit') return '';
+      const detail = escapeHtml(live.detail || '');
+      const status = live.ready ? 'Ready' : 'Needs setup';
+      return `<p class="about-controls-meta"><strong>Standalone live transcript:</strong> ${status}. ${detail}</p>`;
+    }
+
     function escapeHtml(text) {
       return String(text)
         .replaceAll('&', '&amp;')
@@ -5214,6 +5358,37 @@
       } catch (e) {
         console.error('parakeet warmup:', e);
       }
+    }
+
+    function backendLabel(backend) {
+      switch (backend) {
+        case 'apple-speech': return 'Apple Speech';
+        case 'parakeet': return 'Parakeet';
+        case 'whisper': return 'Whisper';
+        case 'inherit': return 'your main transcription engine';
+        default: return backend || 'Whisper';
+      }
+    }
+
+    function fallbackOrderLabel(order) {
+      const list = Array.isArray(order) ? order : [];
+      if (!list.length) return 'Whisper';
+      return list.map(backendLabel).join(' -> ');
+    }
+
+    function describeLiveBackendSelection(selectedBackend, resolvedBackend, fallbackOrder, batchEngine) {
+      const fallbackText = fallbackOrderLabel(fallbackOrder);
+      const batchLabel = backendLabel(batchEngine);
+      if (selectedBackend === 'inherit') {
+        return `Standalone live transcript currently inherits ${backendLabel(resolvedBackend)} from the main transcription engine. Fallback order: ${fallbackText}. Recording-sidecar live and batch transcription stay on ${batchLabel}.`;
+      }
+      if (selectedBackend === 'apple-speech') {
+        return `Standalone live transcript will try Apple Speech first. Fallback order: ${fallbackText}. Recording-sidecar live and batch transcription remain on ${batchLabel}.`;
+      }
+      if (selectedBackend === 'parakeet') {
+        return `Standalone live transcript will use Parakeet when available. Fallback order: ${fallbackText}. Recording-sidecar live and batch transcription remain on ${batchLabel}.`;
+      }
+      return `Standalone live transcript will use Whisper. Fallback order: ${fallbackText}. Recording-sidecar live and batch transcription remain on ${batchLabel}.`;
     }
 
     function currentModeLabel(mode) {
@@ -6857,23 +7032,32 @@
       }
     }
 
+    async function refreshOpenMeetingDetail() {
+      if (!currentMeetingDetail || !detailOverlay.classList.contains('active')) return;
+      const path = currentMeetingDetail.path;
+      if (!path) return;
+      try {
+        const detail = await invoke('cmd_get_meeting_detail', { path });
+        renderDetailSections(detail);
+      } catch (e) {
+        console.error('Detail refresh:', e);
+        renderDetailSections(currentMeetingDetail);
+      }
+    }
+
     async function refreshMeetingsForCurrentView() {
       if (activeSearchQuery) {
         try {
           const results = await invoke('cmd_search', { query: activeSearchQuery });
           renderMeetings(results);
-          if (currentMeetingDetail && detailOverlay.classList.contains('active')) {
-            renderDetailSections(currentMeetingDetail);
-          }
+          await refreshOpenMeetingDetail();
         } catch (e) {
           console.error('Search refresh:', e);
         }
         return;
       }
       await loadMeetings();
-      if (currentMeetingDetail && detailOverlay.classList.contains('active')) {
-        renderDetailSections(currentMeetingDetail);
-      }
+      await refreshOpenMeetingDetail();
     }
 
     function scheduleMeetingsRefresh(delay = 350) {
@@ -6898,9 +7082,7 @@
         try {
           const results = await invoke('cmd_search', { query });
           renderMeetings(results);
-          if (currentMeetingDetail && detailOverlay.classList.contains('active')) {
-            renderDetailSections(currentMeetingDetail);
-          }
+          await refreshOpenMeetingDetail();
         } catch (e) { console.error('Search:', e); }
       }, 250);
     });
@@ -6997,9 +7179,11 @@
     }
 
     function renderSetupEmptyState() {
-      const setupEngine = currentSetup?.engine || 'whisper';
+      const batchSetup = currentSetup?.batch_transcription || null;
+      const setupEngine = batchSetup?.resolved_backend || currentSetup?.engine || 'whisper';
       const parakeet = currentSetup?.parakeet || null;
       const parakeetIssues = (parakeet?.issues || []).map(issue => `<li>${escapeHtml(issue)}</li>`).join('');
+      const standaloneLiveNote = renderStandaloneLiveNote(currentSetup);
       const modelStepBody = setupEngine === 'parakeet'
         ? `
                 <p>Minutes is set to use Parakeet, which needs the local <code>parakeet</code> binary plus converted model assets.</p>
@@ -7008,7 +7192,8 @@
                   <button class="btn btn-primary btn-sm" id="btn-open-parakeet-guide-onboarding">Open Parakeet setup guide</button>
                   <button class="btn btn-secondary btn-sm" id="btn-switch-to-whisper-onboarding">Use Whisper instead</button>
                 </div>
-                <div class="about-controls-meta">${escapeHtml(parakeet?.setupCommand || 'minutes setup --parakeet')}<\/div>`
+                <div class="about-controls-meta">${escapeHtml(parakeet?.setupCommand || 'minutes setup --parakeet')}<\/div>
+                ${standaloneLiveNote}`
         : `
                 <p>Choose a model size:</p>
                 <div class="model-options">
@@ -7019,7 +7204,8 @@
                 <div class="download-progress ui-hidden">
                   <div class="progress-bar"><div class="progress-fill"></div></div>
                   <span class="progress-text">Downloading...</span>
-                </div>`;
+                </div>
+                ${standaloneLiveNote}`;
       const empty = document.createElement('div');
       empty.className = 'empty-state';
       empty.innerHTML = `
@@ -7155,22 +7341,60 @@
         }
         // Engine selector
         const eng = s.transcription.engine || 'whisper';
+        const liveTranscript = s.live_transcript || {};
+        const liveBackend = liveTranscript.backend || 'inherit';
+        const resolvedLiveBackend = liveTranscript.resolved_backend || eng;
+        const liveFallbackOrder = liveTranscript.fallback_order || [resolvedLiveBackend];
+        const liveMentionsParakeet = liveBackend === 'parakeet' || liveBackend === 'apple-speech' || liveFallbackOrder.includes('parakeet');
         const parakeetCompiled = s.transcription.parakeet_compiled || false;
         const parakeetStatus = s.transcription.parakeet_status || null;
+        const appleSpeechStatus = s.transcription.apple_speech_status || null;
         const engineSelect = document.getElementById('settings-transcription-engine');
         const parakeetOpt = engineSelect.querySelector('option[value="parakeet"]');
+        const engineDetail = document.getElementById('settings-transcription-engine-detail');
+        const liveBackendSelect = document.getElementById('settings-live-backend');
+        const liveBackendDetail = document.getElementById('settings-live-backend-detail');
+        const liveParakeetOpt = liveBackendSelect ? liveBackendSelect.querySelector('option[value="parakeet"]') : null;
+        const liveAppleOpt = liveBackendSelect ? liveBackendSelect.querySelector('option[value="apple-speech"]') : null;
         if (parakeetOpt) {
           parakeetOpt.disabled = !parakeetCompiled;
           parakeetOpt.textContent = parakeetCompiled
             ? 'Parakeet — local backend, best quality on Apple Silicon'
             : 'Parakeet — unavailable in this build';
         }
+        if (engineDetail) {
+          engineDetail.textContent = 'Whisper and Parakeet control batch, recording, and recording-sidecar transcription. Standalone live transcript has its own backend setting above.';
+        }
         engineSelect.value = eng;
+        if (liveParakeetOpt) {
+          liveParakeetOpt.disabled = !parakeetCompiled;
+          liveParakeetOpt.textContent = parakeetCompiled
+            ? 'Parakeet — lower WER, fast on Apple Silicon'
+            : 'Parakeet — unavailable in this build';
+        }
+        if (liveAppleOpt) {
+          const appleSelectable = Boolean(appleSpeechStatus && appleSpeechStatus.selectable);
+          liveAppleOpt.disabled = !appleSelectable && liveBackend !== 'apple-speech';
+          liveAppleOpt.textContent = appleSelectable
+            ? 'Apple Speech — experimental standalone live transcript'
+            : 'Apple Speech — unavailable on this Mac';
+        }
+        if (liveBackendSelect) {
+          liveBackendSelect.value = liveBackend;
+        }
+        if (liveBackendDetail) {
+          liveBackendDetail.textContent = describeLiveBackendSelection(
+            liveBackend,
+            resolvedLiveBackend,
+            liveFallbackOrder,
+            eng,
+          );
+        }
         document.getElementById('settings-whisper-section').classList.toggle('is-hidden', eng !== 'whisper');
-        document.getElementById('settings-parakeet-section').classList.toggle('is-hidden', eng !== 'parakeet');
+        document.getElementById('settings-parakeet-section').classList.toggle('is-hidden', !(eng === 'parakeet' || liveMentionsParakeet));
         document.getElementById('settings-parakeet-model').value = s.transcription.parakeet_model || 'tdt-ctc-110m';
         renderParakeetSettingsStatus(parakeetStatus);
-        warmParakeetIfSelected(eng);
+        warmParakeetIfSelected(eng === 'parakeet' || resolvedLiveBackend === 'parakeet' ? 'parakeet' : eng);
         document.getElementById('settings-whisper-model').value = s.transcription.model;
         const dl = s.transcription.downloaded_models || [];
         const selectedModel = s.transcription.model;
@@ -7196,6 +7420,7 @@
         document.getElementById('settings-ollama-model').value = s.summarization.ollama_model || '';
         document.getElementById('settings-ollama-url-status').textContent =
           s.summarization.ollama_reachable ? 'Reachable' : 'Not reachable — is Ollama running?';
+        renderOpenAiCompatibleSettings(s);
         // Post-record hook
         const postRecord = (s.hooks && s.hooks.post_record) || '';
         document.getElementById('settings-hooks-post-record').value = postRecord;
@@ -7214,6 +7439,17 @@
           document.getElementById('settings-agent-command-status').textContent = sumAgents.find(a => a.name === currentCmd) ? 'Installed' : 'Custom command';
         } catch (e) { console.error('agent command picker:', e); }
         setSettingsToggle('settings-screen-share', Boolean(s.privacy?.hide_from_screen_share));
+        if (s.desktop_context) {
+          setSettingsToggle('settings-desktop-context', Boolean(s.desktop_context.enabled));
+          setSettingsToggle('settings-desktop-window-titles', s.desktop_context.capture_window_titles !== false);
+          setSettingsToggle('settings-desktop-browser-context', Boolean(s.desktop_context.capture_browser_context));
+          document.getElementById('settings-desktop-context-status').textContent =
+            desktopContextStateLabel(s.desktop_context.state, Boolean(s.desktop_context.filtered), Boolean(s.desktop_context.limited));
+          document.getElementById('settings-desktop-allowed-apps').value =
+            (s.desktop_context.allowed_apps || []).join(', ');
+          document.getElementById('settings-desktop-denied-apps').value =
+            (s.desktop_context.denied_apps || []).join(', ');
+        }
         setSettingsToggle('settings-screen-context', s.screen_context.enabled);
         document.getElementById('settings-screen-interval-row').classList.toggle('is-hidden', !s.screen_context.enabled);
         document.getElementById('settings-screen-interval').value = String(s.screen_context.interval_secs);
@@ -7228,20 +7464,14 @@
         // Agent launch flags — separate skip-permissions toggle from extra args
         try {
           const argsArr = s.assistant.agent_args || [];
-          const skipPerm = argsArr.includes('--dangerously-skip-permissions');
-          const extraArgs = argsArr.filter(a => a !== '--dangerously-skip-permissions');
+          const bypassFlag = approvalBypassFlag(s.assistant.agent);
+          const skipPerm = Boolean(bypassFlag && argsArr.includes(bypassFlag));
+          const extraArgs = argsArr.filter(a => !isApprovalBypassFlag(a));
           setSettingsToggle('settings-skip-permissions', skipPerm);
           document.getElementById('settings-skip-permissions-hint').textContent = skipPerm
             ? 'The agent will run without asking for approval. Takes effect next session.'
             : 'The agent will ask before running tools like file edits and shell commands.';
-          // Only show the toggle for agents that support this flag (claude, codex)
-          const skipRow = document.getElementById('settings-skip-permissions-row');
-          const skipHint = document.getElementById('settings-skip-permissions-hint');
-          const supportsSkip = ['claude', 'codex'].includes(s.assistant.agent);
-          skipRow.classList.toggle('is-hidden', !supportsSkip);
-          skipHint.classList.toggle('is-hidden', !supportsSkip);
-          document.getElementById('settings-agent-args').value = extraArgs.join(' ');
-          document.getElementById('settings-agent-args-status').textContent = extraArgs.length ? extraArgs.length + ' flag(s)' : '';
+          updateAssistantAgentUi(s.assistant.agent, extraArgs);
         } catch (e) { console.error('agent flags:', e); }
         // Call detection settings
         if (s.call_detection) {
@@ -7390,11 +7620,207 @@
     });
 
     function setSettingsToggle(id, on) { const b = document.getElementById(id); b.textContent = on ? 'On' : 'Off'; b.style.opacity = on ? '1' : '0.5'; }
+    function desktopContextStateLabel(state, filtered = false, limited = false) {
+      if (state === 'unsupported') {
+        if (filtered) return 'Enabled in config, but unavailable on this platform right now. Saved app filters will apply once desktop-context capture is supported.';
+        return 'Enabled in config, but unavailable on this platform right now.';
+      }
+      if (state === 'recording') {
+        if (limited && filtered) return 'Active during a recording or live session. Limited by Accessibility availability and narrowed by app filters.';
+        if (limited) return 'Active during a recording or live session. Limited because Accessibility-backed window titles are unavailable right now.';
+        if (filtered) return 'Active during a recording or live session. App filters are narrowing what is collected.';
+        return 'Active during a recording or live session.';
+      }
+      if (state === 'idle') {
+        if (limited && filtered) return 'Enabled. Currently limited by Accessibility availability and narrowed by app filters.';
+        if (limited) return 'Enabled, but limited. Accessibility-backed window titles are unavailable right now.';
+        if (filtered) return 'Enabled and filtered. App rules will narrow what gets collected.';
+        return 'Enabled. Desktop context will attach to the next recording or live session.';
+      }
+      if (limited && filtered) return 'Limited by Accessibility availability and narrowed by app filters.';
+      if (limited) return 'Limited. Accessibility-backed window titles are unavailable right now.';
+      if (filtered) return 'Filtered. Capture is on, but app rules are narrowing what is collected.';
+      return 'Off. App/window context stays disabled until you turn it on.';
+    }
+    function assistantAgentPlaceholder(agent) {
+      if (agent === 'claude') return 'e.g. --model sonnet';
+      if (agent === 'codex') return 'e.g. --model gpt-5-codex';
+      if (agent === 'opencode') return 'e.g. --model openai/gpt-5.4';
+      if (agent === 'pi') return 'e.g. --provider openai --model gpt-4o-mini';
+      if (agent === 'gemini') return 'e.g. --model gemini-2.5-pro';
+      return 'e.g. --model <provider/model>';
+    }
+    function approvalBypassFlag(agent) {
+      if (agent === 'claude') return '--dangerously-skip-permissions';
+      if (agent === 'codex') return '--dangerously-bypass-approvals-and-sandbox';
+      return null;
+    }
+    function isApprovalBypassFlag(arg) {
+      return arg === '--dangerously-skip-permissions' || arg === '--dangerously-bypass-approvals-and-sandbox';
+    }
+    function sanitizeAssistantExtraArgs(agent, extraArgs) {
+      const bypassFlag = approvalBypassFlag(agent);
+      const sanitized = [];
+      let removedUnsupportedBypass = false;
+      for (const arg of extraArgs) {
+        if (isApprovalBypassFlag(arg) && arg !== bypassFlag) {
+          removedUnsupportedBypass = true;
+          continue;
+        }
+        sanitized.push(arg);
+      }
+      return { sanitized, supportsSkip: Boolean(bypassFlag), bypassFlag, removedUnsupportedBypass };
+    }
+    function updateAssistantAgentUi(agent, extraArgs, removedUnsupportedBypass = false) {
+      const argsInput = document.getElementById('settings-agent-args');
+      const argsStatus = document.getElementById('settings-agent-args-status');
+      const argsHelp = document.getElementById('settings-agent-args-help');
+      const skipRow = document.getElementById('settings-skip-permissions-row');
+      const skipHint = document.getElementById('settings-skip-permissions-hint');
+      const { sanitized, supportsSkip } = sanitizeAssistantExtraArgs(agent, extraArgs);
+      argsInput.placeholder = assistantAgentPlaceholder(agent);
+      argsInput.value = sanitized.join(' ');
+      argsStatus.textContent = sanitized.length ? sanitized.length + ' flag(s)' : '';
+      skipRow.classList.toggle('is-hidden', !supportsSkip);
+      skipHint.classList.toggle('is-hidden', !supportsSkip);
+      if (!supportsSkip) setSettingsToggle('settings-skip-permissions', false);
+      if (removedUnsupportedBypass) {
+        argsHelp.textContent = 'Removed an approval-bypass flag that does not match the selected agent.';
+      } else if (agent === 'opencode') {
+        argsHelp.textContent = 'OpenCode works best with provider/model flags like --model openai/gpt-5.4.';
+      } else if (agent === 'pi') {
+        argsHelp.textContent = 'Pi works best with provider/model flags like --provider openai --model gpt-4o-mini.';
+      } else if (agent === 'codex') {
+        argsHelp.textContent = 'Codex uses --dangerously-bypass-approvals-and-sandbox for full auto-approval.';
+      } else if (agent === 'claude') {
+        argsHelp.textContent = 'Claude supports --dangerously-skip-permissions and model selection flags.';
+      } else {
+        argsHelp.textContent = 'Use CLI flags supported by the selected agent.';
+      }
+      return { sanitized, supportsSkip };
+    }
+    const openAiCompatiblePresets = {
+      local: {
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'llama3.2',
+        apiKeyEnv: '',
+      },
+      openrouter: {
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openai/gpt-4o-mini',
+        apiKeyEnv: '',
+      },
+      vercel: {
+        baseUrl: 'https://ai-gateway.vercel.sh/v1',
+        model: 'openai/gpt-4o-mini',
+        apiKeyEnv: '',
+      },
+      cloudflare: {
+        baseUrl: 'https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/compat',
+        model: 'openai/gpt-4o-mini',
+        apiKeyEnv: '',
+      },
+    };
+    function isOpenAiCompatibleEngine(engine) {
+      return engine === 'openai-compatible' || engine === 'openai_compatible';
+    }
+    function inferOpenAiCompatiblePreset(s) {
+      const baseUrl = (s.summarization.openai_compatible_base_url || '').trim();
+      if (baseUrl === openAiCompatiblePresets.local.baseUrl) return 'local';
+      if (baseUrl === openAiCompatiblePresets.openrouter.baseUrl) return 'openrouter';
+      if (baseUrl === openAiCompatiblePresets.vercel.baseUrl) return 'vercel';
+      if (baseUrl.includes('gateway.ai.cloudflare.com')) return 'cloudflare';
+      return 'custom';
+    }
+    function openAiCompatibleEndpointIsLocal(s) {
+      if (typeof s.summarization.openai_compatible_endpoint_is_local === 'boolean') {
+        return s.summarization.openai_compatible_endpoint_is_local;
+      }
+      const baseUrl = (s.summarization.openai_compatible_base_url || '').trim();
+      if (!baseUrl) return false;
+      try {
+        const host = new URL(baseUrl).hostname.toLowerCase();
+        return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1';
+      } catch (_) {
+        return false;
+      }
+    }
+    function openAiCompatibleShouldOfferKey(s) {
+      const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
+      return Boolean(apiKeyEnv) || !openAiCompatibleEndpointIsLocal(s);
+    }
+    function openAiCompatibleStatusText(s) {
+      const baseUrl = (s.summarization.openai_compatible_base_url || '').trim();
+      const model = (s.summarization.openai_compatible_model || '').trim();
+      const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
+      if (!baseUrl) return 'Paste a connection URL before automatic summaries can use this backend.';
+      if (baseUrl.includes('<') || baseUrl.includes('>')) return 'Replace the placeholder account/gateway values in the URL.';
+      if (!model) return 'Enter the model name your server or gateway expects.';
+      if (!apiKeyEnv && !openAiCompatibleShouldOfferKey(s)) return 'Local mode: no Authorization header will be sent.';
+      let host = baseUrl;
+      try { host = new URL(baseUrl).host; } catch (_) {}
+      if (!apiKeyEnv && s.summarization.openai_compatible_keychain_key_set) {
+        return 'Ready. Minutes will send summaries to ' + host + ' using ' + model + ' with a key saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
+      }
+      if (!apiKeyEnv) return 'No key configured. Save one if this endpoint requires auth, or leave it blank for local/private servers.';
+      if (!s.summarization.openai_compatible_key_set) {
+        return s.summarization.openai_compatible_key_status_message || 'Paste an API key to unlock this cloud gateway.';
+      }
+      if (s.summarization.openai_compatible_keychain_key_set) {
+        return 'Ready. Minutes will send summaries to ' + host + ' using ' + model + ' with a key saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
+      }
+      return 'Ready. Minutes will send summaries to ' + host + ' using ' + model + '.';
+    }
+    function openAiCompatibleKeyStatusText(s) {
+      const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
+      if (!openAiCompatibleShouldOfferKey(s)) return 'No key needed for local servers.';
+      if (s.summarization.openai_compatible_keychain_key_set) {
+        return 'Saved in ' + (s.summarization.openai_compatible_key_storage_label || 'Keychain') + '.';
+      }
+      if (!apiKeyEnv) return 'Optional for custom endpoints. Save a key if this gateway requires one.';
+      if (s.summarization.openai_compatible_keychain_supported === false) {
+        return 'Keychain storage is unavailable here. Use the env var fallback below.';
+      }
+      return s.summarization.openai_compatible_key_status_message || 'Paste a key once. Minutes stores it securely.';
+    }
+    function renderOpenAiCompatibleSettings(s) {
+      const visible = isOpenAiCompatibleEngine(s.summarization.engine);
+      const rowIds = [
+        'settings-openai-compatible-preset-row',
+        'settings-openai-compatible-base-url-row',
+        'settings-openai-compatible-model-row',
+        'settings-openai-compatible-secret-row',
+        'settings-openai-compatible-api-key-row',
+      ];
+      for (const id of rowIds) {
+        document.getElementById(id).classList.toggle('is-hidden', !visible);
+      }
+      const apiKeyEnv = (s.summarization.openai_compatible_api_key_env || '').trim();
+      const keyNeeded = openAiCompatibleShouldOfferKey(s);
+      document.getElementById('settings-openai-compatible-preset').value = inferOpenAiCompatiblePreset(s);
+      document.getElementById('settings-openai-compatible-base-url').value =
+        s.summarization.openai_compatible_base_url || '';
+      document.getElementById('settings-openai-compatible-model').value =
+        s.summarization.openai_compatible_model || '';
+      document.getElementById('settings-openai-compatible-api-key-env').value =
+        apiKeyEnv;
+      document.getElementById('settings-openai-compatible-key-status').textContent =
+        visible ? openAiCompatibleKeyStatusText(s) : '';
+      document.getElementById('settings-openai-compatible-api-key').disabled = !visible || !keyNeeded;
+      document.getElementById('settings-openai-compatible-save-key').disabled =
+        !visible || !keyNeeded || s.summarization.openai_compatible_keychain_supported === false;
+      document.getElementById('settings-openai-compatible-clear-key').disabled =
+        !visible || !keyNeeded || (!s.summarization.openai_compatible_keychain_key_set && !s.summarization.openai_compatible_key_set);
+      document.getElementById('settings-openai-compatible-status').textContent =
+        visible ? openAiCompatibleStatusText(s) : '';
+    }
     function updateSumStatus(s) {
       const el = document.getElementById('settings-summarization-status');
       if (s.summarization.engine === 'none') el.textContent = '';
+      else if (s.summarization.engine === 'auto') el.textContent = 'Advanced: Minutes will auto-detect an installed agent CLI for pipeline summaries.';
       else if (s.summarization.engine === 'agent') el.textContent = 'Using: ' + (s.summarization.agent_command || 'claude') + ' — no API key needed, uses your existing subscription';
       else if (s.summarization.engine === 'ollama') el.textContent = s.summarization.ollama_reachable ? 'Ollama reachable (' + s.summarization.ollama_model + ')' : 'Ollama not reachable at ' + s.summarization.ollama_url;
+      else if (isOpenAiCompatibleEngine(s.summarization.engine)) el.textContent = openAiCompatibleStatusText(s);
       else if (s.summarization.engine === 'claude') el.textContent = s.summarization.anthropic_key_set ? 'API key set' : 'ANTHROPIC_API_KEY not found in environment';
       else if (s.summarization.engine === 'openai') el.textContent = s.summarization.openai_key_set ? 'API key set' : 'OPENAI_API_KEY not found in environment';
     }
@@ -7439,6 +7865,30 @@
       const next = !isOn;
       try { await invoke('cmd_set_autostart', { enabled: next }); setSettingsToggle('settings-autostart', next); } catch (e) { console.error('autostart toggle:', e); }
     });
+    // Advanced: open config.toml in the user's default editor + docs link.
+    // cmd_get_settings already ships config_path for the footer; we re-fetch
+    // on click so a moved/renamed config gets picked up without a reload.
+    document.getElementById('settings-open-config-file').addEventListener('click', async () => {
+      try {
+        const s = await invoke('cmd_get_settings');
+        if (!s || !s.config_path) {
+          console.error('settings: no config_path from cmd_get_settings');
+          return;
+        }
+        await invoke('cmd_open_file', { path: s.config_path });
+      } catch (e) {
+        console.error('open config.toml:', e);
+      }
+    });
+    document.getElementById('settings-open-config-docs').addEventListener('click', async () => {
+      try {
+        await invoke('cmd_open_file', {
+          path: 'https://github.com/silverstein/minutes/blob/main/docs/CONFIG.md',
+        });
+      } catch (e) {
+        console.error('open config docs:', e);
+      }
+    });
     // Legacy hotkey settings — guarded for removed HTML elements
     if (document.getElementById('settings-hotkey')) {
       document.getElementById('settings-hotkey').addEventListener('click', async () => {
@@ -7463,19 +7913,12 @@
     document.getElementById('settings-transcription-engine').addEventListener('change', async (e) => {
       await invoke('cmd_set_setting', { section: 'transcription', key: 'engine', value: e.target.value });
       await checkSetup();
-      document.getElementById('settings-whisper-section').classList.toggle('is-hidden', e.target.value !== 'whisper');
-      document.getElementById('settings-parakeet-section').classList.toggle('is-hidden', e.target.value !== 'parakeet');
-      const s = await invoke('cmd_get_settings');
-      renderParakeetSettingsStatus(s.transcription.parakeet_status || null);
-      warmParakeetIfSelected(e.target.value);
+      await loadSettings();
     });
     document.getElementById('settings-parakeet-model').addEventListener('change', async (e) => {
       await invoke('cmd_set_setting', { section: 'transcription', key: 'parakeet_model', value: e.target.value });
       await checkSetup();
-      const s = await invoke('cmd_get_settings');
-      document.getElementById('settings-parakeet-model').value = s.transcription.parakeet_model || 'tdt-ctc-110m';
-      renderParakeetSettingsStatus(s.transcription.parakeet_status || null);
-      warmParakeetIfSelected('parakeet');
+      await loadSettings();
     });
     document.getElementById('settings-whisper-model').addEventListener('change', async (e) => {
       await invoke('cmd_set_setting', { section: 'transcription', key: 'model', value: e.target.value });
@@ -7540,7 +7983,18 @@
       const ollamaVisible = e.target.value === 'ollama';
       document.getElementById('settings-ollama-url-row').classList.toggle('is-hidden', !ollamaVisible);
       document.getElementById('settings-ollama-model-row').classList.toggle('is-hidden', !ollamaVisible);
+      const openAiCompatibleVisible = isOpenAiCompatibleEngine(e.target.value);
+      for (const id of [
+        'settings-openai-compatible-preset-row',
+        'settings-openai-compatible-base-url-row',
+        'settings-openai-compatible-model-row',
+        'settings-openai-compatible-secret-row',
+        'settings-openai-compatible-api-key-row',
+      ]) {
+        document.getElementById(id).classList.toggle('is-hidden', !openAiCompatibleVisible);
+      }
       const s = await invoke('cmd_get_settings'); updateSumStatus(s);
+      renderOpenAiCompatibleSettings(s);
       if (ollamaVisible) {
         document.getElementById('settings-ollama-url-status').textContent =
           s.summarization.ollama_reachable ? 'Reachable' : 'Not reachable — is Ollama running?';
@@ -7577,6 +8031,82 @@
         console.error('ollama model save:', err);
       }
     });
+    document.getElementById('settings-openai-compatible-preset').addEventListener('change', async (e) => {
+      const preset = openAiCompatiblePresets[e.target.value];
+      if (!preset) return;
+      document.getElementById('settings-openai-compatible-base-url').value = preset.baseUrl;
+      document.getElementById('settings-openai-compatible-model').value = preset.model;
+      document.getElementById('settings-openai-compatible-api-key-env').value = preset.apiKeyEnv;
+      await invoke('cmd_set_setting', { section: 'summarization', key: 'openai_compatible_base_url', value: preset.baseUrl });
+      await invoke('cmd_set_setting', { section: 'summarization', key: 'openai_compatible_model', value: preset.model });
+      await invoke('cmd_set_setting', { section: 'summarization', key: 'openai_compatible_api_key_env', value: preset.apiKeyEnv });
+      const s = await invoke('cmd_get_settings');
+      updateSumStatus(s);
+      renderOpenAiCompatibleSettings(s);
+    });
+    document.getElementById('settings-openai-compatible-save-key').addEventListener('click', async () => {
+      const input = document.getElementById('settings-openai-compatible-api-key');
+      const btn = document.getElementById('settings-openai-compatible-save-key');
+      const status = document.getElementById('settings-openai-compatible-key-status');
+      const apiKey = input.value.trim();
+      if (!apiKey) {
+        status.textContent = 'Paste an API key first.';
+        input.focus();
+        return;
+      }
+      btn.disabled = true;
+      status.textContent = 'Saving securely...';
+      try {
+        await invoke('cmd_set_openai_compatible_api_key', { apiKey });
+        input.value = '';
+        const s = await invoke('cmd_get_settings');
+        updateSumStatus(s);
+        renderOpenAiCompatibleSettings(s);
+      } catch (err) {
+        status.textContent = String(err);
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('settings-openai-compatible-clear-key').addEventListener('click', async () => {
+      const btn = document.getElementById('settings-openai-compatible-clear-key');
+      const status = document.getElementById('settings-openai-compatible-key-status');
+      btn.disabled = true;
+      status.textContent = 'Forgetting saved key...';
+      try {
+        await invoke('cmd_clear_openai_compatible_api_key');
+        document.getElementById('settings-openai-compatible-api-key').value = '';
+        const s = await invoke('cmd_get_settings');
+        updateSumStatus(s);
+        renderOpenAiCompatibleSettings(s);
+      } catch (err) {
+        status.textContent = String(err);
+        btn.disabled = false;
+      }
+    });
+    document.getElementById('settings-openai-compatible-base-url').addEventListener('change', async (e) => {
+      const value = e.target.value.trim() || 'http://localhost:11434/v1';
+      e.target.value = value;
+      await invoke('cmd_set_setting', { section: 'summarization', key: 'openai_compatible_base_url', value });
+      const s = await invoke('cmd_get_settings');
+      updateSumStatus(s);
+      renderOpenAiCompatibleSettings(s);
+    });
+    document.getElementById('settings-openai-compatible-model').addEventListener('change', async (e) => {
+      const value = e.target.value.trim() || 'llama3.2';
+      e.target.value = value;
+      await invoke('cmd_set_setting', { section: 'summarization', key: 'openai_compatible_model', value });
+      const s = await invoke('cmd_get_settings');
+      updateSumStatus(s);
+      renderOpenAiCompatibleSettings(s);
+    });
+    document.getElementById('settings-openai-compatible-api-key-env').addEventListener('change', async (e) => {
+      const value = e.target.value.trim();
+      e.target.value = value;
+      await invoke('cmd_set_setting', { section: 'summarization', key: 'openai_compatible_api_key_env', value });
+      const s = await invoke('cmd_get_settings');
+      updateSumStatus(s);
+      renderOpenAiCompatibleSettings(s);
+    });
     // Post-record hook — empty string clears the hook (Rust side maps "" → None).
     document.getElementById('settings-hooks-post-record').addEventListener('change', async (e) => {
       const value = e.target.value;
@@ -7606,25 +8136,61 @@
       }
     });
     document.getElementById('settings-screen-interval').addEventListener('change', (e) => invoke('cmd_set_setting', { section: 'screen_context', key: 'interval_secs', value: e.target.value }));
+    async function refreshDesktopContextStatus() {
+      const s = await invoke('cmd_get_settings');
+      document.getElementById('settings-desktop-context-status').textContent =
+        desktopContextStateLabel(s.desktop_context?.state, Boolean(s.desktop_context?.filtered), Boolean(s.desktop_context?.limited));
+    }
+    function wireDesktopContextToggle(id, key, label) {
+      document.getElementById(id).addEventListener('click', async () => {
+        const btn = document.getElementById(id);
+        const currentlyOn = btn.textContent.trim() === 'On';
+        const next = !currentlyOn;
+        setSettingsToggle(id, next);
+        try {
+          await invoke('cmd_set_setting', { section: 'desktop_context', key, value: String(next) });
+          await refreshDesktopContextStatus();
+        } catch (e) {
+          setSettingsToggle(id, currentlyOn);
+          console.error(`desktop_context ${label}:`, e);
+        }
+      });
+    }
+    function wireDesktopContextList(id, key, label) {
+      document.getElementById(id).addEventListener('change', async (e) => {
+        try {
+          await invoke('cmd_set_setting', { section: 'desktop_context', key, value: e.target.value });
+          await refreshDesktopContextStatus();
+        } catch (err) { console.error(`desktop_context ${label}:`, err); }
+      });
+    }
+    wireDesktopContextToggle('settings-desktop-context', 'enabled', 'toggle');
+    wireDesktopContextToggle('settings-desktop-window-titles', 'capture_window_titles', 'window titles');
+    wireDesktopContextToggle('settings-desktop-browser-context', 'capture_browser_context', 'browser context');
+    wireDesktopContextList('settings-desktop-allowed-apps', 'allowed_apps', 'allowed apps');
+    wireDesktopContextList('settings-desktop-denied-apps', 'denied_apps', 'denied apps');
     document.getElementById('settings-agent').addEventListener('change', async (e) => {
       await invoke('cmd_set_setting', { section: 'assistant', key: 'agent', value: e.target.value });
-      const supportsSkip = ['claude', 'codex'].includes(e.target.value);
-      document.getElementById('settings-skip-permissions-row').classList.toggle('is-hidden', !supportsSkip);
-      document.getElementById('settings-skip-permissions-hint').classList.toggle('is-hidden', !supportsSkip);
+      await saveAgentArgs();
     });
     // Helper: rebuild agent_args from toggle + text field and save
     async function saveAgentArgs() {
+      const agent = document.getElementById('settings-agent').value;
       const skipOn = document.getElementById('settings-skip-permissions').textContent.trim() === 'On';
       const extra = document.getElementById('settings-agent-args').value.trim();
+      const extraParts = extra ? extra.split(/\s+/) : [];
+      const { sanitized, supportsSkip, bypassFlag, removedUnsupportedBypass } = sanitizeAssistantExtraArgs(agent, extraParts);
       const parts = [];
-      if (skipOn) parts.push('--dangerously-skip-permissions');
-      if (extra) parts.push(...extra.split(/\s+/));
+      if (skipOn && supportsSkip && bypassFlag) parts.push(bypassFlag);
+      if (sanitized.length) parts.push(...sanitized);
       await invoke('cmd_set_setting', { section: 'assistant', key: 'agent_args', value: parts.join(' ') });
       document.getElementById('settings-skip-permissions-hint').textContent = skipOn
         ? 'The agent will run without asking for approval. Takes effect next session.'
         : 'The agent will ask before running tools like file edits and shell commands.';
-      const extraCount = extra ? extra.split(/\s+/).length : 0;
-      document.getElementById('settings-agent-args-status').textContent = extraCount ? extraCount + ' flag(s)' : '';
+      if (!supportsSkip) {
+        document.getElementById('settings-skip-permissions-hint').textContent = '';
+      }
+      updateAssistantAgentUi(agent, sanitized, removedUnsupportedBypass || (skipOn && !supportsSkip));
     }
     document.getElementById('settings-skip-permissions').addEventListener('click', async () => {
       const btn = document.getElementById('settings-skip-permissions');
@@ -7770,6 +8336,11 @@
       const select = document.getElementById('settings-live-shortcut-select');
       if (select) select.value = settings.shortcut;
     }).catch(() => { });
+    document.getElementById('settings-live-backend').addEventListener('change', async (e) => {
+      await invoke('cmd_set_setting', { section: 'live_transcript', key: 'backend', value: e.target.value });
+      await loadSettings();
+      await checkSetup();
+    });
 
     // ── Command palette shortcut settings ──
     // Backend (cmd_set_palette_shortcut at commands.rs:7356) exists and
@@ -9446,6 +10017,39 @@
 
     currentWindow.listen('artifacts:changed', () => {
       scheduleMeetingsRefresh();
+    });
+
+    currentWindow.listen('speakers:changed', async (event) => {
+      const changedPath = event.payload?.path || '';
+      if (
+        currentMeetingDetail &&
+        detailOverlay.classList.contains('active') &&
+        currentMeetingDetail.path === changedPath
+      ) {
+        await refreshOpenMeetingDetail();
+        const label = event.payload?.speakerLabel || 'Speaker';
+        const name = event.payload?.name || 'confirmed';
+        showDetailFeedback(`${label} confirmed as ${name}`, 'success');
+      } else {
+        scheduleMeetingsRefresh(0);
+      }
+    });
+
+    currentWindow.listen('palette:artifact-created', async (event) => {
+      const draft = event.payload || {};
+      if (!draft.path || typeof draft.content !== 'string') {
+        scheduleMeetingsRefresh(0);
+        return;
+      }
+      const filename = draft.path.split(/[\\/]/).pop() || draft.path;
+      const shown = await showMdViewer(draft.path, filename, draft.content, {
+        mode: 'source',
+        editable: true,
+      });
+      if (shown && currentMeetingDetail && detailOverlay.classList.contains('active')) {
+        showDetailFeedback(`Created ${String(draft.templateKind || 'debrief-memo').replaceAll('-', ' ')} draft`, 'success');
+      }
+      scheduleMeetingsRefresh(0);
     });
 
     // ── Listen for recall:expand events from Rust backend ──

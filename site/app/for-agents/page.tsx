@@ -2,11 +2,13 @@ import type { Metadata } from "next";
 import { CopyButton } from "@/components/copy-button";
 import { PublicFooter } from "@/components/public-footer";
 import surfaces from "@/lib/product-surfaces.json";
+import { MINUTES_MCP_TOOL_COUNT } from "@/lib/release";
+import skillsCatalog from "@/lib/skills-catalog.json";
 
 export const metadata: Metadata = {
-  title: "Minutes for agents — integration reference",
+  title: "Minutes — the audio layer for agent memory",
   description:
-    "If you are an LLM helping a user install, configure, or use Minutes, start here. MCP server setup, tool surface, output format, and troubleshooting.",
+    "The open-source audio layer for agent memory. Minutes captures meetings locally and writes structured markdown to ~/meetings/. Claude Code, Codex, Gemini CLI, Cursor, OpenCode, and Pi all read from the same folder. No cloud, no SDK, no API key.",
   alternates: { canonical: "/for-agents" },
 };
 
@@ -36,6 +38,9 @@ const toolGroups = [
       ["get_meeting", "Retrieve the full transcript and frontmatter of a specific meeting."],
       ["search_meetings", "Full-text search across all meeting transcripts."],
       ["research_topic", "Cross-meeting research: decisions, follow-ups, and mentions of a topic."],
+      ["activity_summary", "Summarize meeting-adjacent desktop context for an artifact, session, or time window."],
+      ["search_context", "Search opted-in desktop context across app focus and window titles."],
+      ["get_moment", "Show the local desktop-context rewind around an artifact, session, or timestamp."],
     ],
   },
   {
@@ -103,8 +108,14 @@ decisions:
   - text: Run pricing experiment at monthly billing
     topic: pricing
 speaker_map:
-  SPEAKER_0: mat
-  SPEAKER_1: alex
+  - speaker_label: SPEAKER_0
+    name: mat
+    confidence: high
+    source: manual
+  - speaker_label: SPEAKER_1
+    name: alex
+    confidence: medium
+    source: llm
 ---
 
 ## Summary
@@ -159,8 +170,53 @@ const tasks = [
 ] as const;
 
 export default function ForAgentsPage() {
+  const skillCount = skillsCatalog.length;
+  const skillCategories = Array.from(
+    skillsCatalog.reduce((acc, skill) => {
+      const bucket = acc.get(skill.category) ?? [];
+      bucket.push(skill);
+      acc.set(skill.category, bucket);
+      return acc;
+    }, new Map<string, (typeof skillsCatalog)[number][]>())
+  );
+
+  const skillCatalogJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    name: "Minutes skill catalog",
+    description:
+      "Workflow-level skills that turn Minutes MCP tools into operator motions like meeting prep, debrief, and cross-meeting graph queries.",
+    numberOfItems: skillsCatalog.length,
+    itemListElement: skillsCatalog.map((skill, index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      url: `https://useminutes.app/for-agents#${skill.name}`,
+      item: {
+        "@type": "HowTo",
+        name: skill.displayName,
+        description: skill.shortDescription,
+        about: skill.bestFor,
+        step: {
+          "@type": "HowToStep",
+          name: "Invoke",
+          text: skill.example,
+        },
+      },
+    })),
+  };
+
+  const jsonLdHtml = JSON.stringify(skillCatalogJsonLd).replace(
+    /</g,
+    "\\u003c",
+  );
+
   return (
     <div className="mx-auto max-w-[920px] px-6 pb-16 pt-10 sm:px-8 sm:pt-14">
+      <script
+        type="application/ld+json"
+        // Server-controlled catalog JSON only. Canonical Next.js JSON-LD pattern.
+        dangerouslySetInnerHTML={{ __html: jsonLdHtml }}
+      />
       {/* Nav */}
       <div className="mb-10 flex items-center justify-between border-b border-[color:var(--border)] pb-4">
         <a
@@ -172,6 +228,9 @@ export default function ForAgentsPage() {
         <div className="flex gap-5 text-sm text-[var(--text-secondary)]">
           <a href="/compare" className="hover:text-[var(--accent)]">
             compare
+          </a>
+          <a href="/proof" className="hover:text-[var(--accent)]">
+            proof
           </a>
           <a href="/docs/mcp/tools" className="hover:text-[var(--accent)]">
             MCP tools
@@ -185,20 +244,325 @@ export default function ForAgentsPage() {
       {/* Header */}
       <section className="max-w-[760px]">
         <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
-          Agent Reference
+          Open-source. MCP-native.
         </p>
         <h1 className="mt-4 font-serif text-[42px] leading-[0.98] tracking-[-0.045em] text-[var(--text)] sm:text-[56px]">
-          For agents
+          The meeting corpus your agents{" "}
+          <span className="italic text-[var(--accent)]">read as files</span>.
         </h1>
         <p className="mt-5 text-[17px] leading-8 text-[var(--text-secondary)]">
-          If you are an LLM helping a user install or query Minutes, start here.
-          Setup, tool surface, output format, and constraints are all on this page.
-          For the full generated index, see{" "}
+          Cloud meeting tools hold your conversations in their database behind
+          their API. Minutes writes every meeting and voice memo to structured
+          markdown in{" "}
+          <code className="font-mono text-[15px] text-[var(--text)]">~/meetings/</code>
+          {" "}on your own disk. Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Pi,
+          and any MCP-compatible client read from the same folder. No SDK. No
+          API key. Your corpus survives tools, vendors, and hype cycles.
+        </p>
+        <p className="mt-4 text-[15px] leading-7 text-[var(--text-secondary)]">
+          This page is the integration reference. MCP config, tool surface,
+          frontmatter schema, and task recipes below. For the full generated
+          index, see{" "}
           <a href="/llms.txt" className="text-[var(--accent)] hover:underline">
             llms.txt
           </a>
           .
         </p>
+      </section>
+
+      {/* Try in 60 seconds */}
+      <section className="mt-8 max-w-[760px]" id="try">
+        <div className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5">
+          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+            Try it in 60 seconds
+          </p>
+          <p className="mt-3 text-[14px] leading-7 text-[var(--text-secondary)]">
+            One command drops a 5-meeting fixture corpus into{" "}
+            <code className="font-mono text-[12px] text-[var(--text)]">
+              ~/.minutes/demo/
+            </code>
+            , prints the MCP config with a{" "}
+            <code className="font-mono text-[12px] text-[var(--text)]">MEETINGS_DIR</code>{" "}
+            env override, and lists questions to ask. No signup, no API key.
+            Basic search and list tools work immediately. Structured tools
+            (consistency report, person profiles) auto-install the Minutes CLI
+            on first call.
+          </p>
+          <div className="mt-4 flex items-center gap-2 rounded-[6px] bg-[var(--bg)] px-4 py-3 font-mono text-[13px] text-[var(--text)]">
+            <code className="flex-1 overflow-x-auto">
+              npx minutes-mcp --demo
+            </code>
+            <CopyButton label="Copy" cmd="npx minutes-mcp --demo" compact />
+          </div>
+          <p className="mt-4 text-[12px] leading-6 text-[var(--text-secondary)]">
+            Paste the printed config into your agent host. Try:{" "}
+            <em className="font-normal text-[var(--text)]">
+              &ldquo;What did we decide about pricing? Which decision is
+              current?&rdquo;
+            </em>
+          </p>
+        </div>
+      </section>
+
+      <section className="mt-10 max-w-[760px]">
+        <div className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5">
+          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+            Proof path
+          </p>
+          <div className="mt-4 space-y-3 text-[13px] leading-6 text-[var(--text-secondary)]">
+            <p>
+              After the demo, audit the current eval artifact before trusting any
+              score. v0.1 is a runnable 10-file, 20-question smoke test with a
+              provisional 20/20 Claude-on-Claude pre-grade. It is useful evidence
+              that the harness works, not an independent benchmark.
+            </p>
+            <p>
+              Reference adapters for Mem0 and Graphiti show how the markdown
+              contract maps into external memory systems. Treat them as runnable
+              examples until the v2 hardening work lands.
+            </p>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <a
+              href="/proof"
+              className="inline-flex items-center rounded-[5px] bg-[var(--accent)] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-black hover:bg-[var(--accent-hover)]"
+            >
+              See proof
+            </a>
+            <a
+              href="https://github.com/silverstein/minutes/blob/main/docs/eval/results-v0.1.md"
+              className="inline-flex items-center rounded-[5px] border border-[color:var(--border-mid)] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--text)] hover:bg-[var(--bg-hover)]"
+            >
+              Audit eval
+            </a>
+            <a
+              href="https://github.com/silverstein/minutes/tree/main/examples"
+              className="inline-flex items-center rounded-[5px] border border-[color:var(--border-mid)] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--text)] hover:bg-[var(--bg-hover)]"
+            >
+              Adapter examples
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* Shape of the category */}
+      <section className="mt-10 max-w-[760px]">
+        <div className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5">
+          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+            Shape of the category
+          </p>
+          <div className="mt-4 grid gap-x-6 gap-y-3 text-[13px] leading-6 sm:grid-cols-[200px_1fr]">
+            <div className="font-mono text-[var(--text-secondary)]">
+              Granola, Fireflies, Otter
+            </div>
+            <div className="text-[var(--text)]">
+              Cloud database. Closed API. Data lives in their app.
+            </div>
+            <div className="font-mono text-[var(--text-secondary)]">
+              Agent-memory SDKs
+            </div>
+            <div className="text-[var(--text)]">
+              Cloud-hosted memory. Proprietary SDK. API key required.
+            </div>
+            <div className="font-mono text-[var(--accent)]">Minutes</div>
+            <div className="text-[var(--text)]">
+              Local capture. Markdown on your disk. Any agent reads from{" "}
+              <code className="font-mono text-[13px]">~/meetings/</code>. MIT.
+            </div>
+          </div>
+          <p className="mt-5 text-[13px] leading-6 text-[var(--text-secondary)]">
+            Ten years from now,{" "}
+            <code className="font-mono text-[13px] text-[var(--text)]">grep</code>{" "}
+            still works on your corpus.
+          </p>
+        </div>
+      </section>
+
+      {/* Agent compatibility */}
+      <section className="mt-10 max-w-[760px]">
+        <div className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5">
+          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+            Agent compatibility
+          </p>
+          <p className="mt-3 text-[13px] leading-6 text-[var(--text-secondary)]">
+            Working paths across the major agent runtimes. Same folder,
+            different hosts, no vendor lock-in.
+          </p>
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full min-w-[520px] border-collapse text-[12px]">
+              <thead>
+                <tr className="border-b border-[color:var(--border)]">
+                  <th className="py-2 text-left font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    Agent
+                  </th>
+                  <th className="py-2 text-left font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    Native skills
+                  </th>
+                  <th className="py-2 text-left font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    MCP tools
+                  </th>
+                  <th className="py-2 text-left font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    Setup
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="font-mono leading-6 text-[var(--text)]">
+                <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">Claude Code</td>
+                  <td className="py-2 pr-3">{skillCount} skills + 2 hooks</td>
+                  <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">/plugin install minutes@minutes</code>
+                  </td>
+                </tr>
+                <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">Claude Desktop</td>
+                  <td className="py-2 pr-3 text-[var(--text-secondary)]">—</td>
+                  <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools + MCP App</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">npx minutes-mcp</code>{" "}
+                    <span className="text-[var(--text-secondary)]">or .mcpb</span>
+                  </td>
+                </tr>
+                <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">Codex</td>
+                  <td className="py-2 pr-3">{skillCount} skills via <code className="text-[11px]">.agents/</code></td>
+                  <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">npx minutes-mcp</code>
+                  </td>
+                </tr>
+                <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">Gemini CLI</td>
+                  <td className="py-2 pr-3">{skillCount} skills via <code className="text-[11px]">.agents/</code></td>
+                  <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">npx minutes-mcp</code>
+                  </td>
+                </tr>
+                <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">Pi</td>
+                  <td className="py-2 pr-3">{skillCount} skills via <code className="text-[11px]">.agents/</code></td>
+                  <td className="py-2 pr-3 text-[var(--text-secondary)]">—</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">agent_command = "pi"</code>
+                  </td>
+                </tr>
+                <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">Cursor</td>
+                  <td className="py-2 pr-3 text-[var(--text-secondary)]">—</td>
+                  <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">npx minutes-mcp</code>{" "}
+                    <span className="text-[var(--text-secondary)]">in Cursor MCP settings</span>
+                  </td>
+                </tr>
+                <tr className="border-b border-[color:var(--border)]">
+                  <td className="py-2 pr-3">OpenCode</td>
+                  <td className="py-2 pr-3">
+                    {skillCount} skills + <code className="text-[11px]">/minutes-*</code> commands
+                  </td>
+                  <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">.opencode/</code>{" "}
+                    <span className="text-[var(--text-secondary)]">auto-discovered</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="py-2 pr-3">Any MCP client</td>
+                  <td className="py-2 pr-3 text-[var(--text-secondary)]">—</td>
+                  <td className="py-2 pr-3">{MINUTES_MCP_TOOL_COUNT} tools</td>
+                  <td className="py-2">
+                    <code className="text-[11px]">npx minutes-mcp</code>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-4 text-[12px] leading-6 text-[var(--text-secondary)]">
+            Every agent reads the same{" "}
+            <code className="font-mono text-[12px] text-[var(--text)]">~/meetings/</code>{" "}
+            folder. Switch hosts without migrating data. The portable skill pack
+            also includes artifact workflows like{" "}
+            <code className="font-mono text-[12px] text-[var(--text)]">/minutes-video-review</code>{" "}
+            for Loom, ScreenPal, and local walkthrough videos.
+          </p>
+          <p className="mt-3 text-[12px] leading-6 text-[var(--text-secondary)]">
+            Adding another agent host? Use{" "}
+            <a
+              href="/docs/agent-integrations"
+              className="text-[var(--accent)] hover:underline"
+            >
+              the agent integration checklist
+            </a>{" "}
+            to decide whether it needs raw files, MCP, portable skills, a
+            host-specific generated tree, or an <code className="font-mono text-[12px] text-[var(--text)]">agent_command</code>{" "}
+            backend.
+          </p>
+        </div>
+      </section>
+
+      {/* Skill catalog */}
+      <section className="mt-14 max-w-[860px]">
+        <div className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5">
+          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+            Native skill catalog
+          </p>
+          <p className="mt-3 text-[13px] leading-6 text-[var(--text-secondary)]">
+            Skills are the workflow layer above raw MCP tools. They tell the agent
+            how to turn Minutes primitives into useful operator motions like
+            meeting prep, debrief, graph queries, and artifact review. The
+            catalog below is generated from the canonical skill sources so the
+            website stays in sync with what the plugin and portable skill pack
+            actually ship.
+          </p>
+
+          <div className="mt-6 space-y-8">
+            {skillCategories.map(([category, skills]) => (
+              <div key={category}>
+                <div className="border-b border-[color:var(--border)] pb-2">
+                  <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    {category}
+                  </p>
+                </div>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  {skills.map((skill) => (
+                    <div
+                      key={skill.name}
+                      id={skill.name}
+                      className="scroll-mt-8 rounded-[8px] border border-[color:var(--border)] bg-[var(--bg)] p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[15px] font-medium text-[var(--text)]">
+                            {skill.displayName}
+                          </p>
+                          <p className="mt-1 text-[12px] leading-6 text-[var(--text-secondary)]">
+                            {skill.shortDescription}
+                          </p>
+                        </div>
+                        <a
+                          href={`#${skill.name}`}
+                          aria-label={`Permalink to ${skill.displayName}`}
+                          className="shrink-0 rounded bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[11px] text-[var(--text)] hover:text-[var(--accent)]"
+                        >
+                          {skill.name}
+                        </a>
+                      </div>
+                      <p className="mt-3 text-[12px] leading-6 text-[var(--text-secondary)]">
+                        <span className="text-[var(--text)]">Best for:</span>{" "}
+                        {skill.bestFor}
+                      </p>
+                      <div className="mt-3 rounded-[6px] bg-[var(--bg-elevated)] px-3 py-2 font-mono text-[12px] text-[var(--text)]">
+                        {skill.example}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
       {/* What Minutes is */}
@@ -218,9 +582,9 @@ export default function ForAgentsPage() {
             Obsidian, or any markdown tool.
           </p>
           <p>
-            The MCP server (26 tools, 7 resources, 6 prompt templates) is the main
-            agent interface. Any MCP-compatible client can search, record, and query
-            through it.
+            The MCP server ({MINUTES_MCP_TOOL_COUNT} tools, 7 resources, 6
+            prompt templates) is the main agent interface. Any MCP-compatible
+            client can search, record, and query through it.
           </p>
         </div>
       </section>
@@ -230,14 +594,14 @@ export default function ForAgentsPage() {
         <SectionLabel n="02" label="Install the MCP server" />
         <p className="mb-4 text-[15px] leading-7 text-[var(--text-secondary)]">
           Add this to the MCP configuration for Claude Desktop, Claude Code, Codex,
-          Gemini CLI, or any MCP client. No Rust toolchain required.
+          Gemini CLI, Cursor, or any MCP client. No Rust toolchain required.
         </p>
         <div className="relative overflow-hidden rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)]">
           <div className="flex items-center justify-between border-b border-[color:var(--border)] px-4 py-2">
             <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">
               MCP config
             </span>
-            <CopyButton label="Copy" cmd={mcpConfig} />
+            <CopyButton label="Copy" cmd={mcpConfig} compact />
           </div>
           <pre className="overflow-x-auto px-5 py-4 font-mono text-[12px] leading-6 text-[var(--text)]">
             {mcpConfig}
@@ -257,7 +621,7 @@ export default function ForAgentsPage() {
       <section className="mt-14">
         <SectionLabel n="03" label="Choose your surface" />
         <p className="mb-5 text-[15px] leading-7 text-[var(--text-secondary)]">
-          Minutes has four entry points. Recommend the one that matches the
+          Minutes has five entry points. Recommend the one that matches the
           user&apos;s environment. This matrix is source-backed so the install
           steps stay aligned with the docs index and generated agent artifacts.
         </p>
@@ -276,7 +640,7 @@ export default function ForAgentsPage() {
               </p>
               <div className="mt-3 flex items-center gap-2 rounded-[4px] bg-[var(--bg)] px-3 py-2 font-mono text-[12px] text-[var(--text)]">
                 <code className="flex-1 overflow-x-auto">{s.install}</code>
-                <CopyButton label="Copy" cmd={s.install} />
+                <CopyButton label="Copy" cmd={s.install} compact />
               </div>
               <p className="mt-3 text-[13px] leading-6 text-[var(--text-secondary)]">
                 {s.note}
@@ -294,8 +658,8 @@ export default function ForAgentsPage() {
       <section className="mt-14">
         <SectionLabel n="04" label="MCP tool surface" />
         <p className="mb-5 text-[15px] leading-7 text-[var(--text-secondary)]">
-          26 tools grouped by function. Full reference with stable anchor
-          links:{" "}
+          {MINUTES_MCP_TOOL_COUNT} tools grouped by function. Full reference
+          with stable anchor links:{" "}
           <a
             href="/docs/mcp/tools"
             className="text-[var(--accent)] hover:underline"
@@ -341,7 +705,16 @@ export default function ForAgentsPage() {
         <p className="mb-4 text-[15px] leading-7 text-[var(--text-secondary)]">
           Every meeting saves as markdown with YAML frontmatter. The frontmatter
           is the structured data. Action items and decisions are queryable through
-          MCP tools and the CLI.
+          MCP tools and the CLI. The full field-by-field schema — every required
+          and optional field, with examples and stability guarantees — is at{" "}
+          <a
+            href="https://github.com/silverstein/minutes/blob/main/docs/frontmatter-schema.md"
+            className="text-[var(--accent)] hover:underline"
+          >
+            docs/frontmatter-schema.md
+          </a>
+          . That page is the interop contract: any tool that wants to read or
+          produce Minutes-compatible output should target it.
         </p>
         <div className="overflow-hidden rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)]">
           <div className="border-b border-[color:var(--border)] px-4 py-2">
@@ -416,7 +789,7 @@ export default function ForAgentsPage() {
             Without it, all speech is attributed to a single speaker.
           </p>
           <p>
-            Summarization requires either an active Claude session (recommended), a
+            Summarization requires either an active agent CLI session, a
             local LLM via Ollama, or a Mistral API key. Without any of these,
             Minutes still transcribes and extracts structured data from frontmatter.
           </p>
@@ -430,10 +803,12 @@ export default function ForAgentsPage() {
           {[
             ["/llms.txt", "llms.txt", "Concise agent index with tool names, descriptions, and doc links"],
             ["/llms-full.txt", "llms-full.txt", "Full agent reference with product description and all entry points"],
+            ["/proof", "/proof", "Honest proof page: demo, eval v0.1 caveats, and adapter status"],
             ["/docs/mcp/tools", "/docs/mcp/tools", "Generated MCP tool reference with stable anchor links"],
             ["/docs/mcp/tools.md", "/docs/mcp/tools.md", "Same reference as raw markdown for direct context ingestion"],
             ["/docs/errors", "/docs/errors", "Generated error catalog from Rust thiserror definitions"],
             ["/docs/errors.md", "/docs/errors.md", "Error catalog as raw markdown"],
+            ["/docs/agent-integrations", "/docs/agent-integrations", "Checklist for adding another agent host without duplicating surfaces"],
             ["https://github.com/silverstein/minutes", "GitHub", "Source, issues, and discussions"],
             ["https://www.npmjs.com/package/minutes-mcp", "minutes-mcp", "MCP server npm package"],
             ["https://www.npmjs.com/package/minutes-sdk", "minutes-sdk", "SDK for building on Minutes output"],

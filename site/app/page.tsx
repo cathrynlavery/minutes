@@ -1,13 +1,19 @@
 import { CopyButton } from "@/components/copy-button";
 import { APPLE_SILICON_DOWNLOAD_PATH } from "@/lib/downloads";
-import { WINDOWS_SETUP_EXE } from "@/lib/release";
+import {
+  MINUTES_CLI_COMMAND_COUNT,
+  MINUTES_MCP_TOOL_COUNT,
+  MINUTES_RELEASE_VERSION,
+  MINUTES_TEST_COUNT,
+  WINDOWS_SETUP_EXE,
+} from "@/lib/release";
 
 const featureGrid = [
   {
     label: "For agents",
     title: "Memory with structure",
     description:
-      "26 MCP tools and structured markdown let Claude, Codex, Gemini CLI, and Cowork query what happened instead of guessing.",
+      `${MINUTES_MCP_TOOL_COUNT} MCP tools and structured markdown let Claude, Codex, Gemini CLI, and Cowork query what happened instead of guessing.`,
   },
   {
     label: "For developers",
@@ -93,11 +99,11 @@ const capabilityColumns = [
       ],
       [
         "Claude-native",
-        "26 MCP tools for Claude Desktop, Cowork, Dispatch, and Claude Code.",
+        `${MINUTES_MCP_TOOL_COUNT} MCP tools for Claude Desktop, Cowork, Dispatch, and Claude Code.`,
       ],
       [
         "Any LLM",
-        "Use Ollama, OpenAI, or skip summarization entirely if markdown is enough.",
+        "Use Ollama, OpenAI-compatible gateways, local servers, or skip summarization entirely.",
       ],
       [
         "Markdown is truth",
@@ -111,12 +117,14 @@ const comparisons = [
   ["Local transcription", "No", "No", "Yes", "Yes"],
   ["Open source", "No", "No", "Yes", "MIT"],
   ["Free", "$18/mo", "Freemium", "Free", "Free"],
-  ["AI agent integration", "No", "No", "No", "26 MCP tools"],
+  ["AI agent integration", "No", "No", "No", `${MINUTES_MCP_TOOL_COUNT} MCP tools`],
   ["Cross-meeting intelligence", "No", "No", "No", "Yes"],
   ["Dictation mode", "No", "No", "No", "Yes"],
   ["Voice memos", "No", "No", "No", "iPhone pipeline"],
   ["People memory", "No", "No", "No", "Yes"],
   ["Data ownership", "Their servers", "Their servers", "Local", "Local"],
+  ["Data format", "Cloud DB", "Cloud DB", "Markdown", "Markdown + YAML"],
+  ["Agent-agnostic", "No", "No", "No", "Yes"],
 ] as const;
 
 function SectionLabel({ n, label }: { n: string; label: string }) {
@@ -207,14 +215,14 @@ function TranscriptCard() {
 export default function Home() {
   return (
     <div className="mx-auto max-w-[840px] px-6 pb-16 sm:px-8">
-      <nav className="sticky top-0 z-40 flex items-center justify-between border-b border-[color:var(--border)] bg-[var(--bg)] py-4 backdrop-blur-sm">
+      <nav className="sticky top-0 z-40 flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--border)] bg-[var(--bg)] py-4 backdrop-blur-sm">
         <a
           href="/"
           className="font-mono text-[15px] font-medium text-[var(--text)]"
         >
           minutes
         </a>
-        <div className="flex gap-6 text-sm text-[var(--text-secondary)] max-sm:gap-4 max-sm:text-xs">
+        <div className="flex flex-wrap justify-end gap-x-6 gap-y-2 text-sm text-[var(--text-secondary)] max-sm:gap-x-4 max-sm:text-xs">
           <a href="https://github.com/silverstein/minutes" className="hover:text-[var(--accent)]">
             GitHub
           </a>
@@ -224,6 +232,12 @@ export default function Home() {
           <a href="#pipeline" className="hover:text-[var(--accent)]">
             Pipeline
           </a>
+          <a href="/proof" className="hover:text-[var(--accent)]">
+            Proof
+          </a>
+          <a href="/for-agents" className="hover:text-[var(--accent)]">
+            For agents
+          </a>
           <a href="/llms.txt" className="hover:text-[var(--accent)]">
             llms.txt
           </a>
@@ -232,10 +246,11 @@ export default function Home() {
 
       <section className="pb-16 pt-16 text-center sm:pb-20 sm:pt-24">
         <p className="mb-5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
-          Open-source conversation memory
+          Open-source. MCP-native.
         </p>
         <p className="mx-auto mb-5 max-w-[720px] font-mono text-[12px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-          v0.12.0 • 26 MCP tools • 44 CLI commands • 620 tests
+          v{MINUTES_RELEASE_VERSION} • {MINUTES_MCP_TOOL_COUNT} MCP tools •{" "}
+          {MINUTES_CLI_COMMAND_COUNT} CLI commands • {MINUTES_TEST_COUNT}+ tests
         </p>
         <h1 className="mx-auto max-w-[720px] font-serif text-[40px] leading-[0.98] tracking-[-0.045em] text-[var(--text)] sm:text-[58px]">
           Every meeting, memo, and voice note,
@@ -243,9 +258,9 @@ export default function Home() {
           <span className="italic text-[var(--accent)]">structured and searchable.</span>
         </h1>
         <p className="mx-auto mt-5 max-w-[600px] text-[16px] leading-7 text-[var(--text-secondary)] sm:text-[17px]">
-          Agents already have run logs. Humans have conversations. Minutes
-          captures meetings and voice memos locally, turns them into structured
-          markdown, and makes the record queryable by your tools.
+          Cloud meeting tools rent your own conversations back to you. Minutes
+          captures meetings and voice memos locally, writes them as structured
+          markdown to your disk, and lets every AI you use read the same folder.
         </p>
 
         <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -276,6 +291,12 @@ export default function Home() {
           >
             View on GitHub
           </a>
+          <a
+            href="/proof"
+            className="inline-flex items-center gap-2 rounded-[5px] border border-[color:var(--border-mid)] px-6 py-2.5 font-mono text-[11px] uppercase tracking-[0.1em] text-[var(--text-secondary)] hover:border-[color:var(--accent)] hover:text-[var(--accent)]"
+          >
+            See proof
+          </a>
         </div>
 
         <p className="mt-5 font-mono text-[12px] text-[var(--text-secondary)]">
@@ -283,11 +304,11 @@ export default function Home() {
         </p>
 
         <p className="mx-auto mt-4 max-w-[620px] text-[14px] leading-6 text-[var(--text-secondary)]">
-          v0.12.0 makes Parakeet multilingual by default. New installs use
-          <span className="mx-1 font-mono text-[var(--text)]">tdt-600m</span>
-          instead of the old English-only
-          <span className="mx-1 font-mono text-[var(--text)]">tdt-ctc-110m</span>,
-          with native VAD, watcher batching, and opt-in fp16 and vocabulary boosts.
+          v{MINUTES_RELEASE_VERSION} keeps the 0.14 desktop context tools,
+          <span className="mx-1 font-mono text-[var(--text)]">/minutes-video-review</span>,
+          and the self-healing Claude Desktop extension, while tightening the
+          first-wave regressions in call-end auto-stop and source-aware
+          diarization.
         </p>
 
         <div className="mt-12">
@@ -347,10 +368,11 @@ export default function Home() {
         </div>
 
         <p className="mt-4 text-[13px] text-[var(--text-secondary)]">
-          Download, install, done. First launch downloads a speech model. Existing
-          Parakeet users should run
+          Download, install, done. First launch downloads a speech model. Run
           <span className="mx-1 font-mono text-[var(--text)]">minutes setup --parakeet</span>
-          to fetch the new multilingual default, or pin the old 110m model in config.
+          for the multilingual Parakeet backend, or
+          <span className="mx-1 font-mono text-[var(--text)]">minutes setup --demo</span>
+          to try the pipeline on five bundled fixture meetings.
         </p>
 
         <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -383,8 +405,53 @@ export default function Home() {
         </div>
       </section>
 
+      <section className="border-t border-[color:var(--border)] py-16">
+        <SectionLabel n="01" label="Proof" />
+        <h2 className="font-serif text-[30px] leading-tight tracking-[-0.035em] text-[var(--text)] sm:text-[32px]">
+          Start with the evidence, not the pitch.
+        </h2>
+        <div className="mt-8 grid gap-4 md:grid-cols-3">
+          <a
+            href="/for-agents#try"
+            className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5 shadow-[var(--shadow-panel)] transition hover:border-[color:var(--border-mid)] hover:bg-[var(--bg-hover)]"
+          >
+            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+              Runnable demo
+            </p>
+            <p className="mt-3 text-[14px] leading-7 text-[var(--text-secondary)]">
+              One command installs a five-meeting fixture corpus and prints an
+              MCP config pointed at it.
+            </p>
+          </a>
+          <a
+            href="/proof"
+            className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5 shadow-[var(--shadow-panel)] transition hover:border-[color:var(--border-mid)] hover:bg-[var(--bg-hover)]"
+          >
+            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+              Honest eval
+            </p>
+            <p className="mt-3 text-[14px] leading-7 text-[var(--text-secondary)]">
+              v0.1 is a public smoke test with a provisional 20/20 pre-grade,
+              not benchmark evidence.
+            </p>
+          </a>
+          <a
+            href="https://github.com/silverstein/minutes/tree/main/examples"
+            className="rounded-[8px] border border-[color:var(--border)] bg-[var(--bg-elevated)] p-5 shadow-[var(--shadow-panel)] transition hover:border-[color:var(--border-mid)] hover:bg-[var(--bg-hover)]"
+          >
+            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">
+              Adapter examples
+            </p>
+            <p className="mt-3 text-[14px] leading-7 text-[var(--text-secondary)]">
+              Mem0 and Graphiti examples show the file contract; v2 hardening is
+              tracked separately.
+            </p>
+          </a>
+        </div>
+      </section>
+
       <section id="pipeline" className="border-t border-[color:var(--border)] py-16">
-        <SectionLabel n="01" label="Pipeline" />
+        <SectionLabel n="02" label="Pipeline" />
         <h2 className="font-serif text-[30px] leading-tight tracking-[-0.035em] text-[var(--text)] sm:text-[32px]">
           How it works
         </h2>
@@ -395,16 +462,17 @@ export default function Home() {
                                 Ollama`}
         </pre>
         <p className="mt-5 max-w-[660px] text-[15px] leading-7 text-[var(--text-secondary)]">
-          Transcription is local via whisper.cpp or parakeet.cpp. In v0.12.0,
-          Parakeet is multilingual by default and uses native VAD to avoid the
-          old fixed 45-second slices. Summarization is optional. Claude can do
-          it conversationally when you ask, using your existing subscription.
-          No API keys are required to get useful output.
+          Transcription is local via whisper.cpp or parakeet.cpp. Parakeet is
+          multilingual by default with native VAD. Live transcription falls
+          back cleanly through Apple Speech, Parakeet, and Whisper.
+          Summarization is optional — Claude can do it conversationally when
+          you ask, using your existing subscription. No API keys are required
+          to get useful output.
         </p>
       </section>
 
       <section className="border-t border-[color:var(--border)] py-16">
-        <SectionLabel n="02" label="Audience" />
+        <SectionLabel n="03" label="Audience" />
         <h2 className="max-w-[620px] font-serif text-[30px] leading-tight tracking-[-0.035em] text-[var(--text)] sm:text-[32px]">
           Capture it anywhere. Find it everywhere.
         </h2>
@@ -429,7 +497,7 @@ export default function Home() {
       </section>
 
       <section className="border-t border-[color:var(--border)] py-16">
-        <SectionLabel n="03" label="Features" />
+        <SectionLabel n="04" label="Features" />
         <h2 className="font-serif text-[30px] leading-tight tracking-[-0.035em] text-[var(--text)] sm:text-[32px]">
           What you get
         </h2>
@@ -460,7 +528,7 @@ export default function Home() {
       </section>
 
       <section className="border-t border-[color:var(--border)] py-16">
-        <SectionLabel n="04" label="Comparison" />
+        <SectionLabel n="05" label="Comparison" />
         <h2 className="font-serif text-[30px] leading-tight tracking-[-0.035em] text-[var(--text)] sm:text-[32px]">
           How it compares
         </h2>

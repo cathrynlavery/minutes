@@ -9,11 +9,12 @@ use std::time::Instant;
 // Supported engines:
 //   "auto"    → Detect installed AI CLI (claude > codex > gemini > opencode), skip if none found (default)
 //   "none"    → Skip summarization — Claude summarizes via MCP when asked
-//   "agent"   → Agent CLI (claude -p, codex exec, gemini -p, opencode run) — uses existing subscription, no API key
+//   "agent"   → Agent CLI (claude -p, codex exec, gemini -p, opencode run, pi -p) — uses existing subscription, no API key
 //   "ollama"  → Local Ollama server (no API key needed)
 //   "claude"  → Anthropic Claude API (ANTHROPIC_API_KEY env var, legacy)
 //   "openai"  → OpenAI API (OPENAI_API_KEY env var, legacy)
 //   "mistral" → Mistral API (MISTRAL_API_KEY env var)
+//   "openai-compatible" → OpenAI-compatible chat completions endpoint
 //
 // For long transcripts: map-reduce chunking.
 //   Chunk by time segments → summarize each chunk → synthesize final.
@@ -108,6 +109,9 @@ pub fn summarize_with_screens(
         "openai" => summarize_with_openai(transcript, screen_files, config),
         "mistral" => summarize_with_mistral(transcript, screen_files, config),
         "ollama" => summarize_with_ollama(transcript, config),
+        "openai-compatible" | "openai_compatible" => {
+            summarize_with_openai_compatible(transcript, screen_files, config)
+        }
         other => {
             tracing::warn!(engine = %other, "unknown summarization engine, skipping");
             return None;
@@ -295,6 +299,10 @@ pub fn title_refinement_model(config: &Config) -> Option<String> {
         "openai" => Some(format!("openai:{}", OPENAI_TITLE_MODEL)),
         "mistral" => Some(format!("mistral:{}", config.summarization.mistral_model)),
         "ollama" => Some(format!("ollama:{}", config.summarization.ollama_model)),
+        "openai-compatible" | "openai_compatible" => Some(format!(
+            "openai-compatible:{}",
+            config.summarization.openai_compatible_model
+        )),
         _ => None,
     }
 }
@@ -673,6 +681,10 @@ pub(crate) fn summarization_model_hint(config: &Config, has_screen_context: bool
         }
         "mistral" => format!("mistral:{}", config.summarization.mistral_model),
         "ollama" => format!("ollama:{}", config.summarization.ollama_model),
+        "openai-compatible" | "openai_compatible" => format!(
+            "openai-compatible:{}",
+            config.summarization.openai_compatible_model
+        ),
         other => other.to_string(),
     }
 }
@@ -684,6 +696,10 @@ pub(crate) fn speaker_mapping_model_hint(config: &Config) -> String {
         "openai" => "openai:gpt-4o-mini".into(),
         "mistral" => format!("mistral:{}", config.summarization.mistral_model),
         "ollama" => format!("ollama:{}", config.summarization.ollama_model),
+        "openai-compatible" | "openai_compatible" => format!(
+            "openai-compatible:{}",
+            config.summarization.openai_compatible_model
+        ),
         other => other.to_string(),
     }
 }
@@ -698,6 +714,7 @@ pub(crate) fn speaker_mapping_model_hint(config: &Config) -> String {
 //   "codex"    → `codex exec - -s read-only` (OpenAI Codex CLI)
 //   "gemini"   → `gemini -p -` (Gemini CLI)
 //   "opencode" → `opencode run --file <prompt-file> ...` (OpenCode CLI)
+//   "pi"       → `pi --no-session --no-tools -p @<prompt-file>` (Pi coding agent)
 //   Any other → treated as a command that accepts a prompt on stdin
 //
 // The agent command is configurable via [summarization] agent_command.
@@ -815,11 +832,9 @@ fn write_agent_prompt_file(
     prompt: &str,
 ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     use std::io::{ErrorKind, Write};
-    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let base_dir = home.join(".minutes").join("tmp");
+    let base_dir = Config::minutes_dir().join("tmp");
     std::fs::create_dir_all(&base_dir)?;
     #[cfg(unix)]
     {
@@ -927,6 +942,25 @@ fn prepare_agent_invocation(
         });
     }
 
+    if matches_agent_binary(agent_cmd, "pi") {
+        let prompt_path = write_agent_prompt_file("pi", prompt)?;
+        return Ok(AgentInvocation {
+            cmd: agent_cmd.to_string(),
+            args: vec![
+                "--no-session".into(),
+                "--no-tools".into(),
+                "--no-extensions".into(),
+                "--no-skills".into(),
+                "--no-prompt-templates".into(),
+                "--no-context-files".into(),
+                "-p".into(),
+                format!("@{}", prompt_path.display()),
+            ],
+            stdin_payload: None,
+            cleanup_path: Some(prompt_path),
+        });
+    }
+
     Ok(AgentInvocation {
         cmd: agent_cmd.to_string(),
         args: vec![],
@@ -962,7 +996,21 @@ fn summarize_with_agent_impl(
     config: &Config,
     agent_cmd: String,
 ) -> Result<Summary, Box<dyn std::error::Error>> {
-    use std::io::Write;
+    summarize_with_agent_impl_timeout(
+        transcript,
+        config,
+        agent_cmd,
+        std::time::Duration::from_secs(300),
+    )
+}
+
+fn summarize_with_agent_impl_timeout(
+    transcript: &str,
+    config: &Config,
+    agent_cmd: String,
+    timeout: std::time::Duration,
+) -> Result<Summary, Box<dyn std::error::Error>> {
+    use std::io::{Read, Write};
 
     // Truncate at a safe UTF-8 char boundary to avoid panics
     let max_transcript = 100_000;
@@ -1004,6 +1052,30 @@ fn summarize_with_agent_impl(
             )
         })?;
 
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Agent stdout unexpectedly unavailable".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Agent stderr unexpectedly unavailable".to_string())?;
+
+    // Drain child output while it runs so verbose CLIs like `codex exec`
+    // cannot block on full stdout/stderr pipes before they exit.
+    let stdout_handle = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_handle = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
+
     if let Some(prompt_bytes) = invocation.stdin_payload.clone() {
         let mut stdin = child
             .stdin
@@ -1014,27 +1086,29 @@ fn summarize_with_agent_impl(
         });
     }
 
-    // Wait with a 5-minute timeout (long meetings = long summaries)
-    let timeout = std::time::Duration::from_secs(300);
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let output = child
-                    .wait_with_output()
-                    .map_err(|e| format!("Failed to read agent output: {}", e))?;
+                let _ = child.wait();
+                let stdout = stdout_handle
+                    .join()
+                    .map_err(|_| "Failed to join agent stdout reader thread".to_string())?;
+                let stderr = stderr_handle
+                    .join()
+                    .map_err(|_| "Failed to join agent stderr reader thread".to_string())?;
                 if let Some(path) = cleanup_path.as_ref() {
                     let _ = std::fs::remove_file(path);
                 }
 
                 if !status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stderr = String::from_utf8_lossy(&stderr);
                     return Err(
                         format!("Agent '{}' exited with error: {}", agent_cmd, stderr).into(),
                     );
                 }
 
-                let response = String::from_utf8_lossy(&output.stdout).to_string();
+                let response = String::from_utf8_lossy(&stdout).to_string();
                 if response.trim().is_empty() {
                     return Err(format!("Agent '{}' returned empty output", agent_cmd).into());
                 }
@@ -1051,6 +1125,9 @@ fn summarize_with_agent_impl(
                 // Still running
                 if start.elapsed() > timeout {
                     child.kill().ok();
+                    let _ = child.wait();
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
                     if let Some(path) = cleanup_path.as_ref() {
                         let _ = std::fs::remove_file(path);
                     }
@@ -1377,6 +1454,150 @@ fn summarize_with_mistral(
     Ok(parse_summary_response(&final_text))
 }
 
+// ── OpenAI-compatible APIs ──────────────────────────────────
+
+fn openai_compatible_chat_url(config: &Config) -> Result<String, Box<dyn std::error::Error>> {
+    let base_url = config.summarization.openai_compatible_base_url.trim();
+    if base_url.is_empty() {
+        return Err("openai_compatible_base_url is empty".into());
+    }
+
+    let base_url = base_url.trim_end_matches('/');
+    if base_url.ends_with("/chat/completions") {
+        Ok(base_url.to_string())
+    } else {
+        Ok(format!("{}/chat/completions", base_url))
+    }
+}
+
+fn openai_compatible_model(config: &Config) -> Result<&str, Box<dyn std::error::Error>> {
+    let model = config.summarization.openai_compatible_model.trim();
+    if model.is_empty() {
+        Err("openai_compatible_model is empty".into())
+    } else {
+        Ok(model)
+    }
+}
+
+fn openai_compatible_api_key(
+    config: &Config,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let env_name = config.summarization.openai_compatible_api_key_env.trim();
+    if env_name.is_empty() {
+        if crate::config::openai_compatible_base_url_is_local(
+            &config.summarization.openai_compatible_base_url,
+        ) {
+            return Ok(None);
+        }
+        return Ok(
+            std::env::var(crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+        );
+    }
+
+    std::env::var(env_name)
+        .map(Some)
+        .map_err(|_| format!("{} not set", env_name).into())
+}
+
+fn post_openai_compatible_chat(
+    body: &serde_json::Value,
+    config: &Config,
+    label: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let url = openai_compatible_chat_url(config)?;
+
+    let response = if let Some(api_key) = openai_compatible_api_key(config)? {
+        let auth = format!("Bearer {}", api_key);
+        http_post(
+            &url,
+            body,
+            &[
+                ("Authorization", &auth),
+                ("Content-Type", "application/json"),
+            ],
+        )?
+    } else {
+        http_post(&url, body, &[("Content-Type", "application/json")])?
+    };
+
+    extract_chat_completion_text(&response, label)
+}
+
+fn openai_compatible_summary_user_content(
+    chunk: &str,
+    screen_content: &[serde_json::Value],
+) -> serde_json::Value {
+    let text = format!(
+        "Summarize this transcript:\n\n<transcript>\n{}\n</transcript>",
+        chunk
+    );
+
+    if screen_content.is_empty() {
+        serde_json::Value::String(text)
+    } else {
+        let mut content_parts = screen_content.to_vec();
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": "The images above show what was on screen during this meeting. Use them for context.\n\n"
+        }));
+        content_parts.push(serde_json::json!({
+            "type": "text",
+            "text": text
+        }));
+        serde_json::Value::Array(content_parts)
+    }
+}
+
+fn openai_compatible_summary_body(
+    chunk: &str,
+    screen_content: &[serde_json::Value],
+    config: &Config,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(serde_json::json!({
+        "model": openai_compatible_model(config)?,
+        "messages": [
+            { "role": "system", "content": build_system_prompt(get_effective_summary_language(config)) },
+            { "role": "user", "content": openai_compatible_summary_user_content(chunk, screen_content) }
+        ],
+        "max_tokens": 1024,
+    }))
+}
+
+fn summarize_with_openai_compatible(
+    transcript: &str,
+    screen_files: &[std::path::PathBuf],
+    config: &Config,
+) -> Result<Summary, Box<dyn std::error::Error>> {
+    let chunks = build_prompt(transcript, config.summarization.chunk_max_tokens);
+    let mut all_text = String::new();
+
+    let screen_content = encode_screens_for_openai(screen_files);
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        if i == 0 && !screen_content.is_empty() {
+            tracing::info!(
+                images = screen_content.len(),
+                "sending screen context to OpenAI-compatible endpoint"
+            );
+        }
+
+        let chunk_screen_content = if i == 0 {
+            screen_content.as_slice()
+        } else {
+            &[]
+        };
+        let body = openai_compatible_summary_body(chunk, chunk_screen_content, config)?;
+
+        let text = post_openai_compatible_chat(&body, config, "OpenAI-compatible")?;
+        all_text.push_str(&text);
+        all_text.push('\n');
+    }
+
+    Ok(parse_summary_response(&all_text))
+}
+
 // ── Ollama (local) ───────────────────────────────────────────
 
 fn summarize_with_ollama(
@@ -1611,6 +1832,17 @@ fn run_title_refinement_prompt(
                 ],
             )?;
             extract_chat_completion_text(&response, "Mistral")
+        }
+        "openai-compatible" | "openai_compatible" => {
+            let body = serde_json::json!({
+                "model": openai_compatible_model(config)?,
+                "messages": [{
+                    "role": "user",
+                    "content": prompt
+                }],
+                "max_tokens": 64,
+            });
+            post_openai_compatible_chat(&body, config, "OpenAI-compatible")
         }
         "ollama" => {
             let url = format!("{}/api/generate", config.summarization.ollama_url);
@@ -1856,6 +2088,15 @@ fn run_speaker_mapping_prompt(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let agent = http_agent();
     match config.summarization.engine.as_str() {
+        "auto" => {
+            if let Some(cli) = detect_agent_cli() {
+                let mut cfg = config.clone();
+                cfg.summarization.agent_command = cli;
+                run_speaker_mapping_via_agent(prompt, &cfg)
+            } else {
+                Err("no AI CLI found (claude, codex, gemini, opencode)".into())
+            }
+        }
         "agent" => run_speaker_mapping_via_agent(prompt, config),
         "claude" => {
             let api_key =
@@ -1904,6 +2145,10 @@ fn run_speaker_mapping_prompt(
                 .as_str()
                 .map(|s| s.to_string())
                 .ok_or_else(|| "No text in response".into())
+        }
+        "openai-compatible" | "openai_compatible" => {
+            let body = serde_json::json!({"model": openai_compatible_model(config)?, "max_tokens": 256, "messages":[{"role":"user","content":prompt}]});
+            post_openai_compatible_chat(&body, config, "OpenAI-compatible")
         }
         "ollama" => {
             let url = format!("{}/api/generate", config.summarization.ollama_url);
@@ -2033,6 +2278,125 @@ fn parse_speaker_mapping(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+    use std::thread;
+
+    fn home_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn api_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct HomeOverride {
+        previous: Option<OsString>,
+    }
+
+    impl HomeOverride {
+        fn set(path: &Path) -> Self {
+            let previous = std::env::var_os("HOME");
+            std::env::set_var("HOME", path);
+            Self { previous }
+        }
+    }
+
+    impl Drop for HomeOverride {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var("HOME", previous);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    fn with_temp_home<T>(f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = home_env_lock().lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _home = HomeOverride::set(dir.path());
+        f(dir.path())
+    }
+
+    #[derive(Debug)]
+    struct CapturedHttpRequest {
+        path: String,
+        headers: String,
+        body: String,
+    }
+
+    fn spawn_openai_compatible_test_server() -> (String, thread::JoinHandle<CapturedHttpRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}/v1", addr);
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0_u8; 1024];
+
+            loop {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0, "client closed before sending a full request");
+                buffer.extend_from_slice(&chunk[..n]);
+
+                let Some(header_end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if name.eq_ignore_ascii_case("content-length") {
+                            value.trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                let body_start = header_end + 4;
+                if buffer.len() < body_start + content_length {
+                    continue;
+                }
+
+                let body =
+                    String::from_utf8_lossy(&buffer[body_start..body_start + content_length])
+                        .to_string();
+                let path = headers
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("")
+                    .to_string();
+                let response_body = serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "KEY POINTS:\n- Local compatible server worked\n\nDECISIONS:\n- Use generic backend"
+                        }
+                    }]
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                return CapturedHttpRequest {
+                    path,
+                    headers,
+                    body,
+                };
+            }
+        });
+        (base_url, handle)
+    }
 
     #[test]
     fn parse_summary_response_extracts_sections() {
@@ -2091,6 +2455,192 @@ COMMITMENTS:
             .collect::<String>();
         let chunks = build_prompt(&transcript, 25);
         assert!(chunks.len() > 1, "should split into multiple chunks");
+    }
+
+    #[test]
+    fn openai_compatible_url_appends_chat_completions_once() {
+        let mut config = Config::default();
+        config.summarization.openai_compatible_base_url = "http://localhost:11434/v1".into();
+        assert_eq!(
+            openai_compatible_chat_url(&config).unwrap(),
+            "http://localhost:11434/v1/chat/completions"
+        );
+
+        config.summarization.openai_compatible_base_url =
+            "https://example.test/v1/chat/completions/".into();
+        assert_eq!(
+            openai_compatible_chat_url(&config).unwrap(),
+            "https://example.test/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_hints_use_configured_model() {
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_model = "openai/gpt-4o-mini".into();
+
+        assert_eq!(
+            summarization_model_hint(&config, false),
+            "openai-compatible:openai/gpt-4o-mini"
+        );
+        assert_eq!(
+            speaker_mapping_model_hint(&config),
+            "openai-compatible:openai/gpt-4o-mini"
+        );
+        assert_eq!(
+            title_refinement_model(&config),
+            Some("openai-compatible:openai/gpt-4o-mini".into())
+        );
+    }
+
+    #[test]
+    fn openai_compatible_text_only_body_uses_string_content() {
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_model = "local-model".into();
+
+        let body = openai_compatible_summary_body("hello world", &[], &config).unwrap();
+        assert_eq!(body["model"], "local-model");
+        let user_content = &body["messages"][1]["content"];
+        assert!(
+            user_content.is_string(),
+            "text-only OpenAI-compatible requests should use plain string content for stricter local servers: {body}"
+        );
+        assert!(user_content
+            .as_str()
+            .unwrap()
+            .contains("<transcript>\nhello world\n</transcript>"));
+    }
+
+    #[test]
+    fn openai_compatible_screen_body_uses_multimodal_content_parts() {
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_model = "vision-model".into();
+        let screen_content = vec![serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": "data:image/png;base64,abc", "detail": "low" }
+        })];
+
+        let body =
+            openai_compatible_summary_body("screen aware transcript", &screen_content, &config)
+                .unwrap();
+        let user_content = &body["messages"][1]["content"];
+        let parts = user_content
+            .as_array()
+            .expect("screen context should use multimodal content parts");
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(parts[1]["type"], "text");
+        assert_eq!(parts[2]["type"], "text");
+        assert!(parts[2]["text"]
+            .as_str()
+            .unwrap()
+            .contains("screen aware transcript"));
+    }
+
+    #[test]
+    fn summarize_with_openai_compatible_posts_text_request_to_local_server() {
+        let (base_url, handle) = spawn_openai_compatible_test_server();
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_base_url = base_url;
+        config.summarization.openai_compatible_model = "local-test-model".into();
+        config.summarization.openai_compatible_api_key_env = String::new();
+
+        let summary =
+            summarize_with_openai_compatible("hello from a local server", &[], &config).unwrap();
+        assert_eq!(summary.key_points, vec!["Local compatible server worked"]);
+        assert_eq!(summary.decisions, vec!["Use generic backend"]);
+
+        let captured = handle.join().unwrap();
+        assert_eq!(captured.path, "/v1/chat/completions");
+        assert!(
+            !captured.headers.to_lowercase().contains("authorization:"),
+            "local no-key mode should not send an Authorization header: {}",
+            captured.headers
+        );
+        let body: serde_json::Value = serde_json::from_str(&captured.body).unwrap();
+        assert_eq!(body["model"], "local-test-model");
+        assert!(
+            body["messages"][1]["content"].is_string(),
+            "text-only local requests should use string content: {}",
+            captured.body
+        );
+    }
+
+    #[test]
+    fn summarize_with_openai_compatible_sends_bearer_when_env_is_configured() {
+        let _guard = api_env_lock().lock().unwrap();
+        let env_name = "MINUTES_TEST_OPENAI_COMPATIBLE_API_KEY";
+        std::env::set_var(env_name, "test-secret-token");
+
+        let (base_url, handle) = spawn_openai_compatible_test_server();
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_base_url = base_url;
+        config.summarization.openai_compatible_model = "gateway-test-model".into();
+        config.summarization.openai_compatible_api_key_env = env_name.into();
+
+        let result = summarize_with_openai_compatible("cloud gateway path", &[], &config);
+        std::env::remove_var(env_name);
+        result.unwrap();
+
+        let captured = handle.join().unwrap();
+        assert!(
+            captured
+                .headers
+                .to_lowercase()
+                .contains("authorization: bearer test-secret-token"),
+            "configured cloud mode should send bearer auth from env var: {}",
+            captured.headers
+        );
+    }
+
+    #[test]
+    fn summarize_with_openai_compatible_does_not_use_desktop_fallback_env_for_local_base_url() {
+        let _guard = api_env_lock().lock().unwrap();
+        std::env::set_var(
+            crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV,
+            "desktop-keychain-token",
+        );
+
+        let (base_url, handle) = spawn_openai_compatible_test_server();
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_base_url = base_url;
+        config.summarization.openai_compatible_model = "desktop-fallback-model".into();
+        config.summarization.openai_compatible_api_key_env = String::new();
+
+        let result = summarize_with_openai_compatible("desktop fallback path", &[], &config);
+        std::env::remove_var(crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV);
+        result.unwrap();
+
+        let captured = handle.join().unwrap();
+        assert!(
+            !captured.headers.to_lowercase().contains("authorization:"),
+            "local blank-env mode should not send bearer auth even if a desktop key is loaded: {}",
+            captured.headers
+        );
+    }
+
+    #[test]
+    fn openai_compatible_api_key_uses_desktop_fallback_for_nonlocal_blank_config() {
+        let _guard = api_env_lock().lock().unwrap();
+        std::env::set_var(
+            crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV,
+            "desktop-keychain-token",
+        );
+
+        let mut config = Config::default();
+        config.summarization.engine = "openai-compatible".into();
+        config.summarization.openai_compatible_base_url = "https://openrouter.ai/api/v1".into();
+        config.summarization.openai_compatible_api_key_env = String::new();
+
+        let api_key = openai_compatible_api_key(&config).unwrap();
+        std::env::remove_var(crate::config::OPENAI_COMPATIBLE_DESKTOP_API_KEY_ENV);
+
+        assert_eq!(api_key.as_deref(), Some("desktop-keychain-token"));
     }
 
     #[test]
@@ -2197,39 +2747,75 @@ PARTICIPANTS:
 
     #[test]
     fn prepare_agent_invocation_for_opencode_uses_message_before_file_and_no_stdin() {
-        let invocation = prepare_agent_invocation("opencode", "sensitive prompt").unwrap();
-        assert_eq!(invocation.cmd, "opencode");
-        assert_eq!(invocation.args[0], "run");
-        assert_eq!(
-            invocation.args[1],
-            "Follow the attached file exactly and return only the requested output."
-        );
-        assert_eq!(invocation.args[2], "--file");
-        assert!(invocation.stdin_payload.is_none());
-        let prompt_path = invocation.cleanup_path.expect("prompt path");
-        assert!(prompt_path.starts_with(dirs::home_dir().unwrap().join(".minutes").join("tmp")));
-        let file_contents = std::fs::read_to_string(&prompt_path).unwrap();
-        assert_eq!(file_contents, "sensitive prompt");
-        std::fs::remove_file(prompt_path).unwrap();
+        with_temp_home(|home| {
+            let invocation = prepare_agent_invocation("opencode", "sensitive prompt").unwrap();
+            assert_eq!(invocation.cmd, "opencode");
+            assert_eq!(invocation.args[0], "run");
+            assert_eq!(
+                invocation.args[1],
+                "Follow the attached file exactly and return only the requested output."
+            );
+            assert_eq!(invocation.args[2], "--file");
+            assert!(invocation.stdin_payload.is_none());
+            let prompt_path = invocation.cleanup_path.expect("prompt path");
+            assert!(prompt_path.starts_with(home.join(".minutes").join("tmp")));
+            let file_contents = std::fs::read_to_string(&prompt_path).unwrap();
+            assert_eq!(file_contents, "sensitive prompt");
+            std::fs::remove_file(prompt_path).unwrap();
+        });
+    }
+
+    #[test]
+    fn prepare_agent_invocation_for_pi_uses_private_file_and_no_tools() {
+        with_temp_home(|home| {
+            let invocation = prepare_agent_invocation("pi", "sensitive prompt").unwrap();
+            assert_eq!(invocation.cmd, "pi");
+            let arg_prefix = invocation.args[..7]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                arg_prefix,
+                vec![
+                    "--no-session",
+                    "--no-tools",
+                    "--no-extensions",
+                    "--no-skills",
+                    "--no-prompt-templates",
+                    "--no-context-files",
+                    "-p",
+                ]
+            );
+            assert!(invocation.args[7].starts_with('@'));
+            assert!(invocation.stdin_payload.is_none());
+            let prompt_path = invocation.cleanup_path.expect("prompt path");
+            assert!(prompt_path.starts_with(home.join(".minutes").join("tmp")));
+            assert_eq!(invocation.args[7], format!("@{}", prompt_path.display()));
+            let file_contents = std::fs::read_to_string(&prompt_path).unwrap();
+            assert_eq!(file_contents, "sensitive prompt");
+            std::fs::remove_file(prompt_path).unwrap();
+        });
     }
 
     #[test]
     fn write_agent_prompt_file_creates_private_minutes_temp_file() {
-        let prompt_path = write_agent_prompt_file("opencode", "top secret").unwrap();
-        assert!(prompt_path.starts_with(dirs::home_dir().unwrap().join(".minutes").join("tmp")));
-        let contents = std::fs::read_to_string(&prompt_path).unwrap();
-        assert_eq!(contents, "top secret");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&prompt_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o600);
-        }
-        std::fs::remove_file(prompt_path).unwrap();
+        with_temp_home(|home| {
+            let prompt_path = write_agent_prompt_file("opencode", "top secret").unwrap();
+            assert!(prompt_path.starts_with(home.join(".minutes").join("tmp")));
+            let contents = std::fs::read_to_string(&prompt_path).unwrap();
+            assert_eq!(contents, "top secret");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&prompt_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode, 0o600);
+            }
+            std::fs::remove_file(prompt_path).unwrap();
+        });
     }
 
     #[test]
@@ -2280,5 +2866,65 @@ ENGAGEMENTS:
         assert!(!summary.text.is_empty() || !summary.key_points.is_empty());
         // Verify the full response text round-trips without corruption
         assert!(summary.text.contains('é') || summary.key_points.iter().any(|p| p.contains('é')));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn summarize_with_agent_drains_stderr_while_waiting() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("noisy-agent.sh");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+cat >/dev/null
+i=0
+while [ "$i" -lt 5000 ]; do
+  echo "progress-line-$i-abcdefghijklmnopqrstuvwxyz" 1>&2
+  i=$((i + 1))
+done
+cat <<'EOF'
+KEY POINTS:
+- summary ok
+
+DECISIONS:
+- decision ok
+
+ACTION ITEMS:
+- @mat: verify fix
+
+OPEN QUESTIONS:
+- none
+
+COMMITMENTS:
+- @minutes: avoid deadlocks
+
+PARTICIPANTS:
+- Mat
+EOF
+"#,
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms).unwrap();
+
+        let mut config = Config::default();
+        config.summarization.engine = "agent".into();
+
+        let summary = summarize_with_agent_impl_timeout(
+            "short transcript",
+            &config,
+            script_path.display().to_string(),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("summary should complete without blocking on stderr");
+
+        assert_eq!(summary.key_points, vec!["summary ok"]);
+        assert_eq!(summary.decisions, vec!["decision ok"]);
+        assert_eq!(summary.action_items, vec!["@mat: verify fix"]);
+        assert_eq!(summary.participants, vec!["Mat"]);
     }
 }

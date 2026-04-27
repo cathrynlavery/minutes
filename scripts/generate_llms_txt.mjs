@@ -11,6 +11,8 @@ const mcpSourcePath = join(repoRoot, "crates", "mcp", "src", "index.ts");
 const llmsPath = join(repoRoot, "site", "public", "llms.txt");
 const llmsFullPath = join(repoRoot, "site", "public", "llms-full.txt");
 const productSurfacesPath = join(repoRoot, "site", "lib", "product-surfaces.json");
+const skillsCatalogPath = join(repoRoot, "site", "lib", "skills-catalog.json");
+const forAgentsBaseUrl = "https://useminutes.app/for-agents";
 const mcpToolsMarkdownPath = join(repoRoot, "site", "public", "docs", "mcp", "tools.md");
 const mcpToolsDataPath = join(repoRoot, "site", "app", "docs", "mcp", "tools", "data.json");
 const errorsMarkdownPath = join(repoRoot, "site", "public", "docs", "errors.md");
@@ -195,7 +197,15 @@ function classifyErrorEntry(entry) {
 function categorizeTool(name) {
   const groups = {
     Recording: new Set(["start_recording", "stop_recording", "get_status", "list_processing_jobs"]),
-    "Search and recall": new Set(["list_meetings", "get_meeting", "search_meetings", "research_topic"]),
+    "Search and recall": new Set([
+      "list_meetings",
+      "get_meeting",
+      "search_meetings",
+      "activity_summary",
+      "search_context",
+      "get_moment",
+      "research_topic",
+    ]),
     "People and relationships": new Set(["get_person_profile", "relationship_map", "track_commitments", "consistency_report"]),
     Insights: new Set(["get_meeting_insights", "ingest_meeting", "knowledge_status"]),
     "Live and dictation": new Set(["start_live_transcript", "read_live_transcript", "start_dictation", "stop_dictation"]),
@@ -237,7 +247,7 @@ function categorizePrompt(name) {
   return "Other";
 }
 
-function buildLlmsTxt({ manifest, resources, surfaces }) {
+function buildLlmsTxt({ manifest, resources, surfaces, skillsCatalog }) {
   const generatedOn = new Date().toISOString().slice(0, 10);
   const installCommand = "npx minutes-mcp";
   const longDescription = manifest.long_description.split("\n\n")[0].trim();
@@ -247,6 +257,15 @@ function buildLlmsTxt({ manifest, resources, surfaces }) {
       (tool) =>
         `- \`${tool.name}\` — ${tool.description} Docs: ${mcpToolsBaseUrl}#tool-${anchorSlug(tool.name)}`
     )
+    .join("\n");
+
+  const skillLines = skillsCatalog
+    .map((skill) => {
+      // Concise llms.txt uses one line per skill; use bestFor (always short) as
+      // the headline instead of shortDescription (which may embed trigger
+      // phrases and run hundreds of characters).
+      return `- \`/${skill.name}\` — ${skill.bestFor} Category: ${skill.category}. Example: \`${skill.example}\`. Docs: ${forAgentsBaseUrl}#${skill.name}`;
+    })
     .join("\n");
 
   const resourceLines = resources
@@ -272,7 +291,7 @@ function buildLlmsTxt({ manifest, resources, surfaces }) {
   return `# minutes
 
 > Generated file. Do not edit by hand.
-> Source: manifest.json + crates/mcp/src/index.ts
+> Source: manifest.json + crates/mcp/src/index.ts + site/lib/skills-catalog.json
 > Last generated: ${generatedOn}
 
 ${longDescription}
@@ -320,6 +339,12 @@ ${resourceLines}
 
 ${promptLines}
 
+## Claude Code Plugin Skills
+
+Workflow-level skills that wrap MCP tools into operator motions. Install in Claude Code via \`claude plugin marketplace add silverstein/minutes\` then \`/plugin install minutes@minutes\`. The same skills ship as a portable pack at \`.agents/skills/minutes/\` for Codex / Gemini CLI and at \`.opencode/skills/\` + \`.opencode/commands/\` for OpenCode.
+
+${skillLines}
+
 ## Output Format
 
 Meetings are stored as markdown with YAML frontmatter:
@@ -353,6 +378,7 @@ decisions:
 ## Documentation
 
 - Agent entry point: ${manifest.documentation}
+- Proof and eval caveats: ${manifest.homepage}/proof
 - Full agent index: ${manifest.homepage}/llms-full.txt
 - MCP tools reference: ${mcpToolsBaseUrl}
 - MCP tools markdown: ${mcpToolsBaseUrl}.md
@@ -369,7 +395,7 @@ decisions:
 `;
 }
 
-function buildLlmsFull({ manifest, resources, surfaces }) {
+function buildLlmsFull({ manifest, resources, surfaces, skillsCatalog }) {
   const generatedOn = new Date().toISOString().slice(0, 10);
   const toolLines = manifest.tools
     .map(
@@ -389,11 +415,27 @@ function buildLlmsFull({ manifest, resources, surfaces }) {
         `- ${surface.name}\n  - When: ${surface.when}\n  - Install: \`${surface.install}\`\n  - Best for: ${surface.activation}\n  - Notes: ${surface.note}`
     )
     .join("\n");
+  const skillsByCategory = skillsCatalog.reduce((acc, skill) => {
+    (acc[skill.category] ??= []).push(skill);
+    return acc;
+  }, {});
+  const skillGroups = Object.keys(skillsByCategory)
+    .sort()
+    .map((category) => {
+      const lines = skillsByCategory[category]
+        .map(
+          (skill) =>
+            `- \`/${skill.name}\` — ${skill.bestFor}\n  - Description: ${skill.shortDescription}\n  - Example: \`${skill.example}\`\n  - Docs: ${forAgentsBaseUrl}#${skill.name}`
+        )
+        .join("\n");
+      return `### ${category}\n\n${lines}`;
+    })
+    .join("\n\n");
 
   return `# minutes — full agent reference
 
 > Generated file. Do not edit by hand.
-> Source: manifest.json + crates/mcp/src/index.ts
+> Source: manifest.json + crates/mcp/src/index.ts + site/lib/skills-catalog.json
 > Last generated: ${generatedOn}
 
 ## Product
@@ -408,6 +450,7 @@ ${surfaceLines}
 
 - Website: ${manifest.homepage}
 - Agent entry point: ${manifest.documentation}
+- Proof and eval caveats: ${manifest.homepage}/proof
 - Concise agent index: ${manifest.homepage}/llms.txt
 - MCP tools reference (HTML): ${manifest.homepage}/docs/mcp/tools
 - MCP tools reference (Markdown): ${manifest.homepage}/docs/mcp/tools.md
@@ -422,6 +465,12 @@ ${toolLines}
 ## Resource surface
 
 ${resourceLines}
+
+## Claude Code Plugin skill surface
+
+Workflow-level skills that wrap MCP tools into operator motions. Install in Claude Code via \`claude plugin marketplace add silverstein/minutes\` then \`/plugin install minutes@minutes\`. The same skills ship as a portable pack at \`.agents/skills/minutes/\` for Codex / Gemini CLI and at \`.opencode/skills/\` + \`.opencode/commands/\` for OpenCode. New skills must declare \`metadata.site_category\`, \`metadata.site_example\`, and \`metadata.site_best_for\` in \`tooling/skills/sources/<name>/skill.md\`.
+
+${skillGroups}
 `;
 }
 
@@ -638,6 +687,7 @@ async function main() {
 
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const surfaces = JSON.parse(await readFile(productSurfacesPath, "utf8"));
+  const skillsCatalog = JSON.parse(await readFile(skillsCatalogPath, "utf8"));
   const mcpSource = await readFile(mcpSourcePath, "utf8");
   const resources = parseResources(mcpSource);
   const errorEntries = (await parseErrorCatalog()).map(classifyErrorEntry);
@@ -650,6 +700,21 @@ async function main() {
   }
   if (errorEntries.length === 0) {
     throw new Error("Failed to extract error definitions from crates/core");
+  }
+  if (!Array.isArray(skillsCatalog) || skillsCatalog.length === 0) {
+    throw new Error(
+      `${skillsCatalogPath} is empty or missing. Run: npm --prefix tooling/skills run compile`
+    );
+  }
+  const malformedSkills = skillsCatalog.filter(
+    (skill) => !skill.name || !skill.category || !skill.shortDescription || !skill.example || !skill.bestFor
+  );
+  if (malformedSkills.length > 0) {
+    throw new Error(
+      `Skill catalog entries missing required fields: ${malformedSkills
+        .map((s) => s.name ?? "<unnamed>")
+        .join(", ")}. Regenerate with: npm --prefix tooling/skills run compile`
+    );
   }
 
   const uncategorizedTools = manifest.tools.filter((t) => categorizeTool(t.name) === "Other");
@@ -674,31 +739,44 @@ async function main() {
     );
   }
 
-  const next = buildLlmsTxt({ manifest, resources, surfaces });
-  const nextFull = buildLlmsFull({ manifest, resources, surfaces });
+  const next = buildLlmsTxt({ manifest, resources, surfaces, skillsCatalog });
+  const nextFull = buildLlmsFull({ manifest, resources, surfaces, skillsCatalog });
   const nextMcpToolsMarkdown = buildMcpToolsMarkdown({ manifest, resources });
   const nextMcpToolsData = buildMcpToolsData({ manifest, resources });
   const nextErrorsMarkdown = buildErrorsMarkdown(errorEntries);
   const nextErrorsData = buildErrorsData(errorEntries);
 
   if (checkMode) {
-    const current = await readFile(llmsPath, "utf8");
-    const currentFull = await readFile(llmsFullPath, "utf8");
-    const currentMcpToolsMarkdown = await readFile(mcpToolsMarkdownPath, "utf8");
-    const currentMcpToolsData = await readFile(mcpToolsDataPath, "utf8");
-    const currentErrorsMarkdown = await readFile(errorsMarkdownPath, "utf8");
-    const currentErrorsData = await readFile(errorsDataPath, "utf8");
+    // Ignore the current date when comparing — the generator embeds
+    // `new Date()` in every output, so a pure date-only diff would fail
+    // `--check` on any day where nothing else actually changed.
+    const stripGeneratedDate = (content) =>
+      content
+        .replace(/^> Last generated: \d{4}-\d{2}-\d{2}$/m, "> Last generated: <date>")
+        .replace(/"generatedAt": "\d{4}-\d{2}-\d{2}"/, '"generatedAt": "<date>"');
 
-    if (
-      current !== next ||
-      currentFull !== nextFull ||
-      currentMcpToolsMarkdown !== nextMcpToolsMarkdown ||
-      currentMcpToolsData !== nextMcpToolsData ||
-      currentErrorsMarkdown !== nextErrorsMarkdown ||
-      currentErrorsData !== nextErrorsData
-    ) {
+    const compare = async (actualPath, expected) => {
+      const current = await readFile(actualPath, "utf8");
+      return stripGeneratedDate(current) !== stripGeneratedDate(expected);
+    };
+
+    const staleFiles = [];
+    if (await compare(llmsPath, next)) staleFiles.push(llmsPath);
+    if (await compare(llmsFullPath, nextFull)) staleFiles.push(llmsFullPath);
+    if (await compare(mcpToolsMarkdownPath, nextMcpToolsMarkdown))
+      staleFiles.push(mcpToolsMarkdownPath);
+    if (await compare(mcpToolsDataPath, nextMcpToolsData))
+      staleFiles.push(mcpToolsDataPath);
+    if (await compare(errorsMarkdownPath, nextErrorsMarkdown))
+      staleFiles.push(errorsMarkdownPath);
+    if (await compare(errorsDataPath, nextErrorsData))
+      staleFiles.push(errorsDataPath);
+
+    if (staleFiles.length > 0) {
       console.error(
-        "Generated agent docs are stale. Run: node scripts/generate_llms_txt.mjs"
+        `Generated agent docs are stale. Run: node scripts/generate_llms_txt.mjs\nStale:\n${staleFiles
+          .map((f) => `  - ${f}`)
+          .join("\n")}`
       );
       process.exit(1);
     }

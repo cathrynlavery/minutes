@@ -9,6 +9,14 @@ tauri/
 # Landing page site (not needed for MCP extension)
 site/
 
+# Vercel/Next.js build outputs at repo root (from `vercel build` in Release
+# Checklist step 12). Next.js chunk filenames contain literal `..` (e.g.
+# `0c1n75d4d01s..js`); Claude Desktop 1.3109.0 rejects any zip entry with `..`
+# as path traversal and refuses to unzip the MCPB — cause of issue #149.
+# Exclude so release builds never leak these files into the bundle.
+/.vercel/
+/.next/
+
 # Rust source (MCP server is Node.js only)
 crates/core/
 crates/cli/

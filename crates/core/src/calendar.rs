@@ -1,7 +1,11 @@
+#[cfg(any(test, target_os = "macos"))]
 use std::process::Command;
+#[cfg(any(test, target_os = "macos"))]
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Local, Timelike};
+use chrono::{DateTime, Local};
+#[cfg(target_os = "macos")]
+use chrono::{Datelike, Timelike};
 
 // ──────────────────────────────────────────────────────────────
 // Calendar integration — upcoming meetings from macOS Calendar.
@@ -16,14 +20,18 @@ use chrono::{DateTime, Datelike, Local, Timelike};
 /// Maximum time to wait for a calendar subprocess before giving up.
 /// Calendar queries should complete in <1s when Calendar.app is healthy.
 /// 3s is generous enough for slow CalDAV syncs but doesn't freeze the app.
+#[cfg(any(test, target_os = "macos"))]
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(any(test, target_os = "macos"))]
 const EVENTKIT_OVERLAP_LOOKAHEAD_MINUTES: u32 = 120;
+#[cfg(any(test, target_os = "macos"))]
 const EVENTKIT_OVERLAP_LOOKBACK_MINUTES: u32 = 120;
 
 /// Run a Command with a timeout. Returns None if the process hangs or fails to start.
 ///
 /// On Unix, the child is placed in its own process group so that the entire
 /// group (including any grandchild processes) can be killed on timeout.
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn output_with_timeout(
     mut cmd: Command,
     timeout: Duration,
@@ -154,6 +162,9 @@ pub fn upcoming_events(lookahead_minutes: u32) -> Vec<CalendarEvent> {
     }
     #[cfg(target_os = "macos")]
     {
+        if !calendar_integration_enabled() {
+            return Vec::new();
+        }
         // Try compiled EventKit helper first (fastest path, no Apple Events)
         if let Some(events) = query_via_eventkit(lookahead_minutes) {
             // EventKit helper responded — use its result even if empty
@@ -178,6 +189,10 @@ pub fn events_overlapping(at: DateTime<Local>) -> Vec<CalendarEvent> {
     }
     #[cfg(target_os = "macos")]
     {
+        if !calendar_integration_enabled() {
+            return Vec::new();
+        }
+
         // Preserve the fast helper path for "right now" lookups, but allow
         // historical reprocessing to center the query on the recording time.
         if (Local::now() - at).num_seconds().abs() <= 60 {
@@ -199,6 +214,9 @@ pub fn events_overlapping_now() -> Vec<CalendarEvent> {
     }
     #[cfg(target_os = "macos")]
     {
+        if !calendar_integration_enabled() {
+            return Vec::new();
+        }
         // Try EventKit helper first (sub-second, no CalDAV round-trips).
         // Pass lookahead=120, lookback=120 for a 4-hour window centered on now.
         if let Some(events) = query_overlap_via_eventkit(None) {
@@ -209,11 +227,36 @@ pub fn events_overlapping_now() -> Vec<CalendarEvent> {
     }
 }
 
+/// Returns `false` when the user has set `[calendar] enabled = false`.
+/// Every caller in this module consults this before touching Calendar so
+/// an opted-out user never sees AppleScript launch Calendar.app.
+#[cfg(target_os = "macos")]
+fn calendar_integration_enabled() -> bool {
+    crate::config::Config::load().calendar.enabled
+}
+
+/// `true` when Calendar.app is currently running.
+///
+/// Used as a last-line guard before any `tell application "Calendar"`
+/// AppleScript. `tell application` auto-launches the target app, which
+/// meant every 60s poll launched Calendar.app for users who never use it.
+/// `pgrep -x Calendar` is ~1ms and does not trigger any TCC prompts.
+#[cfg(target_os = "macos")]
+fn is_calendar_app_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "Calendar"])
+        .output()
+        .map(|out| out.status.success() && !out.stdout.is_empty())
+        .unwrap_or(false)
+}
+
 /// AppleScript query that fetches current/recent events WITH attendee names.
+#[cfg(target_os = "macos")]
 fn query_events_with_attendees() -> Vec<CalendarEvent> {
     query_events_with_attendees_at(Local::now())
 }
 
+#[cfg(target_os = "macos")]
 fn applescript_month(month: u32) -> &'static str {
     match month {
         1 => "January",
@@ -233,7 +276,14 @@ fn applescript_month(month: u32) -> &'static str {
 }
 
 /// AppleScript query centered on an explicit timestamp.
+#[cfg(target_os = "macos")]
 fn query_events_with_attendees_at(center: DateTime<Local>) -> Vec<CalendarEvent> {
+    // Never auto-launch Calendar.app from a background query. `tell
+    // application "Calendar"` launches the app as a side effect, which
+    // surprised users who don't use Apple Calendar.
+    if !is_calendar_app_running() {
+        return Vec::new();
+    }
     let script = r#"set now to current date
 set year of now to __YEAR__
 set month of now to __MONTH__
@@ -336,6 +386,7 @@ return output"#
 }
 
 /// Parse EventKit helper JSON output, extracting meeting URLs from raw location strings.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_eventkit_output(stdout: &str) -> Vec<CalendarEvent> {
     stdout
         .lines()
@@ -351,6 +402,7 @@ fn parse_eventkit_output(stdout: &str) -> Vec<CalendarEvent> {
 }
 
 /// Deduplicate events by title, keeping the one closest to now.
+#[cfg(any(test, target_os = "macos"))]
 fn dedup_events(events: &mut Vec<CalendarEvent>) {
     events.sort_by_key(|e| (e.title.clone(), e.minutes_until.abs()));
     events.dedup_by(|a, b| a.title == b.title);
@@ -359,6 +411,7 @@ fn dedup_events(events: &mut Vec<CalendarEvent>) {
 }
 
 /// Query via compiled Swift EventKit helper (if available and permitted).
+#[cfg(target_os = "macos")]
 fn query_via_eventkit(lookahead_minutes: u32) -> Option<Vec<CalendarEvent>> {
     let helper = find_calendar_helper()?;
 
@@ -376,11 +429,13 @@ fn query_via_eventkit(lookahead_minutes: u32) -> Option<Vec<CalendarEvent>> {
 
 /// Query overlapping events via EventKit helper with a backward+forward window.
 /// Returns None if the helper is missing or fails (triggers AppleScript fallback).
+#[cfg(target_os = "macos")]
 fn query_overlap_via_eventkit(reference_epoch_seconds: Option<i64>) -> Option<Vec<CalendarEvent>> {
     let helper = find_calendar_helper()?;
     query_overlap_via_eventkit_with_helper(&helper, reference_epoch_seconds)
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn query_overlap_via_eventkit_with_helper(
     helper: &std::path::Path,
     reference_epoch_seconds: Option<i64>,
@@ -411,31 +466,69 @@ fn query_overlap_via_eventkit_with_helper(
 }
 
 /// Find the compiled calendar-events helper binary.
+///
+/// Lookup order:
+/// 1. `<exe>/calendar-events` — inside a packaged .app bundle at
+///    `Contents/MacOS/calendar-events`. Tauri places it there because
+///    `tauri.macos.conf.json` declares it as an `externalBin`. This
+///    placement lets Tauri sign and notarize the helper in lockstep
+///    with the main binary. (Earlier releases declared it under
+///    `resources` which put it at `Contents/Resources/resources/` and
+///    failed notarization; see the v0.14.0 release fix.)
+/// 2. Workspace `tauri/src-tauri/bin/calendar-events` — dev fallback.
+///    `tauri/src-tauri/build.rs` compiles the Swift helper here on
+///    every `cargo tauri build` / `cargo tauri dev`, so the CLI finds
+///    it when running from source after at least one Tauri build has
+///    completed.
+/// 3. Workspace `tauri/src-tauri/resources/calendar-events` — legacy
+///    dev fallback for local workspaces that still have the old build
+///    output path cached.
+/// 4. Workspace `target/release/calendar-events` — legacy dev fallback
+///    for older local workflows that compiled the helper directly into
+///    `target/`.
+///
+/// The workspace root is derived from `CARGO_MANIFEST_DIR` at compile
+/// time so it works regardless of where the user cloned the repo.
+#[cfg(target_os = "macos")]
 fn find_calendar_helper() -> Option<std::path::PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let in_resources = dir.join("../Resources/calendar-events");
-            if in_resources.exists() {
-                return Some(in_resources);
-            }
             let beside = dir.join("calendar-events");
             if beside.exists() {
                 return Some(beside);
             }
         }
     }
-    let dev = dirs::home_dir()
-        .unwrap_or_default()
-        .join("Sites/minutes/target/release/calendar-events");
-    if dev.exists() {
-        return Some(dev);
+    // CARGO_MANIFEST_DIR points at crates/core; the workspace root is two up.
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent());
+    if let Some(root) = workspace_root {
+        let staged = root.join("tauri/src-tauri/bin/calendar-events");
+        if staged.exists() {
+            return Some(staged);
+        }
+        let legacy_staged = root.join("tauri/src-tauri/resources/calendar-events");
+        if legacy_staged.exists() {
+            return Some(legacy_staged);
+        }
+        let legacy = root.join("target/release/calendar-events");
+        if legacy.exists() {
+            return Some(legacy);
+        }
     }
     None
 }
 
 /// AppleScript approach: fetch ALL events for today+tomorrow, filter by time.
 /// Avoids `whose start date >= ...` which times out on CalDAV calendars.
+#[cfg(target_os = "macos")]
 fn query_via_applescript(lookahead_minutes: u32) -> Vec<CalendarEvent> {
+    // See `query_events_with_attendees_at`: skip when Calendar.app isn't
+    // already running so periodic polling never auto-launches the app.
+    if !is_calendar_app_running() {
+        return Vec::new();
+    }
     // Fetch events for a 2-day window, then filter in the script
     let script = format!(
         r#"set now to current date

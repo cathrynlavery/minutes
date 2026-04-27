@@ -10,29 +10,38 @@ fi
 
 export CXXFLAGS="-I$(xcrun --show-sdk-path)/usr/include/c++/v1"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+MINUTES_BUILD_FEATURES="${MINUTES_BUILD_FEATURES:-parakeet,metal}"
 
 # Code signing + notarization are optional for local source builds.
 # Maintainers can export APPLE_SIGNING_IDENTITY / APPLE_API_* when they want
 # cargo-tauri to produce a signed + notarized bundle.
 
 echo "=== Building CLI (release) ==="
-cargo build --release -p minutes-cli --features metal
-
-echo "=== Building calendar helper ==="
-swiftc -O \
-    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
-    -Xlinker scripts/calendar-helper-Info.plist \
-    scripts/calendar-events.swift -o target/release/calendar-events
-echo "  Built target/release/calendar-events"
+_build_tmp=$(mktemp)
+if ! cargo build --release -p minutes-cli --features "$MINUTES_BUILD_FEATURES" 2>&1 | tee "$_build_tmp"; then
+    if grep -q "library 'clang_rt\." "$_build_tmp"; then
+        echo ""
+        echo "  Stale ort-sys clang runtime path (Xcode/CLT upgrade detected)."
+        echo "  Cleaning stale build cache and retrying..."
+        rm -rf target/*/build/ort-sys-*
+        cargo build --release -p minutes-cli --features "$MINUTES_BUILD_FEATURES"
+    else
+        rm -f "$_build_tmp"
+        exit 1
+    fi
+fi
+rm -f "$_build_tmp"
 
 echo "=== Building Tauri app ==="
-cargo tauri build --features metal --bundles app
-
-echo "=== Embedding calendar helper in app bundle ==="
-APP_RESOURCES="target/release/bundle/macos/Minutes.app/Contents/Resources"
-mkdir -p "$APP_RESOURCES"
-cp -f target/release/calendar-events "$APP_RESOURCES/calendar-events"
-echo "  Embedded in $APP_RESOURCES/"
+# The calendar-events Swift helper is compiled and staged into
+# tauri/src-tauri/resources/ by tauri/src-tauri/build.rs, and Tauri bundles it
+# into Minutes.app/Contents/Resources/ automatically via tauri.conf.json.
+TAURI_BUILD_ARGS=(cargo tauri build --features "$MINUTES_BUILD_FEATURES" --bundles app)
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+    echo "  No TAURI_SIGNING_PRIVATE_KEY configured; building updater artifacts with --no-sign."
+    TAURI_BUILD_ARGS+=(--no-sign)
+fi
+"${TAURI_BUILD_ARGS[@]}"
 
 echo "=== Signing + Installing CLI ==="
 mkdir -p ~/.local/bin
@@ -49,6 +58,7 @@ if [[ " $* " == *" --install "* ]]; then
 fi
 
 echo "=== Done ==="
+echo "  Build features: $MINUTES_BUILD_FEATURES"
 RESOLVED="$(which minutes 2>/dev/null || true)"
 if [ -n "$RESOLVED" ]; then
     echo "  CLI:  $RESOLVED — $("$RESOLVED" --version 2>&1)"

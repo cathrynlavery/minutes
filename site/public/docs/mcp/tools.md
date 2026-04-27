@@ -3,9 +3,9 @@
 > Generated file. Do not edit by hand.
 > Source: manifest.json + crates/mcp/src/index.ts
 > Regenerate: node scripts/generate_llms_txt.mjs
-> Last generated: 2026-04-14
+> Last generated: 2026-04-25
 
-Minutes exposes 26 tools, 7 resources, and 6 prompt templates through the MCP server.
+Minutes exposes 29 tools, 7 resources, and 6 prompt templates through the MCP server.
 
 ## Install
 
@@ -81,6 +81,30 @@ Reference URL: https://useminutes.app/docs/mcp/tools#tool-search-meetings
 Get full transcript of a specific meeting
 
 Reference URL: https://useminutes.app/docs/mcp/tools#tool-get-meeting
+
+<a id="tool-activity-summary"></a>
+
+#### `activity_summary`
+
+Summarize meeting-adjacent desktop context for a linked artifact, context session, or time window
+
+Reference URL: https://useminutes.app/docs/mcp/tools#tool-activity-summary
+
+<a id="tool-search-context"></a>
+
+#### `search_context`
+
+Search desktop-context events across app focus and captured window titles, including opted-in browser titles
+
+Reference URL: https://useminutes.app/docs/mcp/tools#tool-search-context
+
+<a id="tool-get-moment"></a>
+
+#### `get_moment`
+
+Show the local desktop-context rewind around a linked artifact, session, or timestamp
+
+Reference URL: https://useminutes.app/docs/mcp/tools#tool-get-moment
 
 <a id="tool-research-topic"></a>
 

@@ -5,6 +5,7 @@ triggers:
   - what ideas did I have?
   - what were my recent memos?
   - what did I record while walking?
+user_invocable: true
 allowed_tools:
   - Bash
   - Read
@@ -13,6 +14,9 @@ metadata:
   display_name: Minutes Ideas
   short_description: Surface recent voice memos and ideas captured from any device.
   default_prompt: Use Minutes Ideas for this task.
+  site_category: Knowledge
+  site_example: /minutes-ideas
+  site_best_for: Surface recent voice memos and loose ideas captured from any device.
 assets:
   scripts: []
   templates: []

@@ -9,6 +9,8 @@ Agents have run logs. Humans have conversations. **minutes** captures the human 
 
 Record a meeting. Capture a voice memo on a walk. Ask Claude *"what did I promise Sarah?"* — and get an answer. Your AI remembers every conversation you've had.
 
+> **Own every conversation you've ever had.** Cloud meeting tools rent your own conversations back to you. Minutes writes every meeting to `~/meetings/` as plain markdown, which every AI you use (Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Pi) reads directly. No SDK. No API key. No vendor to outlive. Ten years from now, `grep` still works on your corpus. &nbsp;[**For agents →**](https://useminutes.app/for-agents) &nbsp;·&nbsp; [**Frontmatter schema →**](docs/frontmatter-schema.md)
+
 <p align="center">
   <img src="docs/assets/demo.gif" alt="minutes demo — record, dictate, phone sync, AI recall" width="750">
 </p>
@@ -19,6 +21,7 @@ Record a meeting. Capture a voice memo on a walk. Ask Claude *"what did I promis
   <a href="#claude-code-plugin">Claude Code</a> &bull;
   <a href="#any-mcp-client-claude-code-codex-gemini-cli-claude-desktop-or-your-own-agent">Codex</a> &bull;
   <a href="#opencode-cli">OpenCode</a> &bull;
+  <a href="#pi-coding-agent">Pi</a> &bull;
   <a href="#any-mcp-client-claude-code-codex-gemini-cli-claude-desktop-or-your-own-agent">Gemini CLI</a> &bull;
   <a href="#any-mcp-client-claude-code-codex-gemini-cli-claude-desktop-or-your-own-agent">Claude Desktop</a> &bull;
   <a href="#mistral-vibe">Mistral Vibe</a> &bull;
@@ -144,7 +147,7 @@ minutes consistency                                # Flag contradicting decision
 minutes live                                     # Start real-time transcription
 minutes stop                                     # Stop live session
 ```
-Streams whisper transcription to a JSONL file in real time — any AI agent can read it mid-meeting for live coaching. The MCP `read_live_transcript` tool provides delta reads (by line cursor or wall-clock duration). Works with Claude Code, Codex, OpenCode, Gemini CLI, or any agent that reads files. The Tauri desktop app has a Live Mode toggle that starts this with one click.
+Streams local transcription to a JSONL file in real time — any AI agent can read it mid-meeting for live coaching. Depending on your build and config, live mode can run on Whisper, Parakeet, or the experimental Apple Speech standalone-live path. Apple Speech currently applies only to standalone live transcript (`minutes live`), not recording-sidecar, dictation, or batch transcription, and it falls back to a ready Parakeet backend before Whisper if Apple Speech is unavailable or fails mid-session. See [docs/APPLE_SPEECH.md](docs/APPLE_SPEECH.md) for the current Apple Speech scope. The MCP `read_live_transcript` tool provides delta reads (by line cursor or wall-clock duration). Works with Claude Code, Codex, OpenCode, Gemini CLI, or any agent that reads files. The Tauri desktop app has a Live Mode toggle that starts this with one click.
 
 ### Dictation mode
 ```bash
@@ -445,6 +448,13 @@ Choose a local stdio server and point it at:
 npx minutes-mcp
 ```
 
+If you're wiring OpenCode against this repo before the next npm release is cut,
+point it at the repo-local entrypoint instead:
+
+```bash
+npm --prefix /absolute/path/to/minutes/crates/mcp exec tsx src/index.ts
+```
+
 For the native skill/command workflow, just launch OpenCode in this repo:
 
 ```bash
@@ -458,7 +468,27 @@ Then use commands like:
 /minutes-prep Alex
 /minutes-debrief
 /minutes-weekly
+/minutes-video-review /absolute/path/to/demo.mp4
 ```
+
+### Pi coding agent
+
+Minutes works with Mario Zechner's `pi` coding agent in two places:
+
+- `engine = "agent"` can call `pi` directly for local meeting summarization.
+- Pi auto-discovers this repo's existing `.agents/skills/minutes/` skill pack, so there is no separate `.pi/skills` tree to keep in sync.
+
+Install Pi, log in or configure a provider, then set:
+
+```toml
+[summarization]
+engine = "agent"
+agent_command = "pi"
+```
+
+Minutes invokes Pi in non-interactive, no-tools mode with a private prompt file. Configure provider/model defaults in Pi itself; Minutes does not currently forward extra `[summarization]` CLI flags. That keeps summarization opt-in and prevents the agent from writing to the repo while it is turning a transcript into notes.
+
+This is separate from Inflection's Pi chatbot/model. Inflection's Pi models are optimized for warmth and emotional intelligence, but the Inflection API terms say not to send regulated personal data. Meeting transcripts often contain personal data, so Minutes does not route transcripts to Inflection by default.
 
 ### Mistral Vibe
 
@@ -472,7 +502,7 @@ command = "npx"
 args = ["minutes-mcp"]
 ```
 
-All 26 tools are available in Vibe as `minutes_*` (e.g. `minutes_start_recording`, `minutes_search_meetings`).
+All 29 tools are available in Vibe as `minutes_*` (e.g. `minutes_start_recording`, `minutes_search_meetings`).
 
 ### Claude Code (Plugin)
 
@@ -491,7 +521,7 @@ claude plugin update minutes@minutes        # installs the new version into the 
 # Restart Claude Code to apply
 ```
 
-18 skills, 1 agent, 2 hooks:
+19 skills, 1 agent, 2 hooks:
 ```
 ├── Capture:      /minutes-record, note, list, recap, cleanup, verify, setup
 ├── Search:       /minutes-search
@@ -499,6 +529,7 @@ claude plugin update minutes@minutes        # installs the new version into the 
 ├── Coaching:     /minutes-tag, mirror
 ├── Knowledge:    /minutes-ideas, lint, ingest
 ├── Intelligence: /minutes-graph
+├── Artifacts:    /minutes-video-review
 ├── Agent:        meeting-analyst (cross-meeting intelligence)
 └── Hooks:        SessionStart meeting briefings + PostToolUse recording alerts
 ```
@@ -519,6 +550,8 @@ minutes record → minutes stop       → hook alerts if decisions conflict with
 /minutes-mirror                     → talk-time, hedging, what your winning meetings have in common
   ↓
 /minutes-weekly                     → themes, decision arcs, stale items, Monday brief
+  ↓
+/minutes-video-review <video-or-url> → durable artifact bundle from a Loom, ScreenPal, or local walkthrough
   ↓
 /minutes-graph "everyone who mentioned Stripe"  → cross-meeting entity queries
 ```
@@ -544,10 +577,10 @@ The currently verified path for Cowork is plugin-oriented, not “raw MCP automa
 ### Optional: automated summarization
 
 ```toml
-# Use your existing Claude Code, Codex, or OpenCode subscription (recommended)
+# Use your existing Claude Code, Codex, OpenCode, or Pi subscription (recommended)
 [summarization]
 engine = "agent"
-agent_command = "claude"  # or "codex" / "opencode"
+agent_command = "claude"  # or "codex" / "opencode" / "pi"
 
 # Or use Mistral API (requires MISTRAL_API_KEY)
 [summarization]
@@ -558,6 +591,17 @@ mistral_model = "mistral-large-latest"
 [summarization]
 engine = "ollama"
 ollama_model = "llama3.2"
+
+# Or use any OpenAI-compatible gateway/local server.
+# Desktop users can paste cloud gateway keys in Settings; Minutes stores them
+# in macOS Keychain and hydrates its own runtime secret without rewriting this
+# shared config. CLI users can set any env var and name it below. Local servers
+# can leave it blank.
+[summarization]
+engine = "openai-compatible"
+openai_compatible_base_url = "https://openrouter.ai/api/v1"
+openai_compatible_model = "openai/gpt-4o-mini"
+openai_compatible_api_key_env = "OPENROUTER_API_KEY" # leave blank for local servers
 ```
 
 ### File-backed automation primitives
@@ -952,12 +996,12 @@ brew upgrade --cask silverstein/tap/minutes
 brew upgrade silverstein/tap/minutes
 
 # From source (CLI)
-git pull && cargo install --path crates/cli
+git pull && cargo install --path crates/cli --features parakeet,metal
 
 # From source (desktop app)
 git pull
 export CXXFLAGS="-I$(xcrun --show-sdk-path)/usr/include/c++/v1"
-cargo tauri build --bundles app
+cargo tauri build --bundles app --features parakeet,metal
 # Then replace /Applications/Minutes.app with the new build from
 # target/release/bundle/macos/Minutes.app
 
@@ -965,6 +1009,8 @@ cargo tauri build --bundles app
 # Download the latest .dmg from https://github.com/silverstein/minutes/releases
 # and drag Minutes.app to /Applications, replacing the old version
 ```
+
+For local source builds, keep the CLI and desktop app on the same transcription feature set. The repo build scripts now default to `MINUTES_BUILD_FEATURES=parakeet,metal`; override that env var only if you intentionally want a narrower build flavor.
 
 Check your current version with `minutes --version` (CLI) or the Settings gear in the desktop app.
 
@@ -977,10 +1023,13 @@ Optional — minutes works out of the box.
 # Or: $XDG_CONFIG_HOME/minutes/config.toml when XDG_CONFIG_HOME is set
 
 [transcription]
-engine = "whisper"        # "whisper" (default) or "parakeet" (opt-in, lower WER)
+engine = "whisper"        # "whisper" (default), "parakeet" (opt-in, lower WER), or "apple-speech" (experimental)
 model = "small"           # whisper: tiny (75MB), base, small (466MB), medium, large-v3 (3.1GB)
 # language = "ur"          # Force transcription language (ISO 639-1 code, e.g. "en", "ur", "es", "zh")
                           # Default: auto-detect. Set this for similar-sounding languages (Urdu/Hindi, etc.)
+# engine = "apple-speech"  # Experimental: standalone `minutes live` only. Configure via config file or CLI, not desktop settings.
+#                         # If Apple Speech cannot run, standalone live falls back to a ready Parakeet backend, then Whisper.
+#                         # See docs/APPLE_SPEECH.md for current scope and limitations.
 # parakeet_model = "tdt-600m"                    # parakeet: tdt-ctc-110m (English), tdt-600m (multilingual v3)
 # parakeet_binary = "parakeet"                   # Path to parakeet.cpp binary (or name in PATH)
 # parakeet_boost_limit = 25                      # Experimental: boost top graph-derived phrases (0 disables)
@@ -992,12 +1041,17 @@ model = "small"           # whisper: tiny (75MB), base, small (466MB), medium, l
 
 [summarization]
 engine = "none"           # Default: Claude summarizes conversationally via MCP
-                          # "agent" = uses your Claude Code, Codex, or OpenCode subscription (no API key)
+                          # "auto" = auto-detect an installed agent CLI for pipeline summaries
+                          # "agent" = uses your Claude Code, Codex, OpenCode, or Pi subscription (no API key)
                           # "ollama" = local, free
+                          # "openai-compatible" = OpenRouter, Vercel/Cloudflare gateways, llama.cpp, LM Studio, etc.
                           # "claude" / "openai" = direct API key (legacy)
-agent_command = "claude"  # Which CLI to use when engine = "agent" (claude, codex, opencode, etc.)
+agent_command = "claude"  # Which CLI to use when engine = "agent" (claude, codex, opencode, pi, etc.)
 ollama_url = "http://localhost:11434"
 ollama_model = "llama3.2"
+openai_compatible_base_url = "http://localhost:11434/v1"
+openai_compatible_model = "llama3.2"
+openai_compatible_api_key_env = "" # Blank means no Authorization header for local endpoints. Desktop cloud endpoints can still use a saved Keychain key without rewriting config.
 
 [diarization]
 engine = "auto"           # "auto" (default — uses pyannote-rs if models downloaded, otherwise skips),
@@ -1049,16 +1103,16 @@ agent_args = []           # Optional extra args, e.g. ["--dangerously-skip-permi
 
 ```
 minutes/
-├── crates/core/          34 Rust modules — the engine (shared by all interfaces)
-├── crates/cli/           CLI binary — 43 commands (recording, search, health, workflows)
+├── crates/core/          43 Rust modules — the engine (shared by all interfaces)
+├── crates/cli/           CLI binary — 47 commands (recording, search, health, workflows)
 ├── crates/whisper-guard/ Anti-hallucination toolkit (VAD gating, dedup, noise trimming)
 ├── crates/reader/        Lightweight read-only meeting parser (no audio deps)
 ├── crates/assets/        Bundled assets (demo.wav)
 ├── crates/sdk/           TypeScript SDK — `npm install minutes-sdk` (query meetings programmatically)
-├── crates/mcp/           MCP server — 26 tools + 6 resources + interactive dashboard
+├── crates/mcp/           MCP server — 29 tools + 6 resources + interactive dashboard
 │   └── ui/               MCP App dashboard (vanilla TS → single-file HTML)
 ├── tauri/                Menu bar app — system tray, recording UI, singleton AI Assistant
-└── .claude/plugins/minutes/   Claude Code plugin — 18 skills + 1 agent + 2 hooks
+└── .claude/plugins/minutes/   Claude Code plugin — 19 skills + 1 agent + 2 hooks
 ```
 
 Single `minutes-core` library shared by CLI, MCP server, and Tauri app. Zero code duplication.

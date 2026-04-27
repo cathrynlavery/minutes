@@ -171,3 +171,36 @@ When working in this repo:
 - prefer the built-in `--diagnose-hotkey` probe before speculating about
   Input Monitoring state
 - distinguish Screen Recording issues from Input Monitoring issues explicitly
+
+## Desktop Context Build Rules
+
+For meeting-adjacent desktop-context work, keep the platform and packaging
+contract explicit:
+
+- macOS-first implementation is acceptable; do not fake cross-platform parity
+- if you add a macOS-only helper or resource, compile or stage it from
+  `tauri/src-tauri/build.rs`
+- declare macOS-only bundled resources in
+  `tauri/src-tauri/tauri.macos.conf.json`, not the shared
+  `tauri/src-tauri/tauri.conf.json`
+- if the capability is feature-gated, keep the CLI and desktop app aligned on
+  `MINUTES_BUILD_FEATURES`
+- keep desktop context in `~/.minutes/context.db`; do not move meetings/memos
+  out of markdown or overload `graph.db` with raw desktop events
+
+That combination is what keeps a useful macOS-only slice from accidentally
+breaking Windows builds or local build scripts.
+
+## Desktop Context Runtime Validation
+
+Compile/build coverage for desktop-context parity now runs in CI on macOS,
+Windows, and Ubuntu, but runtime truth still needs real desktop sessions.
+
+Use [DESKTOP-CONTEXT-RUNTIME-CHECKLIST.md](./DESKTOP-CONTEXT-RUNTIME-CHECKLIST.md)
+when validating:
+
+- Windows foreground app/window-title capture on an actual Windows desktop
+- Linux AT-SPI-first behavior on an actual Linux desktop session
+
+Do not treat a headless Linux environment or Codespace as proof that the Linux
+collector works in real desktop conditions.

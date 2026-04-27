@@ -12,6 +12,9 @@ metadata:
   display_name: Minutes Lint
   short_description: Health-check your meeting knowledge for contradictions, stale commitments, and decision conflicts.
   default_prompt: Use Minutes Lint for this task.
+  site_category: Knowledge
+  site_example: /minutes-lint
+  site_best_for: Audit meeting memory for contradictions, stale commitments, and decision conflicts.
 assets:
   scripts: []
   templates: []
@@ -55,6 +58,20 @@ For each conflict, show:
 - Prior: "{prior decision text}" — *{meeting title}* ({date})
 - **Status**: These decisions may contradict each other.
 ```
+
+**Frontmatter v2: resolved supersessions.** When the `resolution` field is
+present on a conflict, the newer decision has a `supersedes:` entry in its
+frontmatter. Treat this as informational, not a red flag. Format as:
+
+```
+**Topic: {topic}** ✓ Resolved
+- Current: "{latest decision text}" — *{meeting title}* ({date})
+- Superseded: "{prior decision text}" — *{meeting title}* ({date})
+- **Status**: {resolution text}
+```
+
+If the latest decision also carries an `authority` field (`high`/`medium`/`low`),
+surface it next to the title. Authority is optional — when absent, omit the tag.
 
 ### Stale Commitments
 

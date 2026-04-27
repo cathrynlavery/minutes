@@ -131,6 +131,7 @@ certificate or local notarization credentials.
 | **Manifest description** | New user-facing features | Read `long_description` in `manifest.json` — does it mention the new capability? |
 | **Manifest version** | Version bumps | `manifest.json` version must match all other version sources |
 | **MCP server rebuild** | Any change to `crates/mcp/src/` or `crates/mcp/ui/` | `cd crates/mcp && npm run build` |
+| **MCPB bundle guard** | Any change to `.mcpbignore`, `crates/mcp/**`, `crates/sdk/**`, `manifest.json`, or anything else that affects what lands in the packed extension | `mcpb pack . minutes.mcpb && ./scripts/check_mcpb_bundle.sh minutes.mcpb && ./scripts/smoke_mcpb_handshake.sh minutes.mcpb`. The `MCP Server` CI job runs this on every push since issue #149; running it locally first saves a round-trip. |
 | **cargo fmt** | Any Rust change | `cargo fmt --all -- --check` |
 | **cargo clippy** | Any Rust change | `cargo clippy --all --no-default-features -- -D warnings` |
 | **cargo test** | Any Rust change | `cargo test -p minutes-core --no-default-features --lib` — CI runs the full suite; the local no-default-features run catches most regressions without needing the whisper model. |
@@ -142,13 +143,13 @@ certificate or local notarization credentials.
 | **Tauri command duplication** | Changes to live transcript start/stop logic | Both `cmd_start_live_transcript` and `handle_live_shortcut_event` must use the shared `try_acquire_live` + `run_live_session` functions. Do NOT duplicate logic. |
 | **Desktop app identity** | Any Tauri packaging, dogfooding, Screen Recording, Input Monitoring, Accessibility, call capture, hotkey, or repeated-permission work | Use `./scripts/install-dev-app.sh`, not `rm -rf /Applications/Minutes.app && cp ...`. If a local signing identity exists, export `MINUTES_DEV_SIGNING_IDENTITY` first. Test `~/Applications/Minutes Dev.app`, not `/Applications/Minutes.app`. |
 | **README accuracy** | New/removed tools, features, crates, or CLI commands | Tool/resource counts, crate list in Architecture, feature sections, and CLI examples in README.md must reflect the current state. Check: tool count matches `manifest.json`, crate list matches `ls crates/*/`, module count matches `ls crates/core/src/*.rs` |
-| **Website accuracy** | New/removed tools, CLI commands, features, or version bumps | Tool count, CLI command count, test count, and feature descriptions in `site/app/page.tsx` must reflect the current state. DMG download link must reference the current version. Redeploy the landing page with the prebuilt Vercel flow from the repo root: `npx vercel@50.38.2 build --prod && npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory` |
+| **Website accuracy** | New/removed tools, CLI commands, features, version bumps, or skill changes | The hero stat line (version, MCP tool count, CLI command count, test count) is **generated** from `site/lib/release.ts` — run `node scripts/sync_site_release_version.mjs` after any change that affects those counts (the `Site Release Link Consistency` CI job fails if it drifts, and the script now also scans `manifest.json`, `crates/cli/src/main.rs`, and Rust + TS test files). Hand-written copy in `site/app/page.tsx` (release banner, feature descriptions, pipeline blurb) must still be updated manually — the script cannot reason about prose. The `/for-agents` skill catalog (rendered from `site/lib/skills-catalog.json`) is **generated** — never hand-edit that file or the skill cards in `site/app/for-agents/page.tsx`; run the skill compiler instead (see **Skill compiler outputs sync**). Redeploy the landing page with the prebuilt Vercel flow from the repo root: `npx vercel@50.38.2 build --prod && npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory` |
 | **npm dep versions** | Version bumps | `crates/mcp/package.json` `minutes-sdk` dep must reference a version that's actually published on npm. Check with `npm view minutes-sdk versions --json` |
 | **Release notes drafted** | Version bumps / releases | Every release is a visibility moment in followers' GitHub feeds. Draft compelling release notes BEFORE creating the release. No empty releases — ever. See Release Checklist step 5. |
 | **Release warranted?** | New/removed MCP tools, new CLI commands, user-facing features | Manifest changes (new tools, updated description) don't reach Claude Desktop users until a release is cut and `.mcpb` is uploaded. If the change is user-visible, plan a release. |
 | **marketplace.json plugin version bumped** | Any change to `.claude/plugins/minutes/` that should reach users | `.claude-plugin/marketplace.json` → `plugins[0].version` is the **single field Claude Code reads** to decide what "latest" means for plugin-only releases. Bumping `plugin.json` alone is not enough — if `marketplace.json` still advertises the old version, `/plugin update minutes@minutes` reports "already at latest" and users silently miss everything shipped. Keep all three version surfaces in lockstep: `marketplace.json` `plugins[0].version`, `.claude/plugins/minutes/plugin.json`, `.claude/plugins/minutes/.claude-plugin/plugin.json`. |
 | **Plugin release upgrade snippet in notes** | Any plugin-only release (push-to-main, no tag) | Plugin releases don't auto-deliver to existing users. Every release-note body must include the two-command refresh sequence: `/plugin marketplace update minutes` then `/plugin update minutes@minutes`, then restart Claude Code. Without this, pre-release adopters stay silently stuck on the version they installed originally — their local marketplace mirror is a git clone that only pulls when explicitly asked. See `notes-release-plugin-v0.8.0.md` for the template. |
-| **Portable skill outputs sync** | Any change to `tooling/skills/sources/`, `.claude/plugins/minutes/skills/`, or `.claude/plugins/minutes/hooks/lib/` | The portable skill outputs live in both `.agents/skills/minutes/` (Codex/Gemini/etc.) and `.opencode/skills/` + `.opencode/commands/` (OpenCode). Rebuild from canonical sources with `cd tooling/skills && npm run build && npm run compile`, then verify with `npm run compile:dry && npm run check`. Runtime helpers must stay byte-identical across `.claude/plugins/minutes/hooks/lib/`, `.agents/skills/minutes/_runtime/hooks/lib/`, and `.opencode/skills/_runtime/hooks/lib/`. |
+| **Skill compiler outputs sync** | Any change to `tooling/skills/sources/`, `.claude/plugins/minutes/skills/`, or `.claude/plugins/minutes/hooks/lib/`; any new, renamed, or removed skill | The compiler in `tooling/skills/` writes **four** targets from canonical sources: `.claude/plugins/minutes/skills/` (plugin, now includes per-skill `scripts/` and `references/` assets — Claude host's `assetPolicy` is `copy` mode), `.agents/skills/minutes/` (Codex/Gemini/AGENTS-aware), `.opencode/skills/` + `.opencode/commands/` (OpenCode), and `site/lib/skills-catalog.json` (consumed by `/for-agents`, its JSON-LD, and the llms.txt generator). Rebuild with `cd tooling/skills && npm run build && npm run compile`, then verify with `npm run test && npm run check && npm run compile:dry`. `check` fails if any of the four outputs is stale. Runtime helpers must stay byte-identical across `.claude/plugins/minutes/hooks/lib/`, `.agents/skills/minutes/_runtime/hooks/lib/`, and `.opencode/skills/_runtime/hooks/lib/`. **After the skill compiler, also regenerate llms.txt** because the skill catalog feeds it: `npm --prefix site run generate:llms` to write, `npm --prefix site run check:llms` to verify — this is now enforced in CI. **New skills require three site-facing frontmatter fields** under `metadata`: `site_category`, `site_example`, `site_best_for` — the compiler throws with a clear error on any missing field. |
 
 ## Release Checklist
 
@@ -227,8 +228,6 @@ gh run list --workflow="Release Windows Desktop" --limit 1
 ```
 If any fail, fix on `main`, `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`, re-tag at the new commit, and re-run from step 7. (Cheap because the release is still a draft.)
 
-**Known exception**: `Release macOS` fails with `A required agreement is missing or has expired` when Apple Developer Program enrollment is pending or the agreement hasn't been signed. That is environmental, not a code issue — proceed to step 9 with the understanding that the signed/notarized DMG won't be in this release.
-
 ### 9. Publish the draft
 ```bash
 gh release edit vX.Y.Z --draft=false
@@ -259,11 +258,20 @@ sleep 30 && curl -s https://crates.io/api/v1/crates/whisper-guard | jq '.crate.m
 ```
 whisper-guard is a standalone MIT crate consumed outside this repo (currently 277+ downloads). Bump independently of the main release; do NOT couple to the Minutes version. If you skip the publish, the crates.io users miss the fix and you create silent drift between repo state and published artifact.
 
-### 12. Redeploy landing page
-```bash
-npx vercel@50.38.2 build --prod
-npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory
-```
+### 12. Refresh the landing page copy, then redeploy
+Before deploying, make sure the site matches what just shipped:
+
+1. **Regenerate the stat line** (version, tool count, CLI count, test count):
+   ```bash
+   node scripts/sync_site_release_version.mjs
+   ```
+   The `Site Release Link Consistency` CI job runs this with `--check` on every push, so forgetting this step also blocks CI — but running it locally first saves a round-trip and surfaces drift before tagging.
+2. **Hand-update the prose** — the release banner, headline feature blurb, and pipeline description in `site/app/page.tsx`, plus `docs/frontmatter-schema.md`'s "corresponds to" footer if the schema row moved. The sync script handles numbers; it cannot rewrite copy that references last release's headline features.
+3. **Then deploy**:
+   ```bash
+   npx vercel@50.38.2 build --prod
+   npx vercel@50.38.2 deploy --prebuilt --yes --prod --scope evil-genius-laboratory
+   ```
 
 **IMPORTANT**: Run these commands from the repo root, not `site/`. The linked Vercel project uses `rootDirectory=site`, and the Git-connected / remote build path is currently failing after successful Next 16.2.3 builds because Vercel looks for `.next/routes-manifest-deterministic.json`. The prebuilt flow uploads the local `.vercel/output` and avoids that failing server-side post-build step.
 
@@ -365,10 +373,10 @@ minutes/
 │   │   ├── jobs.rs            # Background job queue for async processing
 │   │   └── palette.rs         # Command palette definitions and matching
 │   ├── whisper-guard/          # Standalone anti-hallucination toolkit (segment dedup, silence strip, whisper params)
-│   ├── cli/                   # CLI binary — 43 commands
+│   ├── cli/                   # CLI binary — 45 commands
 │   ├── reader/                # Lightweight read-only meeting parser (no audio deps)
 │   ├── assets/                # Bundled assets (demo.wav)
-│   └── mcp/                   # MCP server — 26 tools + 6 resources + MCP App dashboard
+│   └── mcp/                   # MCP server — 29 tools + 7 resources + MCP App dashboard
 │       └── ui/                # Interactive dashboard (vanilla TS, builds to single-file HTML)
 ├── site/                      # Landing page (Next.js + Remotion demo player)
 ├── tauri/                     # Tauri v2 menu bar app + singleton AI Assistant
@@ -451,7 +459,7 @@ node test/mcp_tools_test.mjs                        # 8 MCP integration tests
 
 ## Claude Ecosystem Integration
 
-- **MCP Server**: 26 tools + 6 resources for Claude Desktop / Cowork / Dispatch (`npx minutes-mcp` for zero-install)
+- **MCP Server**: 29 tools + 7 resources for Claude Desktop / Cowork / Dispatch (`npx minutes-mcp` for zero-install)
 - **Claude Code Plugin**: 18 skills (7 capture + 1 search + 4 lifecycle + 2 coaching + 3 knowledge + 1 intelligence) + meeting-analyst agent + SessionStart + PostToolUse hooks
 - **Interactive meeting lifecycle**: `/minutes-brief` → `/minutes-prep` → record → `/minutes-tag` → `/minutes-debrief` → `/minutes-mirror` → `/minutes-weekly` with skill chaining via `.brief.md` / `.prep.md` files; `/minutes-graph` for cross-meeting entity queries
 - **Conversational summarization**: Claude reads transcripts via MCP, no API key needed

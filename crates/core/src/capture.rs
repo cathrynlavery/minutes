@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::error::CaptureError;
 use crate::pid::CaptureMode;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -438,6 +438,9 @@ impl CapturePlan {
     }
 }
 
+const MISSING_DUAL_SOURCE_LOOPBACK_MESSAGE: &str =
+    "no loopback/system-audio device detected for dual-source capture";
+
 pub fn stem_paths_for(audio_path: &Path) -> Option<crate::diarize::StemPaths> {
     let stem = audio_path.file_stem()?.to_str()?;
     let dir = audio_path.parent()?;
@@ -445,6 +448,19 @@ pub fn stem_paths_for(audio_path: &Path) -> Option<crate::diarize::StemPaths> {
         voice: dir.join(format!("{}.voice.wav", stem)),
         system: dir.join(format!("{}.system.wav", stem)),
     })
+}
+
+pub fn meeting_audio_artifact_paths(markdown_path: &Path) -> Vec<PathBuf> {
+    let audio_path = markdown_path.with_extension("wav");
+    let mut paths = vec![audio_path.clone()];
+
+    if let Some(stems) = stem_paths_for(&audio_path) {
+        paths.push(stems.voice);
+        paths.push(stems.system);
+    }
+
+    paths.push(crate::voice::meeting_embeddings_sidecar_path(markdown_path));
+    paths
 }
 
 fn normalize_source_name(value: Option<&str>) -> Option<String> {
@@ -469,8 +485,8 @@ fn select_device_with_override(
 }
 
 fn resolve_capture_plan(config: &Config) -> Result<CapturePlan, CaptureError> {
-    let host = cpal::default_host();
-    resolve_capture_plan_with_host(&host, config)
+    let host = cached_default_host();
+    resolve_capture_plan_with_host(host, config)
 }
 
 fn resolve_capture_plan_with_host(
@@ -504,9 +520,7 @@ fn resolve_capture_plan_with_host(
         let (_, voice_name) = select_device_with_override(host, voice_override.as_deref())?;
         let resolved_call = if call_override.eq_ignore_ascii_case("auto") {
             detect_loopback_device().ok_or_else(|| {
-                CaptureError::Io(std::io::Error::other(
-                    "no loopback/system-audio device detected for dual-source capture",
-                ))
+                CaptureError::Io(std::io::Error::other(MISSING_DUAL_SOURCE_LOOPBACK_MESSAGE))
             })?
         } else {
             call_override.to_string()
@@ -531,6 +545,51 @@ fn resolve_capture_plan_with_host(
         device_override: single_override,
         device_name,
     }))
+}
+
+fn resolve_native_call_preflight_capture_plan_with_host(
+    host: &cpal::Host,
+    config: &Config,
+) -> Result<CapturePlan, CaptureError> {
+    let voice_override = normalize_source_name(
+        config
+            .recording
+            .sources
+            .as_ref()
+            .and_then(|sources| sources.voice.as_deref()),
+    );
+    let single_override = voice_override.or_else(|| config.recording.device.clone());
+    let (_, device_name) = select_device_with_override(host, single_override.as_deref())?;
+    Ok(CapturePlan::Single(SingleCapturePlan {
+        device_override: single_override,
+        device_name,
+    }))
+}
+
+fn configured_call_source_is_auto(config: &Config) -> bool {
+    config
+        .recording
+        .sources
+        .as_ref()
+        .and_then(|sources| sources.call.as_deref())
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("auto"))
+}
+
+fn should_bypass_loopback_preflight_for_native_call_capture(
+    intent: RecordingIntent,
+    native_call_capture_available: bool,
+    config: &Config,
+    error: &CaptureError,
+) -> bool {
+    if intent != RecordingIntent::Call
+        || !native_call_capture_available
+        || !configured_call_source_is_auto(config)
+    {
+        return false;
+    }
+
+    matches!(error, CaptureError::Io(io_error) if io_error.to_string() == MISSING_DUAL_SOURCE_LOOPBACK_MESSAGE)
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -825,6 +884,11 @@ fn padded_slot(samples: Option<Vec<f32>>) -> Vec<f32> {
 }
 
 #[cfg(feature = "streaming")]
+fn dual_source_slot_for_chunk(base_slot: u64, chunk: &crate::streaming::AudioChunk) -> u64 {
+    base_slot + chunk.index
+}
+
+#[cfg(feature = "streaming")]
 #[derive(Default)]
 struct DualSlotStats {
     both: u64,
@@ -876,6 +940,11 @@ fn record_to_wav_dual_source(
     plan: DualCapturePlan,
 ) -> Result<(), CaptureError> {
     crate::pid::check_and_clear_sentinel();
+    // Refresh the in-process mic-mute flag from the sentinel. The CLI
+    // `--mute-mic` flag writes the sentinel before getting here, and the
+    // loop below keeps re-reading it so Tauri/CLI toggles made during the
+    // recording take effect.
+    crate::streaming::refresh_mic_mute_from_sentinel();
 
     let mut writers = DualCaptureWriters::new(output_path)?;
     AUDIO_LEVEL.store(0, Ordering::Relaxed);
@@ -949,12 +1018,12 @@ fn record_to_wav_dual_source(
         safety_guard = safety_guard.with_intent(intent);
     }
 
-    let session_start = Instant::now();
     let mut next_slot: Option<u64> = None;
     let mut max_voice_slot: Option<u64> = None;
     let mut max_system_slot: Option<u64> = None;
     let mut pending_voice = std::collections::BTreeMap::<u64, Vec<f32>>::new();
     let mut pending_system = std::collections::BTreeMap::<u64, Vec<f32>>::new();
+    let mut slot_base: u64 = 0;
     // Mixer stats for diagnosing dual-source issues
     let mut slot_stats = DualSlotStats::default();
     let mut peak_level: u32 = 0;
@@ -973,6 +1042,10 @@ fn record_to_wav_dual_source(
             tracing::info!("extend sentinel detected — resetting safety timers");
             safety_guard.extend();
         }
+
+        // Sync mute state from sentinel so CLI/Tauri toggles made in
+        // another process are picked up by this recording loop.
+        crate::streaming::refresh_mic_mute_from_sentinel();
 
         let call_app_active = detect_active_call_app(config).is_some();
         match safety_guard.check(audio_level(), call_app_active) {
@@ -1019,6 +1092,11 @@ fn record_to_wav_dual_source(
                         &new_system.device_name,
                         true,
                     );
+                    slot_base = max_voice_slot
+                        .into_iter()
+                        .chain(max_system_slot)
+                        .max()
+                        .map_or(slot_base, |slot| slot.saturating_add(1));
                     voice_stream = Some(new_voice);
                     system_stream = Some(new_system);
                     safety_guard.extend();
@@ -1046,32 +1124,33 @@ fn record_to_wav_dual_source(
             .receiver
             .clone();
 
-        // Derive slot from wall-clock timestamp relative to session start.
-        // Both streams share the same session_start anchor, so slots from
-        // different devices correspond to the same real-world time window.
-        let slot_for = |chunk: &crate::streaming::AudioChunk| -> u64 {
-            chunk
-                .timestamp
-                .checked_duration_since(session_start)
-                .unwrap_or_default()
-                .as_millis() as u64
-                / 100
-        };
-
         // Drain all available chunks from both channels before flushing.
         // The old code used select! to grab ONE chunk per iteration, which
         // on slower machines meant one source got flushed before the other
         // source's chunk for that same slot arrived. (#118)
+        //
+        // Voice samples pass through `mute_voice_if_needed`: when the mic
+        // is muted, samples are zeroed but their length (and therefore the
+        // slot's sample count) is preserved so dual-source alignment and
+        // stem writers stay in lockstep.
+        let mute_voice_if_needed = |samples: Vec<f32>| -> Vec<f32> {
+            if crate::streaming::is_mic_muted() {
+                vec![0.0; samples.len()]
+            } else {
+                samples
+            }
+        };
+
         let mut got_any = false;
         while let Ok(chunk) = voice_rx.try_recv() {
-            let slot = slot_for(&chunk);
+            let slot = dual_source_slot_for_chunk(slot_base, &chunk);
             next_slot.get_or_insert(slot);
             max_voice_slot = Some(max_voice_slot.map_or(slot, |s| s.max(slot)));
-            pending_voice.insert(slot, chunk.samples);
+            pending_voice.insert(slot, mute_voice_if_needed(chunk.samples));
             got_any = true;
         }
         while let Ok(chunk) = system_rx.try_recv() {
-            let slot = slot_for(&chunk);
+            let slot = dual_source_slot_for_chunk(slot_base, &chunk);
             next_slot.get_or_insert(slot);
             max_system_slot = Some(max_system_slot.map_or(slot, |s| s.max(slot)));
             pending_system.insert(slot, chunk.samples);
@@ -1083,15 +1162,15 @@ fn record_to_wav_dual_source(
             crossbeam_channel::select! {
                 recv(voice_rx) -> chunk => {
                     if let Ok(chunk) = chunk {
-                        let slot = slot_for(&chunk);
+                        let slot = dual_source_slot_for_chunk(slot_base, &chunk);
                         next_slot.get_or_insert(slot);
                         max_voice_slot = Some(max_voice_slot.map_or(slot, |s| s.max(slot)));
-                        pending_voice.insert(slot, chunk.samples);
+                        pending_voice.insert(slot, mute_voice_if_needed(chunk.samples));
                     }
                 }
                 recv(system_rx) -> chunk => {
                     if let Ok(chunk) = chunk {
-                        let slot = slot_for(&chunk);
+                        let slot = dual_source_slot_for_chunk(slot_base, &chunk);
                         next_slot.get_or_insert(slot);
                         max_system_slot = Some(max_system_slot.map_or(slot, |s| s.max(slot)));
                         pending_system.insert(slot, chunk.samples);
@@ -1148,6 +1227,9 @@ fn record_to_wav_dual_source(
     if let Some(handle) = sidecar_handle {
         handle.join().ok();
     }
+
+    // Clear mute state so the next recording starts fresh.
+    crate::streaming::clear_mic_mute_for_new_recording();
 
     let sidecar_drops = SIDECAR_DROPS.swap(0, Ordering::Relaxed);
     if sidecar_drops > 0 {
@@ -1215,14 +1297,19 @@ pub fn record_to_wav(
 
     // Clear any stale stop sentinel from a previous session
     crate::pid::check_and_clear_sentinel();
+    // Single-source recording has no gate (muting a mic-only stream just
+    // produces silence, not a useful outcome), but we clear any stale
+    // mute sentinel so it doesn't leak into the next dual-source session.
+    #[cfg(feature = "streaming")]
+    crate::streaming::clear_mic_mute_for_new_recording();
 
-    let host = cpal::default_host();
+    let host = cached_default_host();
     let device_override = match &capture_plan {
         CapturePlan::Single(plan) => plan.device_override.as_deref(),
         #[cfg(feature = "streaming")]
         CapturePlan::Dual(_) => None,
     };
-    let device = select_input_device(&host, device_override)?;
+    let device = select_input_device(host, device_override)?;
 
     let device_name = device
         .description()
@@ -1376,7 +1463,7 @@ pub fn record_to_wav(
 
             // Try reconnecting (with one retry after 1s)
             let reconnected = try_reconnect(
-                &host,
+                host,
                 device_override,
                 &writer,
                 &stop_flag,
@@ -1388,7 +1475,7 @@ pub fn record_to_wav(
                 tracing::info!("reconnect failed, retrying in 1s...");
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 try_reconnect(
-                    &host,
+                    host,
                     device_override,
                     &writer,
                     &stop_flag,
@@ -1546,6 +1633,17 @@ pub fn strip_device_format_suffix(name: &str) -> &str {
     &name[..open_idx]
 }
 
+/// Normalize a persisted input-device setting to the canonical CPAL device
+/// name by trimming whitespace and stripping any UI decoration suffix like
+/// `" (16000Hz, 1 ch)"`.
+pub fn canonicalize_input_device_setting(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(strip_device_format_suffix(trimmed).to_string())
+}
+
 /// Select the best input device.
 ///
 /// If `device_name` is provided, matches by name against available devices.
@@ -1566,6 +1664,30 @@ pub fn strip_device_format_suffix(name: &str) -> &str {
 /// devices). Caching the first host that works keeps later lookups stable.
 static PREFERRED_HOST: std::sync::OnceLock<std::sync::Mutex<Option<cpal::HostId>>> =
     std::sync::OnceLock::new();
+
+/// AIDEV-NOTE: Keeps the cpal `Host` alive for the entire process lifetime.
+/// On Linux with the PipeWire backend, dropping a `cpal::Host` calls `pw_deinit()`,
+/// and re-creating one calls `pw_init()` again — but PipeWire's internal state is
+/// corrupted after deinit/reinit, causing a segfault in `pw_main_loop_new()`.
+/// By leaking the Host (intentionally never freeing it), we prevent Drop from
+/// running, so PipeWire stays initialized. The leak is negligible: one Host per
+/// process lifetime. This matches cpal's own `PwInitGuard` design intent (the
+/// Host holds the guard), but ensures the guard survives across multiple
+/// `default_host()` call sites within minutes.
+static HOST_CACHE: std::sync::OnceLock<&'static cpal::Host> = std::sync::OnceLock::new();
+
+/// Return a reference to the process-wide cached `cpal::Host`, creating it on
+/// first call. Uses `cpal::default_host()` internally, but ensures the Host
+/// (and its PipeWire init guard) is never dropped, preventing the segfault
+/// described in HOST_CACHE.
+pub fn cached_default_host() -> &'static cpal::Host {
+    HOST_CACHE.get_or_init(|| {
+        // Intentionally leak: Host must live for the process duration so that
+        // PipeWire's pw_deinit() is never called between enumeration and stream
+        // creation, which would corrupt PipeWire state and segfault on re-init.
+        Box::leak(Box::new(cpal::default_host()))
+    })
+}
 
 fn preferred_host_id() -> Option<cpal::HostId> {
     *PREFERRED_HOST
@@ -1926,8 +2048,8 @@ fn is_pipewire_host(_: cpal::HostId) -> bool {
 pub fn selected_input_device_name(config: &Config) -> Result<String, CaptureError> {
     use cpal::traits::DeviceTrait;
 
-    let host = cpal::default_host();
-    let device = select_input_device(&host, config.recording.device.as_deref())?;
+    let host = cached_default_host();
+    let device = select_input_device(host, config.recording.device.as_deref())?;
     device
         .description()
         .map(|d| d.name().to_string())
@@ -2017,11 +2139,44 @@ pub fn preflight_recording(
     allow_degraded: bool,
     config: &Config,
 ) -> Result<CapturePreflight, String> {
-    let detected_call_app = detect_active_call_app(config);
-    let capture_plan = resolve_capture_plan(config).map_err(|error| error.to_string())?;
-    let mut preflight = evaluate_capture_preflight(
+    preflight_recording_with_native_call_capture(
         mode,
         requested_intent,
+        allow_degraded,
+        false,
+        config,
+    )
+}
+
+pub fn preflight_recording_with_native_call_capture(
+    mode: CaptureMode,
+    requested_intent: Option<RecordingIntent>,
+    allow_degraded: bool,
+    native_call_capture_available: bool,
+    config: &Config,
+) -> Result<CapturePreflight, String> {
+    let host = cached_default_host();
+    let detected_call_app = detect_active_call_app(config);
+    let intent =
+        infer_recording_intent(mode, requested_intent, detected_call_app.as_deref(), config)?;
+    let capture_plan = match resolve_capture_plan_with_host(host, config) {
+        Ok(plan) => plan,
+        Err(error)
+            if should_bypass_loopback_preflight_for_native_call_capture(
+                intent,
+                native_call_capture_available,
+                config,
+                &error,
+            ) =>
+        {
+            resolve_native_call_preflight_capture_plan_with_host(host, config)
+                .map_err(|fallback_error| fallback_error.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut preflight = evaluate_capture_preflight(
+        mode,
+        Some(intent),
         detected_call_app,
         capture_plan.input_summary(),
         allow_degraded,
@@ -2120,7 +2275,7 @@ pub struct InputDeviceEntry {
 pub fn list_input_devices_detailed() -> Vec<InputDeviceEntry> {
     use cpal::traits::{DeviceTrait, HostTrait};
 
-    let host = cpal::default_host();
+    let host = cached_default_host();
     tracing::debug!(host_id = ?host.id(), "cpal host for input device listing");
     let mut devices = Vec::new();
 
@@ -2180,7 +2335,7 @@ pub enum DeviceCategory {
 pub fn list_devices_categorized() -> Vec<CategorizedDevice> {
     use cpal::traits::{DeviceTrait, HostTrait};
 
-    let host = cpal::default_host();
+    let host = cached_default_host();
     let host_id = host.id();
     tracing::debug!(host_id = ?host_id, "cpal host for categorized device listing");
     let is_pipewire = is_pipewire_host(host_id);
@@ -2283,6 +2438,37 @@ mod tests {
             label: "Ground Control (16000Hz, 1 ch)".into(),
         };
         assert_eq!(strip_device_format_suffix(&entry.label), entry.name);
+    }
+
+    #[test]
+    fn canonicalize_input_device_setting_strips_picker_decoration() {
+        assert_eq!(
+            canonicalize_input_device_setting(" Ground Control (16000Hz, 1 ch) "),
+            Some("Ground Control".into())
+        );
+        assert_eq!(
+            canonicalize_input_device_setting("Ground Control"),
+            Some("Ground Control".into())
+        );
+        assert_eq!(canonicalize_input_device_setting("   "), None);
+    }
+
+    #[test]
+    fn meeting_audio_artifact_paths_include_stems_and_embeddings_sidecar() {
+        let markdown = Path::new("/tmp/meetings/2026-04-01-standup.md");
+        let artifacts = meeting_audio_artifact_paths(markdown);
+        let audio_path = markdown.with_extension("wav");
+        let stems = stem_paths_for(&audio_path).expect("expected stem paths for meeting audio");
+
+        assert_eq!(
+            artifacts,
+            vec![
+                audio_path,
+                stems.voice,
+                stems.system,
+                crate::voice::meeting_embeddings_sidecar_path(markdown),
+            ]
+        );
     }
 
     #[test]
@@ -2495,6 +2681,86 @@ mod tests {
         assert!(!preflight.warnings.is_empty());
     }
 
+    #[test]
+    fn native_call_capture_bypass_only_applies_to_call_auto_loopback_failure() {
+        let mut config = Config::default();
+        config.recording.sources = Some(crate::config::SourcesConfig {
+            voice: Some("default".into()),
+            call: Some("auto".into()),
+        });
+
+        let loopback_error =
+            CaptureError::Io(std::io::Error::other(MISSING_DUAL_SOURCE_LOOPBACK_MESSAGE));
+        assert!(should_bypass_loopback_preflight_for_native_call_capture(
+            RecordingIntent::Call,
+            true,
+            &config,
+            &loopback_error,
+        ));
+
+        assert!(!should_bypass_loopback_preflight_for_native_call_capture(
+            RecordingIntent::Room,
+            true,
+            &config,
+            &loopback_error,
+        ));
+
+        assert!(!should_bypass_loopback_preflight_for_native_call_capture(
+            RecordingIntent::Call,
+            false,
+            &config,
+            &loopback_error,
+        ));
+
+        config.recording.sources = Some(crate::config::SourcesConfig {
+            voice: Some("default".into()),
+            call: Some("BlackHole 2ch".into()),
+        });
+        assert!(!should_bypass_loopback_preflight_for_native_call_capture(
+            RecordingIntent::Call,
+            true,
+            &config,
+            &loopback_error,
+        ));
+
+        let different_error = CaptureError::Io(std::io::Error::other("different error"));
+        config.recording.sources = Some(crate::config::SourcesConfig {
+            voice: Some("default".into()),
+            call: Some("auto".into()),
+        });
+        assert!(!should_bypass_loopback_preflight_for_native_call_capture(
+            RecordingIntent::Call,
+            true,
+            &config,
+            &different_error,
+        ));
+    }
+
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn dual_source_slot_for_chunk_ignores_wall_clock_jitter() {
+        use crate::streaming::{AudioChunk, SourceRole};
+
+        let base = 40;
+        let first = AudioChunk {
+            samples: vec![0.0; 1600],
+            rms: 0.0,
+            timestamp: Instant::now(),
+            index: 7,
+            source: SourceRole::Voice,
+        };
+        let delayed = AudioChunk {
+            samples: vec![0.0; 1600],
+            rms: 0.0,
+            timestamp: Instant::now() + std::time::Duration::from_millis(175),
+            index: 7,
+            source: SourceRole::Call,
+        };
+
+        assert_eq!(dual_source_slot_for_chunk(base, &first), 47);
+        assert_eq!(dual_source_slot_for_chunk(base, &delayed), 47);
+    }
+
     fn test_config() -> crate::config::RecordingConfig {
         crate::config::RecordingConfig {
             silence_reminder_secs: 10,
@@ -2637,7 +2903,7 @@ mod tests {
         let _g = LOCK.lock().unwrap();
 
         let prior = preferred_host_id();
-        let id = cpal::default_host().id();
+        let id = cached_default_host().id();
         set_preferred_host_id(id);
         assert_eq!(preferred_host_id(), Some(id));
 

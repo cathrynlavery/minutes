@@ -821,18 +821,7 @@ pub fn transcribe_to_artifact(
         decode_hints,
     )?;
     let transcript = if content_type == ContentType::Meeting {
-        if let Some(identity) =
-            Some(&config.identity).filter(|identity| user_is_participant(&attendees, identity))
-        {
-            if let Some(canonical) = identity.name.as_deref() {
-                let variants = collect_user_participant_variants(&attendees, identity);
-                normalize_self_name_refs_in_transcript(&result.text, canonical, &variants)
-            } else {
-                result.text
-            }
-        } else {
-            result.text
-        }
+        normalize_transcript_for_self_name_participant(&result.text, &attendees, &config.identity)
     } else {
         result.text
     };
@@ -862,23 +851,9 @@ pub fn write_transcript_artifact(
     filter_stats: crate::transcribe::FilterStats,
     transcribe_ms: u64,
 ) -> Result<TranscriptArtifact, MinutesError> {
-    let word_count = transcript.split_whitespace().count();
     let metadata = std::fs::metadata(audio_path)?;
     let recording_date =
         infer_recording_date(context.recorded_at, context.sidecar.as_ref(), &metadata);
-    logging::log_step(
-        "transcribe",
-        &audio_path.display().to_string(),
-        transcribe_ms,
-        serde_json::json!({"words": word_count, "mode": "background", "diagnosis": filter_stats.diagnosis()}),
-    );
-
-    let status = if word_count < config.transcription.min_words {
-        Some(OutputStatus::NoSpeech)
-    } else {
-        Some(OutputStatus::TranscriptOnly)
-    };
-
     let matched_event = if content_type == ContentType::Meeting {
         context.calendar_event.clone().or_else(|| {
             select_calendar_event(&crate::calendar::events_overlapping(recording_date), title)
@@ -891,6 +866,24 @@ pub fn write_transcript_artifact(
         .as_ref()
         .map(|event| event.attendees.clone())
         .unwrap_or_default();
+    let transcript = if content_type == ContentType::Meeting {
+        normalize_transcript_for_self_name_participant(&transcript, &attendees, &config.identity)
+    } else {
+        transcript
+    };
+    let word_count = transcript.split_whitespace().count();
+    logging::log_step(
+        "transcribe",
+        &audio_path.display().to_string(),
+        transcribe_ms,
+        serde_json::json!({"words": word_count, "mode": "background", "diagnosis": filter_stats.diagnosis()}),
+    );
+
+    let status = if word_count < config.transcription.min_words {
+        Some(OutputStatus::NoSpeech)
+    } else {
+        Some(OutputStatus::TranscriptOnly)
+    };
 
     let auto_title = title.map(String::from).unwrap_or_else(|| {
         if status == Some(OutputStatus::NoSpeech) {
@@ -1032,7 +1025,7 @@ where
         if let Some(result) = diarize::diarize(audio_path, config) {
             let diarize_ms = diarize_start.elapsed().as_millis() as u64;
             diarization_num_speakers = result.num_speakers;
-            diarization_from_stems = result.from_stems;
+            diarization_from_stems = result.source_aware;
             diarization_embeddings = result.speaker_embeddings.clone();
             logging::log_step(
                 "diarize",
@@ -1441,18 +1434,11 @@ where
     )?;
     let transcribe_ms = step_start.elapsed().as_millis() as u64;
     let transcript = if content_type == ContentType::Meeting {
-        if let Some(identity) = Some(&config.identity)
-            .filter(|identity| user_is_participant(&calendar_attendees, identity))
-        {
-            if let Some(canonical) = identity.name.as_deref() {
-                let variants = collect_user_participant_variants(&calendar_attendees, identity);
-                normalize_self_name_refs_in_transcript(&result.text, canonical, &variants)
-            } else {
-                result.text
-            }
-        } else {
-            result.text
-        }
+        normalize_transcript_for_self_name_participant(
+            &result.text,
+            &calendar_attendees,
+            &config.identity,
+        )
     } else {
         result.text
     };
@@ -1498,7 +1484,7 @@ where
         tracing::info!(step = "diarize", "running speaker diarization");
         if let Some(result) = diarize::diarize(audio_path, config) {
             diarization_num_speakers = result.num_speakers;
-            diarization_from_stems = result.from_stems;
+            diarization_from_stems = result.source_aware;
             diarization_embeddings = result.speaker_embeddings.clone();
             diarize::apply_speakers(&transcript, &result)
         } else {
@@ -1897,11 +1883,47 @@ where
 /// Estimate audio duration from file size (rough approximation).
 /// 16kHz mono 16-bit WAV ≈ 32KB/sec.
 fn estimate_duration(audio_path: &Path) -> String {
+    if let Some(duration_secs) = probe_audio_duration_secs(audio_path) {
+        return format_duration_secs(duration_secs);
+    }
+
     let bytes = std::fs::metadata(audio_path).map(|m| m.len()).unwrap_or(0);
 
     // WAV header is 44 bytes, then raw PCM at 32000 bytes/sec (16kHz 16-bit mono)
     let secs = if bytes > 44 { (bytes - 44) / 32_000 } else { 0 };
 
+    format_duration_secs(secs as f64)
+}
+
+fn probe_audio_duration_secs(audio_path: &Path) -> Option<f64> {
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(audio_path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = audio_path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &Default::default(), &Default::default())
+        .ok()?;
+
+    let track = probed.format.default_track()?;
+    let params = &track.codec_params;
+    let n_frames = params.n_frames?;
+    let sample_rate = params.sample_rate?;
+    if sample_rate == 0 {
+        return None;
+    }
+
+    Some(n_frames as f64 / sample_rate as f64)
+}
+
+fn format_duration_secs(duration_secs: f64) -> String {
+    let secs = duration_secs.round().max(0.0) as u64;
     let mins = secs / 60;
     let remaining_secs = secs % 60;
     if mins > 0 {
@@ -3090,6 +3112,8 @@ fn extract_decisions(summary: &summarize::Summary) -> Vec<markdown::Decision> {
             markdown::Decision {
                 text: text.clone(),
                 topic,
+                authority: None,
+                supersedes: None,
             }
         })
         .collect()
@@ -3899,6 +3923,13 @@ mod tests {
     }
 
     #[test]
+    fn format_duration_secs_rounds_to_nearest_second() {
+        assert_eq!(format_duration_secs(4313.6), "71m 54s");
+        assert_eq!(format_duration_secs(59.6), "1m 0s");
+        assert_eq!(format_duration_secs(0.4), "0s");
+    }
+
+    #[test]
     fn extract_action_items_parses_assignee_and_task() {
         let summary = summarize::Summary {
             text: String::new(),
@@ -4427,6 +4458,8 @@ mod tests {
         let decisions = vec![markdown::Decision {
             text: "Launch pricing at monthly billing per month".into(),
             topic: Some("pricing strategy".into()),
+            authority: None,
+            supersedes: None,
         }];
         let intents = vec![markdown::Intent {
             kind: markdown::IntentKind::Commitment,
@@ -4477,18 +4510,26 @@ mod tests {
                 markdown::Decision {
                     text: "Speaker_1 provide speaker roster and contact notes".into(),
                     topic: Some("speaker 1 provide speaker".into()),
+                    authority: None,
+                    supersedes: None,
                 },
                 markdown::Decision {
                     text: "Reach out to Cardinal about access".into(),
                     topic: Some("reach out".into()),
+                    authority: None,
+                    supersedes: None,
                 },
                 markdown::Decision {
                     text: "Pioneer asked build the custom report after review".into(),
                     topic: Some("pioneer asked build".into()),
+                    authority: None,
+                    supersedes: None,
                 },
                 markdown::Decision {
                     text: "LeaderNet 835 reconciliation remains the core workflow".into(),
                     topic: Some("leadernet 835 reconciliation".into()),
+                    authority: None,
+                    supersedes: None,
                 },
             ],
             &[],
@@ -4821,6 +4862,60 @@ mod tests {
     }
 
     #[test]
+    fn write_transcript_artifact_normalizes_self_name_for_title_and_body() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let audio_path = dir.path().join("memo.wav");
+        std::fs::write(&audio_path, vec![0u8; 64_044]).unwrap();
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            identity: IdentityConfig {
+                name: Some("Mat".into()),
+                aliases: vec!["Matt".into()],
+                ..IdentityConfig::default()
+            },
+            ..Config::default()
+        };
+
+        let context = BackgroundPipelineContext {
+            calendar_event: Some(crate::calendar::CalendarEvent {
+                title: "meeting".into(),
+                start: Local::now().to_rfc3339(),
+                minutes_until: 0,
+                attendees: vec!["Matt".into(), "Alex Chen".into()],
+                url: None,
+            }),
+            ..BackgroundPipelineContext::default()
+        };
+
+        let artifact = write_transcript_artifact(
+            &audio_path,
+            ContentType::Meeting,
+            None,
+            &config,
+            &context,
+            None,
+            "[SPEAKER_1 0:00] Matt is outlining onboarding follow up.\n".into(),
+            crate::transcribe::FilterStats::default(),
+            0,
+        )
+        .unwrap();
+
+        assert!(
+            artifact
+                .transcript
+                .contains("Mat is outlining onboarding follow up."),
+            "{}",
+            artifact.transcript
+        );
+        assert!(!artifact.transcript.contains("Matt is outlining"));
+        assert_eq!(
+            artifact.frontmatter.title,
+            "Mat Is Outlining Onboarding Follow Up"
+        );
+    }
+
+    #[test]
     fn is_task_like_project_candidate_requires_more_than_a_verb_like_start() {
         assert!(!is_task_like_project_candidate(
             "review board",
@@ -4903,6 +4998,8 @@ mod tests {
             &[markdown::Decision {
                 text: "Speaker_1 provide speaker roster and contact notes".into(),
                 topic: Some("speaker 1 provide speaker".into()),
+                authority: None,
+                supersedes: None,
             }],
             &intents,
             &[],
@@ -4969,6 +5066,8 @@ mod tests {
             &[markdown::Decision {
                 text: "Use annual billing for premium users".into(),
                 topic: Some("pricing strategy".into()),
+                authority: None,
+                supersedes: None,
             }],
             &[markdown::Intent {
                 kind: markdown::IntentKind::Commitment,
@@ -4989,6 +5088,8 @@ mod tests {
             &[markdown::Decision {
                 text: "Use annual billing for premium users".into(),
                 topic: Some("pricing strategy".into()),
+                authority: None,
+                supersedes: None,
             }],
             &[markdown::Intent {
                 kind: markdown::IntentKind::Commitment,

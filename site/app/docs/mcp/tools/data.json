@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-14",
+  "generatedAt": "2026-04-25",
   "installCommand": "npx minutes-mcp",
   "documentationUrl": "https://useminutes.app/for-agents",
   "supportUrl": "https://github.com/silverstein/minutes/discussions",
@@ -52,6 +52,27 @@
       "group": "Search and recall",
       "anchorId": "tool-get-meeting",
       "docsUrl": "https://useminutes.app/docs/mcp/tools#tool-get-meeting"
+    },
+    {
+      "name": "activity_summary",
+      "description": "Summarize meeting-adjacent desktop context for a linked artifact, context session, or time window",
+      "group": "Search and recall",
+      "anchorId": "tool-activity-summary",
+      "docsUrl": "https://useminutes.app/docs/mcp/tools#tool-activity-summary"
+    },
+    {
+      "name": "search_context",
+      "description": "Search desktop-context events across app focus and captured window titles, including opted-in browser titles",
+      "group": "Search and recall",
+      "anchorId": "tool-search-context",
+      "docsUrl": "https://useminutes.app/docs/mcp/tools#tool-search-context"
+    },
+    {
+      "name": "get_moment",
+      "description": "Show the local desktop-context rewind around a linked artifact, session, or timestamp",
+      "group": "Search and recall",
+      "anchorId": "tool-get-moment",
+      "docsUrl": "https://useminutes.app/docs/mcp/tools#tool-get-moment"
     },
     {
       "name": "process_audio",

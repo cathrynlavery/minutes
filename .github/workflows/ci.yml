@@ -10,8 +10,38 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Detect which areas of the repo changed so heavy Rust/Tauri jobs can
+  # skip when a PR only touches docs, site/, MCP, skills, or scripts.
+  # The Windows Desktop Installer job alone is ~20 min; on a no-Rust PR
+  # that's pure waste. Any path touched by the `rust` filter triggers the
+  # full desktop/test/install matrix. The workflow file itself is in the
+  # filter defensively, so edits to CI always get verified end-to-end.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'tauri/**'
+              - 'crates/core/**'
+              - 'crates/cli/**'
+              - 'crates/reader/**'
+              - 'crates/whisper-guard/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -92,6 +122,8 @@ jobs:
 
   install:
     name: Install CLI (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -136,6 +168,8 @@ jobs:
     # (~5 min vs ~15 min cold) compound across every PR. release-cli.yml still
     # does the release build at tag time as the final gate.
     name: Build CLI (ubuntu-latest, default features)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -170,6 +204,8 @@ jobs:
 
   desktop_windows:
     name: Desktop App Installer (windows-latest)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -223,11 +259,42 @@ jobs:
 
       - name: Install MCP dependencies
         working-directory: crates/mcp
-        run: npm install
+        # npm/cli#4828: `npm install` sometimes skips platform-specific
+        # optional deps (rollup's Linux binary in our case) when the
+        # lockfile was generated on a different OS. Delete the lockfile
+        # so Linux-host npm re-resolves optional deps cleanly. Safe in CI
+        # because we don't commit the regenerated lockfile back.
+        run: |
+          rm -f package-lock.json
+          npm install
 
       - name: TypeScript check
         working-directory: crates/mcp
         run: npx tsc --noEmit
+
+      # Regression guard for issue #149: v0.13.0 shipped an MCPB bundle
+      # that Claude Desktop 1.3109.0 refused to unzip because the bundle
+      # contained Next.js chunks with `..` in their filenames. Pack the
+      # bundle on every push, run the static bundle check (forbidden
+      # prefixes, `..` paths, required runtime files), and smoke-test the
+      # handshake. This class of regression now fails CI before a release
+      # can ship it.
+
+      - name: Build MCP server
+        working-directory: crates/mcp
+        run: npm run build
+
+      - name: Install mcpb CLI
+        run: npm install -g @anthropic-ai/mcpb
+
+      - name: Pack MCPB bundle
+        run: mcpb pack . minutes.mcpb
+
+      - name: Static bundle check
+        run: ./scripts/check_mcpb_bundle.sh minutes.mcpb
+
+      - name: Handshake smoke test
+        run: ./scripts/smoke_mcpb_handshake.sh minutes.mcpb
 
   site_release_consistency:
     name: Site Release Link Consistency
@@ -251,3 +318,17 @@ jobs:
 
       - name: Verify .agents/ mirrors .claude/plugins/minutes/
         run: ./scripts/check-agents-sync.sh
+
+  llms_sync:
+    name: Agent Docs (llms.txt) Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify llms.txt and related agent docs are in sync with sources
+        run: node scripts/generate_llms_txt.mjs --check

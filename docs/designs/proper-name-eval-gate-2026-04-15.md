@@ -36,6 +36,13 @@ See:
 
 `tests/fixtures/proper-name-eval.example.json`
 
+The checked-in example corpus is intentionally mixed:
+
+- two narrow self-name cases that should pass cleanly
+- one broader external proper-noun case marked with
+  `allowed_failure_substrings` so maintainers can keep it in the corpus
+  without over-claiming that the current product slice solves it
+
 Each entry can specify:
 
 - `id`
@@ -46,6 +53,8 @@ Each entry can specify:
 - `title`
 - `calendar_event_title`
 - `pre_context`
+- `extra_priority_hints`
+- `extra_context_hints`
 - `attendees`
 - `identity_name`
 - `identity_aliases`
@@ -53,6 +62,13 @@ Each entry can specify:
 - `max_wer_regression`
 - `require_hinted_terms`
 - `forbid_hinted_terms`
+- `allowed_failure_substrings`
+- `disable_identity_hints`
+- `disable_attendee_hints`
+- `disable_context_hints`
+- `disable_extra_priority_hints`
+- `disable_extra_context_hints`
+- `force_extra_context_hints_for_decode`
 
 ## What the harness measures
 

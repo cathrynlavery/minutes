@@ -1,8 +1,10 @@
 use crate::config::Config;
 use crate::error::SearchError;
 use crate::markdown::{extract_field, split_frontmatter, Frontmatter, IntentKind};
+use crate::overlays;
 use chrono::Local;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -55,6 +57,10 @@ pub struct IntentResult {
     pub kind: IntentKind,
     pub what: String,
     pub who: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub who_original: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub who_provenance: Option<String>,
     pub status: String,
     pub by_date: Option<String>,
 }
@@ -66,7 +72,16 @@ pub struct ReportEntry {
     pub date: String,
     pub what: String,
     pub who: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub who_original: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub who_provenance: Option<String>,
     pub by_date: Option<String>,
+    /// Frontmatter v2: optional authority grade ("high" | "medium" | "low").
+    /// Propagated from the source decision when present. None for pre-v2
+    /// frontmatter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authority: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +89,169 @@ pub struct DecisionConflict {
     pub topic: String,
     pub latest: ReportEntry,
     pub previous: Vec<ReportEntry>,
+    /// Frontmatter v2: when the latest decision explicitly `supersedes` an
+    /// earlier one, this carries the supersession rationale. Consumers like
+    /// `/minutes-lint` should treat resolved conflicts as informational
+    /// rather than red flags. None means this is an unresolved contradiction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OwnerResolution {
+    who: Option<String>,
+    who_original: Option<String>,
+    who_provenance: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SpeakerOwner {
+    name: String,
+    provenance: String,
+}
+
+fn speaker_overlay_map(
+    frontmatter: &Frontmatter,
+    overlay_db_path: &Path,
+    meeting_path: &Path,
+) -> HashMap<String, SpeakerOwner> {
+    let mut speakers = frontmatter
+        .speaker_map
+        .iter()
+        .filter(|attr| attr.confidence == crate::diarize::Confidence::High)
+        .map(|attr| {
+            (
+                attr.speaker_label.clone(),
+                SpeakerOwner {
+                    name: attr.name.clone(),
+                    provenance: "speaker_map".to_string(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    match overlays::load_speaker_confirmations_for_meeting_at(overlay_db_path, meeting_path) {
+        Ok(confirmations) => {
+            for confirmation in confirmations {
+                speakers.insert(
+                    confirmation.speaker_label,
+                    SpeakerOwner {
+                        name: confirmation.name,
+                        provenance: "speaker overlay".to_string(),
+                    },
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                path = %meeting_path.display(),
+                error = %error,
+                "failed to load speaker overlays for reporting"
+            );
+        }
+    }
+
+    speakers
+}
+
+fn resolve_owner_with_speaker_overlays(
+    who: Option<&str>,
+    speaker_overlays: &HashMap<String, SpeakerOwner>,
+) -> OwnerResolution {
+    let Some(raw) = who.map(str::trim).filter(|value| !value.is_empty()) else {
+        return OwnerResolution::default();
+    };
+
+    if let Some(speaker) = speaker_overlays.get(raw) {
+        return OwnerResolution {
+            who: Some(speaker.name.clone()),
+            who_original: Some(raw.to_string()),
+            who_provenance: Some(speaker.provenance.clone()),
+        };
+    }
+
+    OwnerResolution {
+        who: Some(raw.to_string()),
+        who_original: None,
+        who_provenance: None,
+    }
+}
+
+fn owner_matches(resolution: &OwnerResolution, owner_lower: &str) -> bool {
+    resolution
+        .who
+        .as_ref()
+        .is_some_and(|who| who.to_lowercase().contains(owner_lower))
+        || resolution
+            .who_original
+            .as_ref()
+            .is_some_and(|who| who.to_lowercase().contains(owner_lower))
+}
+
+fn explicit_supersedes_resolution(
+    latest_supersedes: Option<&str>,
+    conflicting_previous: &[ReportEntry],
+) -> Option<String> {
+    let value = latest_supersedes
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    // `supersedes` is a free-text pointer. It's reliable for a simple
+    // one-new-decision-replaces-one-prior-decision case, but not strong enough
+    // to auto-resolve an entire topic arc when multiple contradictory prior
+    // decisions remain. Stay conservative so `/minutes-lint` doesn't hide a
+    // still-live conflict as "resolved".
+    if conflicting_previous.len() != 1 {
+        return None;
+    }
+
+    if !supersedes_references_previous_decision(value, &conflicting_previous[0]) {
+        return None;
+    }
+
+    Some(format!("Resolved by explicit supersedes: {}", value))
+}
+
+fn supersedes_references_previous_decision(supersedes: &str, previous: &ReportEntry) -> bool {
+    let supersedes_norm = normalize_decision_value(supersedes);
+    if supersedes_norm.is_empty() {
+        return false;
+    }
+
+    let previous_date = previous
+        .date
+        .split('T')
+        .next()
+        .unwrap_or(previous.date.as_str());
+    let previous_date_norm = normalize_decision_value(previous_date);
+    if !previous_date_norm.is_empty() && supersedes_norm.contains(&previous_date_norm) {
+        return true;
+    }
+
+    let previous_title_norm = normalize_decision_value(&previous.title);
+    if previous_title_norm.len() >= 4 && supersedes_norm.contains(&previous_title_norm) {
+        return true;
+    }
+
+    let previous_what_norm = normalize_decision_value(&previous.what);
+    if previous_what_norm.is_empty() {
+        return false;
+    }
+
+    let supersedes_tokens = supersedes_norm
+        .split_whitespace()
+        .filter(|token| token.len() >= 4)
+        .collect::<std::collections::HashSet<_>>();
+    let previous_tokens = previous_what_norm
+        .split_whitespace()
+        .filter(|token| token.len() >= 4)
+        .collect::<std::collections::HashSet<_>>();
+
+    supersedes_tokens
+        .intersection(&previous_tokens)
+        .take(2)
+        .count()
+        >= 2
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,6 +353,7 @@ pub fn cross_meeting_research(
     let mut recent_meetings = Vec::new();
     let mut topic_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
+    let overlay_db_path = overlays::default_db_path();
 
     for entry in walk_meeting_files(dir) {
         let path = entry.path();
@@ -204,6 +383,7 @@ pub fn cross_meeting_research(
             crate::markdown::ContentType::Memo => "memo".to_string(),
             crate::markdown::ContentType::Dictation => "dictation".to_string(),
         };
+        let speaker_overlays = speaker_overlay_map(&frontmatter, &overlay_db_path, path);
         if let Some(ref type_filter) = filters.content_type {
             if content_type != *type_filter {
                 continue;
@@ -257,16 +437,22 @@ pub fn cross_meeting_research(
                     date: date.clone(),
                     what: decision.text.clone(),
                     who: None,
+                    who_original: None,
+                    who_provenance: None,
                     by_date: None,
+                    authority: decision.authority.clone(),
                 });
             }
         }
 
         for intent in &frontmatter.intents {
+            let owner_resolution =
+                resolve_owner_with_speaker_overlays(intent.who.as_deref(), &speaker_overlays);
             let haystack = format!(
-                "{} {} {} {}",
+                "{} {} {} {} {}",
                 intent.what,
-                intent.who.clone().unwrap_or_default(),
+                owner_resolution.who.clone().unwrap_or_default(),
+                owner_resolution.who_original.clone().unwrap_or_default(),
                 intent.status,
                 intent.by_date.clone().unwrap_or_default()
             )
@@ -289,7 +475,9 @@ pub fn cross_meeting_research(
                     content_type: content_type.clone(),
                     kind: intent.kind,
                     what: intent.what.clone(),
-                    who: intent.who.clone(),
+                    who: owner_resolution.who.clone(),
+                    who_original: owner_resolution.who_original.clone(),
+                    who_provenance: owner_resolution.who_provenance.clone(),
                     status: intent.status.clone(),
                     by_date: intent.by_date.clone(),
                 });
@@ -366,6 +554,15 @@ pub fn search_intents(
     config: &Config,
     filters: &SearchFilters,
 ) -> Result<Vec<IntentResult>, SearchError> {
+    search_intents_at(query, config, filters, &overlays::default_db_path())
+}
+
+fn search_intents_at(
+    query: &str,
+    config: &Config,
+    filters: &SearchFilters,
+    overlay_db_path: &Path,
+) -> Result<Vec<IntentResult>, SearchError> {
     let dir = &config.output_dir;
     if !dir.exists() {
         return Err(SearchError::DirNotFound(dir.display().to_string()));
@@ -376,7 +573,7 @@ pub fn search_intents(
 
     for entry in walk_meeting_files(dir) {
         let path = entry.path();
-        match process_intent_file(path, &query_lower, filters) {
+        match process_intent_file(path, &query_lower, filters, overlay_db_path) {
             Ok(mut file_results) => results.append(&mut file_results),
             Err(e) => {
                 tracing::warn!(path = %path.display(), error = %e, "skipping file in intent search");
@@ -392,6 +589,20 @@ pub fn consistency_report(
     config: &Config,
     owner: Option<&str>,
     stale_after_days: i64,
+) -> Result<ConsistencyReport, SearchError> {
+    consistency_report_at(
+        config,
+        owner,
+        stale_after_days,
+        &overlays::default_db_path(),
+    )
+}
+
+fn consistency_report_at(
+    config: &Config,
+    owner: Option<&str>,
+    stale_after_days: i64,
+    overlay_db_path: &Path,
 ) -> Result<ConsistencyReport, SearchError> {
     let dir = &config.output_dir;
     if !dir.exists() {
@@ -426,11 +637,16 @@ pub fn consistency_report(
 
     let owner_lower = owner.map(|value| value.to_lowercase());
     let now = Local::now();
-    let mut decision_groups: std::collections::HashMap<String, Vec<ReportEntry>> =
+    // Each entry carries its source decision's `supersedes` value alongside the
+    // ReportEntry so we can detect documented supersessions when the topic
+    // group has conflicting decisions.
+    let mut decision_groups: std::collections::HashMap<String, Vec<(ReportEntry, Option<String>)>> =
         std::collections::HashMap::new();
     let mut stale_commitments = Vec::new();
 
     for (path, frontmatter) in &parsed_frontmatters {
+        let speaker_overlays = speaker_overlay_map(frontmatter, overlay_db_path, path);
+
         for decision in &frontmatter.decisions {
             let topic = decision
                 .topic
@@ -442,14 +658,20 @@ pub fn consistency_report(
                 continue;
             }
 
-            decision_groups.entry(topic).or_default().push(ReportEntry {
-                path: path.clone(),
-                title: frontmatter.title.clone(),
-                date: frontmatter.date.to_rfc3339(),
-                what: decision.text.clone(),
-                who: None,
-                by_date: None,
-            });
+            decision_groups.entry(topic).or_default().push((
+                ReportEntry {
+                    path: path.clone(),
+                    title: frontmatter.title.clone(),
+                    date: frontmatter.date.to_rfc3339(),
+                    what: decision.text.clone(),
+                    who: None,
+                    who_original: None,
+                    who_provenance: None,
+                    by_date: None,
+                    authority: decision.authority.clone(),
+                },
+                decision.supersedes.clone(),
+            ));
         }
 
         for intent in &frontmatter.intents {
@@ -460,13 +682,10 @@ pub fn consistency_report(
                 continue;
             }
 
+            let owner_resolution =
+                resolve_owner_with_speaker_overlays(intent.who.as_deref(), &speaker_overlays);
             if let Some(ref owner_lower) = owner_lower {
-                let owner_match = intent
-                    .who
-                    .as_ref()
-                    .map(|who| who.to_lowercase().contains(owner_lower))
-                    .unwrap_or(false);
-                if !owner_match {
+                if !owner_matches(&owner_resolution, owner_lower) {
                     continue;
                 }
             }
@@ -519,8 +738,11 @@ pub fn consistency_report(
                         title: frontmatter.title.clone(),
                         date: frontmatter.date.to_rfc3339(),
                         what: intent.what.clone(),
-                        who: intent.who.clone(),
+                        who: owner_resolution.who.clone(),
+                        who_original: owner_resolution.who_original.clone(),
+                        who_provenance: owner_resolution.who_provenance.clone(),
                         by_date: intent.by_date.clone(),
+                        authority: None,
                     },
                     meetings_since,
                     age_days,
@@ -533,18 +755,23 @@ pub fn consistency_report(
 
     let mut decision_conflicts = Vec::new();
     for (topic, mut entries) in decision_groups {
-        entries.sort_by(|a, b| a.date.cmp(&b.date));
+        entries.sort_by(|a, b| a.0.date.cmp(&b.0.date));
         let mut unique_values = std::collections::HashSet::new();
-        for entry in &entries {
+        for (entry, _) in &entries {
             unique_values.insert(normalize_decision_value(&entry.what));
         }
 
         if unique_values.len() > 1 {
-            let latest = entries.pop().expect("entries not empty");
+            let (latest_entry, latest_supersedes) = entries.pop().expect("entries not empty");
+            let previous_entries: Vec<ReportEntry> =
+                entries.into_iter().map(|(entry, _)| entry).collect();
+            let resolution =
+                explicit_supersedes_resolution(latest_supersedes.as_deref(), &previous_entries);
             decision_conflicts.push(DecisionConflict {
                 topic,
-                latest,
-                previous: entries,
+                latest: latest_entry,
+                previous: previous_entries,
+                resolution,
             });
         }
     }
@@ -566,6 +793,7 @@ pub fn person_profile(config: &Config, person: &str) -> Result<PersonProfile, Se
 
     let person_lower = person.to_lowercase();
     let mut parsed_frontmatters = Vec::new();
+    let overlay_db_path = overlays::default_db_path();
     for entry in walk_meeting_files(dir) {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {
@@ -604,6 +832,7 @@ pub fn person_profile(config: &Config, person: &str) -> Result<PersonProfile, Se
             crate::markdown::ContentType::Dictation => "dictation".to_string(),
         };
         let date = frontmatter.date.to_rfc3339();
+        let speaker_overlays = speaker_overlay_map(&frontmatter, &overlay_db_path, &path);
 
         let attendee_match = frontmatter
             .attendees
@@ -621,11 +850,9 @@ pub fn person_profile(config: &Config, person: &str) -> Result<PersonProfile, Se
                         .any(|alias| alias.to_lowercase().contains(&person_lower))
             });
         let owned_intent_match = frontmatter.intents.iter().any(|intent| {
-            intent
-                .who
-                .as_ref()
-                .map(|who| who.to_lowercase().contains(&person_lower))
-                .unwrap_or(false)
+            let owner_resolution =
+                resolve_owner_with_speaker_overlays(intent.who.as_deref(), &speaker_overlays);
+            owner_matches(&owner_resolution, &person_lower)
         });
 
         if !(attendee_match || linked_person_match || owned_intent_match) {
@@ -646,7 +873,10 @@ pub fn person_profile(config: &Config, person: &str) -> Result<PersonProfile, Se
                 date: date.clone(),
                 what: decision.text.clone(),
                 who: None,
+                who_original: None,
+                who_provenance: None,
                 by_date: None,
+                authority: decision.authority.clone(),
             });
 
             let topic = decision
@@ -659,11 +889,9 @@ pub fn person_profile(config: &Config, person: &str) -> Result<PersonProfile, Se
         }
 
         for intent in &frontmatter.intents {
-            let owned_by_person = intent
-                .who
-                .as_ref()
-                .map(|who| who.to_lowercase().contains(&person_lower))
-                .unwrap_or(false);
+            let owner_resolution =
+                resolve_owner_with_speaker_overlays(intent.who.as_deref(), &speaker_overlays);
+            let owned_by_person = owner_matches(&owner_resolution, &person_lower);
 
             if owned_by_person
                 && intent.status == "open"
@@ -676,7 +904,9 @@ pub fn person_profile(config: &Config, person: &str) -> Result<PersonProfile, Se
                     content_type: content_type.clone(),
                     kind: intent.kind,
                     what: intent.what.clone(),
-                    who: intent.who.clone(),
+                    who: owner_resolution.who.clone(),
+                    who_original: owner_resolution.who_original.clone(),
+                    who_provenance: owner_resolution.who_provenance.clone(),
                     status: intent.status.clone(),
                     by_date: intent.by_date.clone(),
                 });
@@ -773,6 +1003,7 @@ fn process_intent_file(
     path: &Path,
     query: &str,
     filters: &SearchFilters,
+    overlay_db_path: &Path,
 ) -> Result<Vec<IntentResult>, SearchError> {
     let content = std::fs::read_to_string(path)?;
     let (frontmatter_str, _) = split_frontmatter(&content);
@@ -820,6 +1051,7 @@ fn process_intent_file(
         }
     }
 
+    let speaker_overlays = speaker_overlay_map(&frontmatter, overlay_db_path, path);
     let mut results = Vec::new();
     for intent in frontmatter.intents {
         if let Some(kind) = filters.intent_kind {
@@ -827,23 +1059,21 @@ fn process_intent_file(
                 continue;
             }
         }
+        let owner_resolution =
+            resolve_owner_with_speaker_overlays(intent.who.as_deref(), &speaker_overlays);
         if let Some(ref owner) = filters.owner {
             let owner_lower = owner.to_lowercase();
-            let owner_match = intent
-                .who
-                .as_ref()
-                .map(|who| who.to_lowercase().contains(&owner_lower))
-                .unwrap_or(false);
-            if !owner_match {
+            if !owner_matches(&owner_resolution, &owner_lower) {
                 continue;
             }
         }
 
         let haystack = format!(
-            "{} {} {} {} {}",
+            "{} {} {} {} {} {}",
             frontmatter.title,
             intent.what,
-            intent.who.clone().unwrap_or_default(),
+            owner_resolution.who.clone().unwrap_or_default(),
+            owner_resolution.who_original.clone().unwrap_or_default(),
             intent.status,
             intent.by_date.clone().unwrap_or_default()
         )
@@ -860,7 +1090,9 @@ fn process_intent_file(
             content_type: content_type.clone(),
             kind: intent.kind,
             what: intent.what,
-            who: intent.who,
+            who: owner_resolution.who,
+            who_original: owner_resolution.who_original,
+            who_provenance: owner_resolution.who_provenance,
             status: intent.status,
             by_date: intent.by_date,
         });
@@ -1205,9 +1437,14 @@ mod tests {
             recorded_by: None,
         };
 
-        let results =
-            process_intent_file(&dir.path().join("2026-03-17-test.md"), "pricing", &filters)
-                .unwrap();
+        let overlay_db = dir.path().join("overlays.db");
+        let results = process_intent_file(
+            &dir.path().join("2026-03-17-test.md"),
+            "pricing",
+            &filters,
+            &overlay_db,
+        )
+        .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].title, "Pricing Review");
         assert!(results
@@ -1236,11 +1473,61 @@ mod tests {
             recorded_by: None,
         };
 
-        let results =
-            process_intent_file(&dir.path().join("2026-03-17-test.md"), "", &filters).unwrap();
+        let overlay_db = dir.path().join("overlays.db");
+        let results = process_intent_file(
+            &dir.path().join("2026-03-17-test.md"),
+            "",
+            &filters,
+            &overlay_db,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].kind, IntentKind::Commitment);
         assert_eq!(results[0].who.as_deref(), Some("sarah"));
+    }
+
+    #[test]
+    fn search_intents_filters_owner_through_speaker_overlay() {
+        let dir = TempDir::new().unwrap();
+        let meeting = dir.path().join("2026-03-17-test.md");
+        create_test_file(
+            dir.path(),
+            "2026-03-17-test.md",
+            "---\ntitle: Pricing Review\ntype: meeting\ndate: 2026-03-17T12:00:00-07:00\nduration: 42m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions: []\nspeaker_map:\n  - speaker_label: SPEAKER_0\n    name: Unknown Speaker\n    confidence: medium\n    source: llm\nintents:\n  - kind: action-item\n    what: Send pricing doc\n    who: SPEAKER_0\n    status: open\n    by_date: Friday\n---\n\n## Transcript\n\n[SPEAKER_0 0:00] I'll send pricing.\n",
+        );
+
+        let overlay_db = dir.path().join("overlays.db");
+        crate::overlays::write_speaker_confirmation_at(
+            &overlay_db,
+            &meeting,
+            "SPEAKER_0",
+            "Alex Kim",
+            Some("Unknown Speaker"),
+            Some("test owner resolution"),
+        )
+        .unwrap();
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let filters = SearchFilters {
+            content_type: None,
+            since: None,
+            attendee: None,
+            intent_kind: Some(IntentKind::ActionItem),
+            owner: Some("alex".into()),
+            recorded_by: None,
+        };
+
+        let results = search_intents_at("", &config, &filters, &overlay_db).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].who.as_deref(), Some("Alex Kim"));
+        assert_eq!(results[0].who_original.as_deref(), Some("SPEAKER_0"));
+        assert_eq!(
+            results[0].who_provenance.as_deref(),
+            Some("speaker overlay")
+        );
     }
 
     #[test]
@@ -1273,12 +1560,14 @@ mod tests {
             &dir.path().join("2026-03-17-test.md"),
             "",
             &matching_filters,
+            &dir.path().join("overlays.db"),
         )
         .unwrap();
         let non_matching_results = process_intent_file(
             &dir.path().join("2026-03-17-test.md"),
             "",
             &non_matching_filters,
+            &dir.path().join("overlays.db"),
         )
         .unwrap();
 
@@ -1344,6 +1633,149 @@ mod tests {
                 .map(|meeting| meeting.title.as_str()),
             Some("Another Follow-up")
         );
+    }
+
+    #[test]
+    fn consistency_report_resolves_stale_owner_through_speaker_overlay() {
+        let dir = TempDir::new().unwrap();
+        let meeting = dir.path().join("2020-03-01-a.md");
+        create_test_file(
+            dir.path(),
+            "2020-03-01-a.md",
+            "---\ntitle: Follow-up Owner\ntype: meeting\ndate: 2020-03-01T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions: []\nspeaker_map:\n  - speaker_label: SPEAKER_0\n    name: Unknown Speaker\n    confidence: medium\n    source: llm\nintents:\n  - kind: commitment\n    what: Send the rollout memo\n    who: SPEAKER_0\n    status: open\n    by_date: March 8\n---\n\n## Transcript\n\n[SPEAKER_0 0:00] I'll send it.\n",
+        );
+
+        let overlay_db = dir.path().join("overlays.db");
+        crate::overlays::write_speaker_confirmation_at(
+            &overlay_db,
+            &meeting,
+            "SPEAKER_0",
+            "Alex Kim",
+            Some("Unknown Speaker"),
+            Some("test consistency owner resolution"),
+        )
+        .unwrap();
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let report = consistency_report_at(&config, Some("alex"), 7, &overlay_db).unwrap();
+
+        assert_eq!(report.stale_commitments.len(), 1);
+        let entry = &report.stale_commitments[0].entry;
+        assert_eq!(entry.who.as_deref(), Some("Alex Kim"));
+        assert_eq!(entry.who_original.as_deref(), Some("SPEAKER_0"));
+        assert_eq!(entry.who_provenance.as_deref(), Some("speaker overlay"));
+    }
+
+    #[test]
+    fn consistency_report_marks_conflict_resolved_when_supersedes_is_set() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-02-28-a.md",
+            "---\ntitle: Pricing Strategy\ntype: meeting\ndate: 2026-02-28T10:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Launch monthly billing for consultants\n    topic: pricing\n    authority: high\nintents: []\n---\n\n## Transcript\n\nDecision A.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-25-b.md",
+            "---\ntitle: Pricing Reversal\ntype: meeting\ndate: 2026-03-25T10:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Revert to annual-only billing across all segments\n    topic: pricing\n    authority: high\n    supersedes: \"2026-02-28 monthly billing decision\"\nintents: []\n---\n\n## Transcript\n\nDecision B reverses A.\n",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let report = consistency_report(&config, None, 7).unwrap();
+        assert_eq!(report.decision_conflicts.len(), 1);
+        let conflict = &report.decision_conflicts[0];
+        assert_eq!(conflict.topic, "pricing");
+        assert!(conflict.resolution.is_some());
+        assert!(conflict.resolution.as_ref().unwrap().contains("2026-02-28"));
+        assert_eq!(conflict.latest.authority.as_deref(), Some("high"));
+        assert_eq!(conflict.previous[0].authority.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn consistency_report_leaves_resolution_none_without_supersedes() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-01-a.md",
+            "---\ntitle: A\ntype: meeting\ndate: 2026-03-01T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Launch monthly billing\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nA.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-12-b.md",
+            "---\ntitle: B\ntype: meeting\ndate: 2026-03-12T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Stay on annual billing\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nB without supersedes.\n",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let report = consistency_report(&config, None, 7).unwrap();
+        assert_eq!(report.decision_conflicts.len(), 1);
+        assert!(report.decision_conflicts[0].resolution.is_none());
+        assert!(report.decision_conflicts[0].latest.authority.is_none());
+    }
+
+    #[test]
+    fn consistency_report_does_not_mark_resolution_when_other_conflicts_remain() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-01-a.md",
+            "---\ntitle: A\ntype: meeting\ndate: 2026-03-01T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Launch monthly billing\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nA.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-12-b.md",
+            "---\ntitle: B\ntype: meeting\ndate: 2026-03-12T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Stay annual only\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nB.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-25-c.md",
+            "---\ntitle: C\ntype: meeting\ndate: 2026-03-25T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Test monthly billing for consultants only\n    topic: pricing\n    supersedes: \"2026-03-01 monthly billing decision\"\nintents: []\n---\n\n## Transcript\n\nC.\n",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let report = consistency_report(&config, None, 7).unwrap();
+        assert_eq!(report.decision_conflicts.len(), 1);
+        let conflict = &report.decision_conflicts[0];
+        assert_eq!(conflict.previous.len(), 2);
+        assert!(conflict.resolution.is_none());
+    }
+
+    #[test]
+    fn consistency_report_requires_supersedes_to_reference_the_prior_decision() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "2026-03-01-a.md",
+            "---\ntitle: A\ntype: meeting\ndate: 2026-03-01T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Launch monthly billing\n    topic: pricing\nintents: []\n---\n\n## Transcript\n\nA.\n",
+        );
+        create_test_file(
+            dir.path(),
+            "2026-03-12-b.md",
+            "---\ntitle: B\ntype: meeting\ndate: 2026-03-12T12:00:00-07:00\nduration: 30m\nstatus: complete\ntags: []\nattendees: []\npeople: []\naction_items: []\ndecisions:\n  - text: Stay annual only\n    topic: pricing\n    supersedes: \"some old plan\"\nintents: []\n---\n\n## Transcript\n\nB.\n",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+
+        let report = consistency_report(&config, None, 7).unwrap();
+        assert_eq!(report.decision_conflicts.len(), 1);
+        assert!(report.decision_conflicts[0].resolution.is_none());
     }
 
     #[test]

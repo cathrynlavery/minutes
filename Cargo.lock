@@ -3117,6 +3117,7 @@ dependencies = [
  "notify-rust",
  "portable-pty",
  "reqwest 0.12.28",
+ "security-framework",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3130,6 +3131,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tempfile",
+ "tracing",
  "ureq",
  "walkdir",
  "which",
@@ -3138,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "minutes-cli"
-version = "0.13.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3164,7 +3166,7 @@ dependencies = [
 
 [[package]]
 name = "minutes-core"
-version = "0.13.0"
+version = "0.14.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3177,6 +3179,8 @@ dependencies = [
  "ndarray",
  "nnnoiseless",
  "notify",
+ "objc2",
+ "objc2-app-kit",
  "ort",
  "pyannote-rs",
  "rusqlite",
@@ -3195,11 +3199,12 @@ dependencies = [
  "whisper-guard",
  "whisper-rs",
  "windows-sys 0.59.0",
+ "zbus",
 ]
 
 [[package]]
 name = "minutes-reader"
-version = "0.13.0"
+version = "0.14.1"
 dependencies = [
  "chrono",
  "schemars 1.2.1",
@@ -3534,6 +3539,7 @@ checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.11.0",
  "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",

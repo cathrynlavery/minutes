@@ -1,12 +1,63 @@
 use chrono::{Days, Local};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
 const DEMO_TAG: &str = "minutes-demo-seed";
 const SNOWCRASH_TAG: &str = "snow-crash";
+const MCP_DEMO_FIXTURES: &[(&str, &str)] = &[
+    (
+        "2026-02-28-pricing-strategy.md",
+        include_str!("../../mcp/fixtures/demo/2026-02-28-pricing-strategy.md"),
+    ),
+    (
+        "2026-03-04-northwind-call.md",
+        include_str!("../../mcp/fixtures/demo/2026-03-04-northwind-call.md"),
+    ),
+    (
+        "2026-03-11-eng-standup.md",
+        include_str!("../../mcp/fixtures/demo/2026-03-11-eng-standup.md"),
+    ),
+    (
+        "2026-03-25-pricing-reversal.md",
+        include_str!("../../mcp/fixtures/demo/2026-03-25-pricing-reversal.md"),
+    ),
+    (
+        "2026-04-17-prioritization.md",
+        include_str!("../../mcp/fixtures/demo/2026-04-17-prioritization.md"),
+    ),
+];
+
+pub struct McpDemoInstallResult {
+    pub demo_dir: PathBuf,
+    pub total_fixtures: usize,
+    pub updated_fixtures: usize,
+}
+
+pub fn install_mcp_demo_fixtures(demo_dir: &Path) -> anyhow::Result<McpDemoInstallResult> {
+    fs::create_dir_all(demo_dir)?;
+
+    let mut updated_fixtures = 0usize;
+    for (name, content) in MCP_DEMO_FIXTURES {
+        let target = demo_dir.join(name);
+        let needs_write = match fs::read_to_string(&target) {
+            Ok(existing) => existing != *content,
+            Err(_) => true,
+        };
+        if needs_write {
+            fs::write(&target, content)?;
+            updated_fixtures += 1;
+        }
+    }
+
+    Ok(McpDemoInstallResult {
+        demo_dir: demo_dir.to_path_buf(),
+        total_fixtures: MCP_DEMO_FIXTURES.len(),
+        updated_fixtures,
+    })
+}
 
 // ── ANSI escape helpers ────────────────────────────────────────
 

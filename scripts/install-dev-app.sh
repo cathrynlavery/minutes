@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 export CXXFLAGS="${CXXFLAGS:-"-I$(xcrun --show-sdk-path)/usr/include/c++/v1"}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+MINUTES_BUILD_FEATURES="${MINUTES_BUILD_FEATURES:-parakeet,metal}"
 
 DEV_CONFIG="tauri/src-tauri/tauri.dev.conf.json"
 DEV_PRODUCT_NAME="Minutes Dev"
@@ -14,6 +15,25 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"
 INSTALL_APP="${INSTALL_DIR}/${DEV_PRODUCT_NAME}.app"
 SIGNING_IDENTITY="${MINUTES_DEV_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
 SIGN_MODE="adhoc"
+
+run_with_ort_retry() {
+  local _build_tmp
+  _build_tmp=$(mktemp)
+  if ! "$@" 2>&1 | tee "$_build_tmp"; then
+    if grep -q "library 'clang_rt\." "$_build_tmp"; then
+      echo ""
+      echo "  Stale ort-sys clang runtime path (Xcode/CLT upgrade detected)."
+      echo "  Cleaning stale build cache and retrying..."
+      rm -rf target/*/build/ort-sys-*
+      rm -f "$_build_tmp"
+      "$@"
+      return
+    fi
+    rm -f "$_build_tmp"
+    return 1
+  fi
+  rm -f "$_build_tmp"
+}
 
 OPEN_AFTER_INSTALL=1
 for arg in "$@"; do
@@ -39,25 +59,23 @@ if [[ -n "$SIGNING_IDENTITY" ]]; then
 fi
 
 echo "=== Building CLI (release) ==="
-cargo build --release -p minutes-cli --features metal
-
-echo "=== Building calendar helper ==="
-swiftc -O \
-  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
-  -Xlinker scripts/calendar-helper-Info.plist \
-  scripts/calendar-events.swift -o target/release/calendar-events
+run_with_ort_retry cargo build --release -p minutes-cli --features "$MINUTES_BUILD_FEATURES"
 
 echo "=== Building ${DEV_PRODUCT_NAME}.app ==="
-cargo tauri build --bundles app --config "$DEV_CONFIG" --features parakeet,metal --no-sign
-
-echo "=== Embedding calendar helper in dev bundle ==="
-APP_RESOURCES="${BUILD_APP}/Contents/Resources"
-mkdir -p "$APP_RESOURCES"
-cp -f target/release/calendar-events "$APP_RESOURCES/calendar-events"
-
+# The calendar-events Swift helper is compiled and staged into
+# tauri/src-tauri/resources/ by tauri/src-tauri/build.rs, and Tauri bundles it
+# into the .app automatically via tauri.conf.json.
+run_with_ort_retry cargo tauri build --bundles app --config "$DEV_CONFIG" --features "$MINUTES_BUILD_FEATURES" --no-sign
 if [[ "$SIGN_MODE" == "identity" ]]; then
+  echo "=== Pre-signing nested executables with configured identity ==="
+  while IFS= read -r nested_executable; do
+    codesign --force --options runtime --timestamp \
+      --sign "$SIGNING_IDENTITY" \
+      "$nested_executable"
+  done < <(find "$BUILD_APP/Contents/MacOS" -maxdepth 1 -type f \( -perm -100 -o -perm -010 -o -perm -001 \))
+
   echo "=== Signing ${DEV_PRODUCT_NAME}.app with configured identity ==="
-  codesign --force --deep --options runtime \
+  codesign --force --deep --options runtime --timestamp \
     --entitlements tauri/src-tauri/entitlements.plist \
     --sign "$SIGNING_IDENTITY" \
     "$BUILD_APP"
@@ -83,6 +101,7 @@ set -e
 echo ""
 echo "Installed app: $INSTALL_APP"
 echo "Bundle id: com.useminutes.desktop.dev"
+echo "Build features: $MINUTES_BUILD_FEATURES"
 echo "Signing mode: $SIGN_MODE"
 echo "Hotkey diagnostic exit code: $DIAG_EXIT"
 echo "  0 = CGEventTap started successfully"

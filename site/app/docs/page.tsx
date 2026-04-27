@@ -33,6 +33,12 @@ const docsSections = [
         blurb:
           "Long-form machine-readable agent reference with the canonical public surfaces.",
       },
+      {
+        title: "Proof",
+        href: "/proof",
+        blurb:
+          "Current proof artifacts, eval caveats, and the milestones still needed before stronger claims are fair.",
+      },
     ],
   },
   {
@@ -55,6 +61,12 @@ const docsSections = [
         href: "/docs/errors",
         blurb:
           "Generated reference for stable Minutes core errors and platform-specific variants.",
+      },
+      {
+        title: "Adding agent integrations",
+        href: "/docs/agent-integrations",
+        blurb:
+          "Checklist for deciding whether a new agent needs files, MCP, portable skills, a host-specific surface, or agent_command support.",
       },
     ],
   },

@@ -1,6 +1,9 @@
 use anyhow::Result;
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
+use minutes_core::apple_speech::{
+    self, AppleSpeechBenchmarkArtifactPaths, AppleSpeechBenchmarkRequest,
+};
 use minutes_core::autoresearch::{
     self, DecodeHintEvalArtifactPaths, DecodeHintEvalComparisonArtifactPaths,
     DecodeHintEvalComparisonRequest, DecodeHintEvalOptions, DecodeHintEvalRequest,
@@ -43,6 +46,41 @@ struct JsonEnvelope<T: Serialize> {
     command: String,
     data: T,
     meta: JsonMeta,
+}
+
+#[derive(Serialize)]
+struct ContextSummaryOutput {
+    session: Option<minutes_core::context_store::ContextSession>,
+    links: Vec<minutes_core::context_store::ContextLink>,
+    events: Vec<minutes_core::context_store::ContextEvent>,
+    top_apps: Vec<ContextCount>,
+    top_windows: Vec<ContextCount>,
+    window: ContextWindow,
+}
+
+#[derive(Serialize)]
+struct ContextSearchOutput {
+    results: Vec<minutes_core::context_store::ContextEvent>,
+}
+
+#[derive(Serialize)]
+struct ContextMomentOutput {
+    session: Option<minutes_core::context_store::ContextSession>,
+    links: Vec<minutes_core::context_store::ContextLink>,
+    events: Vec<minutes_core::context_store::ContextEvent>,
+    window: ContextWindow,
+}
+
+#[derive(Serialize)]
+struct ContextWindow {
+    start: String,
+    end: String,
+}
+
+#[derive(Serialize)]
+struct ContextCount {
+    name: String,
+    count: usize,
 }
 
 #[derive(Serialize)]
@@ -196,6 +234,21 @@ enum Commands {
         /// output and process it with full diagnostic logging.
         #[arg(long, value_name = "WAV_FILE")]
         diagnose: Option<PathBuf>,
+
+        /// Start with the microphone muted. System audio still captures.
+        /// Useful for passive attendance (webinars, all-hands). Toggle
+        /// mid-recording with `minutes mic-toggle`.
+        #[arg(long)]
+        mute_mic: bool,
+    },
+
+    /// Toggle microphone mute for an active dual-source recording. System
+    /// audio continues capturing; only the mic stream is silenced.
+    MicToggle {
+        /// Force a specific state instead of toggling. Use "on" to mute
+        /// or "off" to unmute; omit to flip the current state.
+        #[arg(long, value_parser = ["on", "off"])]
+        state: Option<String>,
     },
 
     /// Add a note to the current recording
@@ -281,6 +334,24 @@ enum Commands {
     Autoresearch {
         #[command(subcommand)]
         action: AutoresearchAction,
+    },
+
+    /// Evaluate Apple's SpeechAnalyzer stack on macOS.
+    AppleSpeech {
+        #[command(subcommand)]
+        action: AppleSpeechAction,
+    },
+
+    /// Print Minutes CLI capabilities as JSON for MCP feature detection.
+    ///
+    /// Emits a stable schema describing what this CLI build supports. The
+    /// MCP server probes this at boot (see #183 phase 2) and uses the
+    /// feature flags to decide which tools to expose without comparing
+    /// version strings.
+    Capabilities {
+        /// Output raw JSON instead of human-readable text
+        #[arg(long)]
+        json: bool,
     },
 
     /// Check if a recording is in progress
@@ -509,6 +580,10 @@ enum Commands {
         /// Parakeet model to download: tdt-ctc-110m, tdt-600m
         #[arg(long, default_value = "tdt-600m")]
         parakeet_model: String,
+
+        /// Install the bundled 5-meeting fixture corpus for demoing search, graph, and MCP flows
+        #[arg(long)]
+        demo: bool,
     },
 
     /// Inspect or register the meetings directory as a QMD collection
@@ -610,10 +685,18 @@ enum Commands {
     /// Output the JSON Schema for the meeting frontmatter format
     Schema,
 
-    /// Get a meeting by filename slug
+    /// Get a meeting by filename slug or path
     Get {
-        /// Filename slug to match (e.g., "2026-03-17-advisor-call")
+        /// Filename slug (e.g., "2026-03-17-advisor-call") or full meeting path
         slug: String,
+
+        /// Emit structured JSON with overlay-applied speaker_map instead of raw markdown
+        #[arg(long)]
+        json: bool,
+
+        /// When used with --json, omit raw_markdown to keep payloads small
+        #[arg(long)]
+        compact_json: bool,
     },
 
     /// Show recent events from the event log
@@ -652,6 +735,12 @@ enum Commands {
         /// Only show actionable insights (Strong or Explicit confidence)
         #[arg(short, long)]
         actionable: bool,
+    },
+
+    /// Query meeting-adjacent desktop context from the local sidecar store
+    Context {
+        #[command(subcommand)]
+        action: ContextAction,
     },
 
     /// Import meetings from another app (e.g., Granola)
@@ -846,6 +935,98 @@ enum AutoresearchAction {
     },
 }
 
+#[derive(Subcommand)]
+enum AppleSpeechAction {
+    /// Probe Apple speech capability and asset readiness on the current Mac.
+    Capabilities {
+        /// Print the full JSON capability payload to stdout
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run the Apple-vs-current benchmark corpus and write artifacts.
+    Benchmark {
+        /// Path to the benchmark corpus manifest JSON
+        #[arg(long)]
+        corpus: PathBuf,
+
+        /// Output root for local research artifacts (defaults to ~/.minutes/research/apple-speech)
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Print the full JSON report envelope to stdout
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ContextAction {
+    /// Summarize desktop context for a session, artifact, or explicit time window
+    ActivitySummary {
+        /// Explicit context session id
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Artifact path already linked to a context session
+        #[arg(long)]
+        path: Option<PathBuf>,
+
+        /// Window start (RFC3339 timestamp)
+        #[arg(long)]
+        start: Option<String>,
+
+        /// Window end (RFC3339 timestamp)
+        #[arg(long)]
+        end: Option<String>,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Search app/window/browser-title context events
+    Search {
+        /// Text query
+        query: String,
+
+        /// Maximum number of results
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show the local rewind around a session, linked artifact, or timestamp
+    GetMoment {
+        /// Explicit context session id
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Linked artifact path
+        #[arg(long)]
+        path: Option<PathBuf>,
+
+        /// Explicit timestamp (RFC3339)
+        #[arg(long)]
+        at: Option<String>,
+
+        /// Minutes before the anchor
+        #[arg(long, default_value = "10")]
+        before_minutes: i64,
+
+        /// Minutes after the anchor
+        #[arg(long, default_value = "10")]
+        after_minutes: i64,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -874,12 +1055,20 @@ fn main() -> Result<()> {
             source,
             call,
             diagnose,
+            mute_mic,
         } => {
             if let Some(lang) = language {
                 config.transcription.language = Some(lang);
             }
 
             resolve_recording_device_overrides(&mut config, &source, device, call)?;
+
+            // Pre-arm the mute sentinel so the recording starts with the mic
+            // muted. The record loop picks this up on its first iteration.
+            if mute_mic {
+                minutes_core::streaming::set_mic_muted_with_sentinel(true);
+                eprintln!("[minutes] Starting with microphone muted (system audio only).");
+            }
 
             if call && source.len() < 2 {
                 // --call with auto-detect: resolve loopback device
@@ -933,6 +1122,7 @@ fn main() -> Result<()> {
             eprintln!("Recording extended — auto-stop timers reset.");
             Ok(())
         }
+        Commands::MicToggle { state } => cmd_mic_toggle(state.as_deref()),
         Commands::ProcessQueue => cmd_process_queue(&config),
         Commands::ParakeetHelper {
             binary,
@@ -1000,6 +1190,13 @@ fn main() -> Result<()> {
                 cmd_autoresearch_list_decode_hints(limit, json)
             }
         },
+        Commands::AppleSpeech { action } => match action {
+            AppleSpeechAction::Capabilities { json } => cmd_apple_speech_capabilities(json),
+            AppleSpeechAction::Benchmark { corpus, out, json } => {
+                cmd_apple_speech_benchmark(&corpus, out.as_deref(), json, &config)
+            }
+        },
+        Commands::Capabilities { json } => cmd_capabilities(json),
         Commands::Search {
             query,
             content_type,
@@ -1096,8 +1293,11 @@ fn main() -> Result<()> {
             diarization,
             parakeet,
             parakeet_model,
+            demo,
         } => {
-            if parakeet {
+            if demo {
+                cmd_setup_demo()
+            } else if parakeet {
                 cmd_setup_parakeet(&parakeet_model)
             } else {
                 cmd_setup(&model, list, diarization)
@@ -1156,7 +1356,11 @@ fn main() -> Result<()> {
             }
         }
         Commands::Schema => cmd_schema(),
-        Commands::Get { slug } => cmd_get(&slug, &config),
+        Commands::Get {
+            slug,
+            json,
+            compact_json,
+        } => cmd_get(&slug, json, compact_json, &config),
         Commands::Events { limit, since } => cmd_events(limit, since, &config),
         Commands::Insights {
             kind,
@@ -1166,6 +1370,7 @@ fn main() -> Result<()> {
             limit,
             actionable,
         } => cmd_insights(kind, confidence, participant, since, limit, actionable),
+        Commands::Context { action } => cmd_context(action),
         Commands::Import { from, dir, dry_run } => {
             cmd_import(&from, dir.as_deref(), dry_run, &config)
         }
@@ -1275,7 +1480,7 @@ fn normalize_source_override(source: Option<&str>) -> Option<String> {
     match source.map(str::trim) {
         Some("") | None => None,
         Some(value) if value.eq_ignore_ascii_case("default") => None,
-        Some(value) => Some(value.to_string()),
+        Some(value) => minutes_core::capture::canonicalize_input_device_setting(value),
     }
 }
 
@@ -1321,7 +1526,7 @@ fn resolve_recording_device_overrides(
 
     if let Some(dev) = device {
         config.recording.sources = None;
-        config.recording.device = Some(dev);
+        config.recording.device = minutes_core::capture::canonicalize_input_device_setting(&dev);
         return Ok(());
     }
 
@@ -1422,9 +1627,32 @@ fn cmd_record(
     }
 
     // Check if already recording
-    minutes_core::pid::create().map_err(|e| anyhow::anyhow!("{}", e))?;
-    minutes_core::pid::write_recording_metadata(capture_mode).ok();
     let recording_started_at = Local::now();
+    minutes_core::pid::create().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let context_session_id = minutes_core::desktop_context::maybe_start_capture_session(
+        &config.desktop_context,
+        capture_mode,
+        title.clone(),
+        recording_started_at,
+    );
+    minutes_core::pid::write_recording_metadata_with_context(
+        capture_mode,
+        context_session_id.as_deref(),
+    )
+    .ok();
+    let _desktop_context_collector = context_session_id.as_ref().and_then(|session_id| {
+        match minutes_core::desktop_context::DesktopContextCollector::start(
+            session_id.clone(),
+            minutes_core::desktop_context::DesktopContextSessionKind::Recording,
+            config.desktop_context.clone(),
+        ) {
+            Ok(collector) => Some(collector),
+            Err(error) => {
+                tracing::warn!(error = %error, "desktop context collector unavailable for CLI recording");
+                None
+            }
+        }
+    });
 
     // Save recording start time (for timestamping notes)
     minutes_core::notes::save_recording_start()?;
@@ -1489,6 +1717,7 @@ fn cmd_record(
             pre_context,
             Some(recording_started_at),
             Some(recording_finished_at),
+            context_session_id.clone(),
             calendar_event,
         )?;
 
@@ -1515,6 +1744,23 @@ fn cmd_record(
         spawn_queue_worker()?;
         Ok((job, queued_result))
     })();
+
+    if let Err(error) = &queued {
+        if let Some(session_id) = context_session_id.as_deref() {
+            if let Err(mark_error) = minutes_core::context_store::mark_capture_session_failed(
+                session_id,
+                Some(recording_finished_at),
+                &error.to_string(),
+                None,
+            ) {
+                tracing::warn!(
+                    session_id,
+                    error = %mark_error,
+                    "failed to mark context session after queue error"
+                );
+            }
+        }
+    }
 
     cleanup_live_capture_state();
 
@@ -1549,6 +1795,25 @@ fn spawn_queue_worker() -> Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()?;
     let _ = child.id();
+    Ok(())
+}
+
+fn cmd_mic_toggle(force_state: Option<&str>) -> Result<()> {
+    let new_state = match force_state {
+        Some("on") => minutes_core::streaming::set_mic_muted_with_sentinel(true),
+        Some("off") => minutes_core::streaming::set_mic_muted_with_sentinel(false),
+        _ => minutes_core::streaming::toggle_mic_mute_with_sentinel(),
+    };
+    if new_state {
+        println!("mic muted — system audio still capturing");
+    } else {
+        println!("mic unmuted");
+    }
+    if !minutes_core::pid::status().recording {
+        eprintln!(
+            "[minutes] No active recording — the sentinel is set and will take effect on the next dual-source `minutes record`."
+        );
+    }
     Ok(())
 }
 
@@ -2001,6 +2266,20 @@ fn cmd_paths(json: bool, config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn owner_display(
+    who: Option<&str>,
+    who_original: Option<&str>,
+    who_provenance: Option<&str>,
+) -> String {
+    let owner = who.unwrap_or("unassigned");
+    match (who_original, who_provenance) {
+        (Some(original), Some(provenance)) if original != owner => {
+            format!("{owner} ({provenance}: {original})")
+        }
+        _ => owner.to_string(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_search(
     query: &str,
@@ -2045,7 +2324,11 @@ fn cmd_search(
             }
         } else {
             for result in &limited {
-                let who = result.who.as_deref().unwrap_or("unassigned");
+                let who = owner_display(
+                    result.who.as_deref(),
+                    result.who_original.as_deref(),
+                    result.who_provenance.as_deref(),
+                );
                 let due = result.by_date.as_deref().unwrap_or("no due date");
                 eprintln!(
                     "\n{} — {} [{}]",
@@ -2221,7 +2504,11 @@ fn cmd_consistency(owner: Option<&str>, stale_after_days: i64, config: &Config) 
     if !report.stale_commitments.is_empty() {
         eprintln!("\nStale commitments ({}):", report.stale_commitments.len());
         for stale in &report.stale_commitments {
-            let who = stale.entry.who.as_deref().unwrap_or("unassigned");
+            let who = owner_display(
+                stale.entry.who.as_deref(),
+                stale.entry.who_original.as_deref(),
+                stale.entry.who_provenance.as_deref(),
+            );
             let due = stale.entry.by_date.as_deref().unwrap_or("no due date");
             let reasons = stale.reasons.join(", ");
             eprintln!(
@@ -2502,7 +2789,11 @@ fn cmd_research(
     if !report.related_open_intents.is_empty() {
         eprintln!("  Open follow-ups:");
         for intent in &report.related_open_intents {
-            let owner = intent.who.as_deref().unwrap_or("unassigned");
+            let owner = owner_display(
+                intent.who.as_deref(),
+                intent.who_original.as_deref(),
+                intent.who_provenance.as_deref(),
+            );
             let due = intent.by_date.as_deref().unwrap_or("no due date");
             eprintln!(
                 "    {:?}: {} (@{}, {})",
@@ -3118,19 +3409,10 @@ fn cmd_autoresearch_decode_hints(
         );
         println!("{}", serde_json::to_string_pretty(&envelope)?);
     } else {
-        let verdict = if failed { "FAIL" } else { "PASS" };
-        println!("Decode hint eval: {verdict}");
-        println!("Cases: {}", report.totals.cases_total);
-        println!("Passed: {}", report.totals.cases_passed);
-        println!("Failed: {}", report.totals.cases_failed);
-        println!("Artifacts: {}", artifacts.run_dir.display());
-        if failed {
-            println!();
-            println!("Failure messages:");
-            for failure in &report.failure_messages {
-                println!("- {failure}");
-            }
-        }
+        println!(
+            "{}",
+            render_decode_hints_plaintext_summary(&report, &artifacts.run_dir, failed)
+        );
     }
 
     if failed {
@@ -3141,6 +3423,53 @@ fn cmd_autoresearch_decode_hints(
     }
 
     Ok(())
+}
+
+fn render_decode_hints_plaintext_summary(
+    report: &minutes_core::autoresearch::DecodeHintEvalReport,
+    artifact_dir: &Path,
+    failed: bool,
+) -> String {
+    let verdict = if failed {
+        "FAIL"
+    } else if report.totals.cases_allowed_failures > 0 {
+        "PASS WITH ALLOWED FAILURES"
+    } else {
+        "PASS"
+    };
+
+    let mut lines = vec![
+        format!("Decode hint eval: {verdict}"),
+        format!("Cases: {}", report.totals.cases_total),
+        format!("Passed: {}", report.totals.cases_passed),
+        format!("Failed: {}", report.totals.cases_failed),
+        format!("Allowed failures: {}", report.totals.cases_allowed_failures),
+        format!("Artifacts: {}", artifact_dir.display()),
+    ];
+
+    if failed {
+        lines.push(String::new());
+        lines.push("Failure messages:".into());
+        for failure in &report.failure_messages {
+            lines.push(format!("- {failure}"));
+        }
+    } else if report.totals.cases_allowed_failures > 0 {
+        lines.push(String::new());
+        lines.push("Allowed-failure cases:".into());
+        for case in report
+            .cases
+            .iter()
+            .filter(|case| !case.allowed_failure_reasons.is_empty())
+        {
+            lines.push(format!(
+                "- {}: {}",
+                case.id,
+                case.allowed_failure_reasons.join("; ")
+            ));
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn cmd_autoresearch_compare_decode_hints(
@@ -3220,6 +3549,241 @@ fn cmd_autoresearch_list_decode_hints(limit: usize, json: bool) -> Result<()> {
             println!("  summary: {}", run.summary_path.display());
         }
     }
+
+    Ok(())
+}
+
+/// Stable JSON schema describing what this CLI build supports.
+///
+/// The MCP server probes `minutes capabilities --json` at boot and uses
+/// the returned feature flags to decide which tools to register. This is
+/// the canonical surface for feature detection (see #183 phase 2); it
+/// replaces the earlier strict-equality version check.
+///
+/// Schema stability: `api_version` bumps only when the wire contract
+/// (keys removed, semantics of existing keys changed) breaks in a
+/// non-additive way. Adding new feature keys does NOT bump api_version;
+/// callers must treat missing keys as `false` so they cope with older
+/// CLIs that predate a given feature.
+#[derive(Serialize)]
+struct CapabilityReport {
+    /// Semver version string, e.g. "0.14.0".
+    version: String,
+    /// Wire-contract version. Currently 1. Only bumps on breaking changes.
+    api_version: u32,
+    /// Map of feature name to whether this CLI build supports it.
+    ///
+    /// Alphabetical via `BTreeMap` so JSON output is deterministic and
+    /// diffable across versions.
+    features: std::collections::BTreeMap<String, bool>,
+}
+
+fn build_capability_report() -> CapabilityReport {
+    // Seed the map with every feature this CLI build supports. The MCP
+    // server reads missing keys as "not supported", so adding a key here
+    // is additive and safe.
+    //
+    // Policy: when adding a new MCP-visible surface backed by a CLI
+    // subcommand, add its stable feature name here in the same commit.
+    // That is the contract the MCP server uses to decide whether to
+    // register the corresponding tool.
+    let mut features = std::collections::BTreeMap::new();
+
+    // Desktop context surface (new in 0.14.0). Backed by
+    // `minutes context activity-summary|search|get-moment`.
+    features.insert("activity_summary".into(), true);
+    features.insert("search_context".into(), true);
+    features.insert("get_moment".into(), true);
+
+    // Stable surfaces. Listed explicitly so consumers can probe for
+    // them without relying on version-string inference.
+    features.insert("add_note".into(), true);
+    features.insert("confirm_speaker".into(), true);
+    features.insert("consistency_report".into(), true);
+    features.insert("get_meeting".into(), true);
+    features.insert("get_meeting_insights".into(), true);
+    features.insert("get_person_profile".into(), true);
+    features.insert("get_status".into(), true);
+    features.insert("ingest_meeting".into(), true);
+    features.insert("knowledge_status".into(), true);
+    features.insert("list_meetings".into(), true);
+    features.insert("list_processing_jobs".into(), true);
+    features.insert("list_voices".into(), true);
+    features.insert("open_dashboard".into(), true);
+    features.insert("process_audio".into(), true);
+    features.insert("qmd_collection_status".into(), true);
+    features.insert("read_live_transcript".into(), true);
+    features.insert("register_qmd_collection".into(), true);
+    features.insert("relationship_map".into(), true);
+    features.insert("research_topic".into(), true);
+    features.insert("search_meetings".into(), true);
+    features.insert("start_dictation".into(), true);
+    features.insert("start_live_transcript".into(), true);
+    features.insert("start_recording".into(), true);
+    features.insert("stop_dictation".into(), true);
+    features.insert("stop_recording".into(), true);
+    features.insert("track_commitments".into(), true);
+
+    // Cargo-feature-gated capabilities. Some are surfaced through the
+    // feature flags so consumers know the build's runtime support.
+    features.insert("parakeet".into(), cfg!(feature = "parakeet"));
+    features.insert("diarize".into(), cfg!(feature = "diarize"));
+
+    // Setup demo fixtures (new in 0.13.3).
+    features.insert("setup_demo".into(), true);
+
+    CapabilityReport {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        api_version: 1,
+        features,
+    }
+}
+
+fn cmd_capabilities(json: bool) -> Result<()> {
+    let report = build_capability_report();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    println!("Minutes CLI capabilities");
+    println!("  version: {}", report.version);
+    println!("  api_version: {}", report.api_version);
+    println!("  features:");
+    for (name, supported) in &report.features {
+        let marker = if *supported { "yes" } else { "no" };
+        println!("    {}: {}", name, marker);
+    }
+    Ok(())
+}
+
+fn cmd_apple_speech_capabilities(json: bool) -> Result<()> {
+    let report = apple_speech::probe_capabilities()?;
+
+    if json {
+        let envelope = json_envelope("minutes apple-speech capabilities", report);
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
+        return Ok(());
+    }
+
+    println!("Apple speech capability probe");
+    println!("OS: {}", report.os_version);
+    println!("Runtime supported: {}", report.runtime_supported);
+    println!(
+        "SpeechTranscriber available: {}",
+        report
+            .speech_transcriber
+            .is_available
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "SpeechTranscriber asset status: {}",
+        report.speech_transcriber.asset_status
+    );
+    println!(
+        "DictationTranscriber asset status: {}",
+        report.dictation_transcriber.asset_status
+    );
+    if !report.speech_transcriber.installed_locales.is_empty() {
+        println!(
+            "SpeechTranscriber installed locales: {}",
+            report.speech_transcriber.installed_locales.join(", ")
+        );
+    }
+    if !report.dictation_transcriber.installed_locales.is_empty() {
+        println!(
+            "DictationTranscriber installed locales: {}",
+            report.dictation_transcriber.installed_locales.join(", ")
+        );
+    }
+    if !report.notes.is_empty() {
+        println!("Notes:");
+        for note in &report.notes {
+            println!("- {}", note);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_apple_speech_benchmark(
+    corpus: &Path,
+    output_root: Option<&Path>,
+    json: bool,
+    config: &Config,
+) -> Result<()> {
+    let report = apple_speech::run_benchmark_corpus(corpus, config)?;
+    let request = AppleSpeechBenchmarkRequest {
+        command: "minutes apple-speech benchmark".into(),
+        generated_at: Local::now().to_rfc3339(),
+        corpus_path: corpus.to_path_buf(),
+        output_root: output_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(apple_speech::default_research_root),
+        configured_engine: config.transcription.engine.clone(),
+    };
+    let artifacts = apple_speech::write_benchmark_artifacts(&request, &report)?;
+
+    if json {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct AppleSpeechBenchmarkOutput {
+            report: minutes_core::apple_speech::AppleSpeechBenchmarkReport,
+            artifacts: AppleSpeechBenchmarkArtifactPaths,
+        }
+
+        let envelope = json_envelope(
+            "minutes apple-speech benchmark",
+            AppleSpeechBenchmarkOutput {
+                report,
+                artifacts: artifacts.clone(),
+            },
+        );
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
+        return Ok(());
+    }
+
+    println!("Apple speech benchmark complete");
+    println!("Cases: {}", report.cases.len());
+    println!("Artifacts: {}", artifacts.run_dir.display());
+    println!(
+        "SpeechTranscriber avg elapsed: {} ms",
+        report
+            .totals
+            .speech_transcriber
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "DictationTranscriber avg elapsed: {} ms",
+        report
+            .totals
+            .dictation_transcriber
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "Whisper avg elapsed: {} ms",
+        report
+            .totals
+            .whisper
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
+    println!(
+        "Parakeet avg elapsed: {} ms",
+        report
+            .totals
+            .parakeet
+            .average_elapsed_ms
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "n/a".into())
+    );
 
     Ok(())
 }
@@ -3446,6 +4010,48 @@ fn cmd_setup(model: &str, list: bool, diarization: bool) -> Result<()> {
             eprintln!("  {}", d);
         }
     }
+
+    Ok(())
+}
+
+fn cmd_setup_demo() -> Result<()> {
+    let demo_dir = Config::minutes_dir().join("demo");
+    let install = demo_data::install_mcp_demo_fixtures(&demo_dir)?;
+
+    if install.updated_fixtures == 0 {
+        eprintln!(
+            "Demo corpus already ready at: {}",
+            install.demo_dir.display()
+        );
+    } else {
+        eprintln!(
+            "Demo corpus ready at: {} ({} fixture meetings)",
+            install.demo_dir.display(),
+            install.total_fixtures
+        );
+    }
+
+    eprintln!("Use it with MCP or any agent client by pointing MEETINGS_DIR at that folder:");
+    eprintln!();
+    eprintln!("  {{");
+    eprintln!("    \"mcpServers\": {{");
+    eprintln!("      \"minutes-demo\": {{");
+    eprintln!("        \"command\": \"npx\",");
+    eprintln!("        \"args\": [\"minutes-mcp\"],");
+    eprintln!(
+        "        \"env\": {{ \"MEETINGS_DIR\": \"{}\" }}",
+        install.demo_dir.display()
+    );
+    eprintln!("      }}");
+    eprintln!("    }}");
+    eprintln!("  }}");
+    eprintln!();
+    eprintln!("Try asking your agent:");
+    eprintln!("  - List the meetings in this corpus.");
+    eprintln!("  - What did we decide about pricing? Which decision is current?");
+    eprintln!("  - What got killed in the last product prioritization meeting?");
+    eprintln!("  - What action items are still open, and who owns each?");
+    eprintln!("  - Summarize the Northwind customer thread.");
 
     Ok(())
 }
@@ -4385,6 +4991,10 @@ fn cmd_logs(errors: bool, lines: usize) -> Result<()> {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use minutes_core::autoresearch::{
+        DecodeHintEvalCaseResult, DecodeHintEvalHintDebug, DecodeHintEvalOptions,
+        DecodeHintEvalReport, DecodeHintEvalTotals, DecodeHintEvalTranscriptMetrics,
+    };
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -4433,6 +5043,115 @@ mod tests {
         result
     }
 
+    fn sample_decode_hint_eval_report_with_allowed_failures() -> DecodeHintEvalReport {
+        DecodeHintEvalReport {
+            generated_at: "2026-04-23T12:00:00Z".into(),
+            corpus_path: PathBuf::from("/tmp/corpus.json"),
+            options: DecodeHintEvalOptions::default(),
+            totals: DecodeHintEvalTotals {
+                cases_total: 2,
+                cases_passed: 2,
+                cases_failed: 0,
+                cases_allowed_failures: 1,
+                improved_cases: 1,
+                regressed_cases: 0,
+                average_delta_wer: -0.01,
+            },
+            cases: vec![
+                DecodeHintEvalCaseResult {
+                    id: "self-intro-whisper".into(),
+                    engine: "whisper".into(),
+                    hint_debug: DecodeHintEvalHintDebug::default(),
+                    baseline: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.12,
+                        focus_hits: vec!["mat".into()],
+                        forbidden_hits: vec![],
+                    },
+                    candidate: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.09,
+                        focus_hits: vec!["mat".into(), "leadernet".into()],
+                        forbidden_hits: vec![],
+                    },
+                    delta_wer: -0.03,
+                    max_wer_regression: Some(0.03),
+                    required_terms: vec!["mat".into(), "leadernet".into()],
+                    forbidden_terms: vec![],
+                    passed: true,
+                    status: "pass".into(),
+                    failure_reasons: vec![],
+                    allowed_failure_reasons: vec![],
+                },
+                DecodeHintEvalCaseResult {
+                    id: "external-proper-noun-research".into(),
+                    engine: "parakeet".into(),
+                    hint_debug: DecodeHintEvalHintDebug::default(),
+                    baseline: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.10,
+                        focus_hits: vec!["pdf toolkit".into()],
+                        forbidden_hits: vec![],
+                    },
+                    candidate: DecodeHintEvalTranscriptMetrics {
+                        wer: 0.10,
+                        focus_hits: vec!["pdf toolkit".into()],
+                        forbidden_hits: vec![],
+                    },
+                    delta_wer: 0.0,
+                    max_wer_regression: Some(0.02),
+                    required_terms: vec!["casey rowan".into()],
+                    forbidden_terms: vec![],
+                    passed: true,
+                    status: "allowed-failure".into(),
+                    failure_reasons: vec![],
+                    allowed_failure_reasons: vec![
+                        "missing required hinted term 'casey rowan'".into()
+                    ],
+                },
+            ],
+            failure_messages: vec![],
+        }
+    }
+
+    fn sample_decode_hint_eval_report_with_failures() -> DecodeHintEvalReport {
+        DecodeHintEvalReport {
+            generated_at: "2026-04-23T12:00:00Z".into(),
+            corpus_path: PathBuf::from("/tmp/corpus.json"),
+            options: DecodeHintEvalOptions::default(),
+            totals: DecodeHintEvalTotals {
+                cases_total: 1,
+                cases_passed: 0,
+                cases_failed: 1,
+                cases_allowed_failures: 0,
+                improved_cases: 0,
+                regressed_cases: 1,
+                average_delta_wer: 0.03,
+            },
+            cases: vec![DecodeHintEvalCaseResult {
+                id: "case-1".into(),
+                engine: "parakeet".into(),
+                hint_debug: DecodeHintEvalHintDebug::default(),
+                baseline: DecodeHintEvalTranscriptMetrics {
+                    wer: 0.12,
+                    focus_hits: vec![],
+                    forbidden_hits: vec![],
+                },
+                candidate: DecodeHintEvalTranscriptMetrics {
+                    wer: 0.15,
+                    focus_hits: vec![],
+                    forbidden_hits: vec!["matt mullenweg".into()],
+                },
+                delta_wer: 0.03,
+                max_wer_regression: Some(0.02),
+                required_terms: vec!["alex chen".into()],
+                forbidden_terms: vec!["matt mullenweg".into()],
+                passed: false,
+                status: "fail".into(),
+                failure_reasons: vec!["contains forbidden hinted term 'matt mullenweg'".into()],
+                allowed_failure_reasons: vec![],
+            }],
+            failure_messages: vec!["case-1 contains forbidden hinted term 'matt mullenweg'".into()],
+        }
+    }
+
     #[test]
     fn parse_qmd_collection_names_extracts_collection_headers() {
         let output = r#"Collections (2):
@@ -4479,6 +5198,36 @@ life (qmd://life/)
         assert_eq!(value["transcript"], "[0:00] hello");
         assert_eq!(value["segments"][0], "hello");
         assert_eq!(value["meta"]["schemaVersion"], 1);
+    }
+
+    #[test]
+    fn render_decode_hints_plaintext_summary_surfaces_allowed_failures() {
+        let output = render_decode_hints_plaintext_summary(
+            &sample_decode_hint_eval_report_with_allowed_failures(),
+            Path::new("/tmp/decode-hints/2026-04-23T12-00-00Z"),
+            false,
+        );
+
+        assert!(output.contains("Decode hint eval: PASS WITH ALLOWED FAILURES"));
+        assert!(output.contains("Allowed failures: 1"));
+        assert!(output.contains("Allowed-failure cases:"));
+        assert!(output.contains("external-proper-noun-research"));
+        assert!(output.contains("missing required hinted term 'casey rowan'"));
+    }
+
+    #[test]
+    fn render_decode_hints_plaintext_summary_surfaces_blocking_failures() {
+        let output = render_decode_hints_plaintext_summary(
+            &sample_decode_hint_eval_report_with_failures(),
+            Path::new("/tmp/decode-hints/2026-04-23T12-00-00Z"),
+            true,
+        );
+
+        assert!(output.contains("Decode hint eval: FAIL"));
+        assert!(output.contains("Allowed failures: 0"));
+        assert!(output.contains("Failure messages:"));
+        assert!(output.contains("case-1 contains forbidden hinted term 'matt mullenweg'"));
+        assert!(!output.contains("Allowed-failure cases:"));
     }
 
     #[test]
@@ -4574,6 +5323,19 @@ life (qmd://life/)
     }
 
     #[test]
+    fn resolve_recording_device_overrides_normalizes_decorated_explicit_device() {
+        let mut config = Config::default();
+        resolve_recording_device_overrides(
+            &mut config,
+            &[],
+            Some("Ground Control (16000Hz, 1 ch)".into()),
+            false,
+        )
+        .expect("decorated --device value should normalize");
+        assert_eq!(config.recording.device.as_deref(), Some("Ground Control"));
+    }
+
+    #[test]
     fn resolve_recording_device_overrides_uses_single_voice_config_source() {
         let mut config = Config::default();
         config.recording.sources = Some(minutes_core::config::SourcesConfig {
@@ -4617,6 +5379,62 @@ life (qmd://life/)
     }
 
     #[test]
+    fn cmd_delete_archives_all_audio_artifacts_with_with_audio() {
+        with_temp_home(|dir| {
+            let meetings = dir.join("meetings");
+            std::fs::create_dir_all(&meetings).unwrap();
+            let md = meetings.join("2026-04-01-artifacts.md");
+            std::fs::write(&md, "---\ntitle: Artifacts\n---\nContent").unwrap();
+            let wav = meetings.join("2026-04-01-artifacts.wav");
+            std::fs::write(&wav, b"fake audio").unwrap();
+            let voice = meetings.join("2026-04-01-artifacts.voice.wav");
+            std::fs::write(&voice, b"fake voice stem").unwrap();
+            let system = meetings.join("2026-04-01-artifacts.system.wav");
+            std::fs::write(&system, b"fake system stem").unwrap();
+            let embeddings = meetings.join(".2026-04-01-artifacts.embeddings");
+            std::fs::write(&embeddings, b"{\"Speaker 1\":[0.1,0.2]}").unwrap();
+
+            let config = Config {
+                output_dir: meetings.clone(),
+                ..Config::default()
+            };
+
+            cmd_delete("2026-04-01-artifacts", true, false, &config).unwrap();
+            assert!(!md.exists(), "md should be moved");
+            assert!(
+                meetings.join("archive/2026-04-01-artifacts.md").exists(),
+                "md should be in archive"
+            );
+            assert!(!wav.exists(), "merged wav should be moved");
+            assert!(!voice.exists(), "voice stem should be moved");
+            assert!(!system.exists(), "system stem should be moved");
+            assert!(!embeddings.exists(), "embeddings sidecar should be moved");
+            assert!(
+                meetings.join("archive/2026-04-01-artifacts.wav").exists(),
+                "merged wav should be archived"
+            );
+            assert!(
+                meetings
+                    .join("archive/2026-04-01-artifacts.voice.wav")
+                    .exists(),
+                "voice stem should be archived"
+            );
+            assert!(
+                meetings
+                    .join("archive/2026-04-01-artifacts.system.wav")
+                    .exists(),
+                "system stem should be archived"
+            );
+            assert!(
+                meetings
+                    .join("archive/.2026-04-01-artifacts.embeddings")
+                    .exists(),
+                "embeddings sidecar should be archived"
+            );
+        });
+    }
+
+    #[test]
     fn cmd_delete_force_permanently_removes() {
         with_temp_home(|dir| {
             let meetings = dir.join("meetings");
@@ -4625,6 +5443,12 @@ life (qmd://life/)
             std::fs::write(&md, "---\ntitle: Force\n---\nContent").unwrap();
             let wav = meetings.join("2026-04-01-force.wav");
             std::fs::write(&wav, b"fake audio").unwrap();
+            let voice = meetings.join("2026-04-01-force.voice.wav");
+            std::fs::write(&voice, b"fake voice stem").unwrap();
+            let system = meetings.join("2026-04-01-force.system.wav");
+            std::fs::write(&system, b"fake system stem").unwrap();
+            let embeddings = meetings.join(".2026-04-01-force.embeddings");
+            std::fs::write(&embeddings, b"{\"Speaker 1\":[0.1,0.2]}").unwrap();
 
             let config = Config {
                 output_dir: meetings.clone(),
@@ -4637,10 +5461,39 @@ life (qmd://life/)
                 !wav.exists(),
                 "wav should be gone with --with-audio --force"
             );
+            assert!(!voice.exists(), "voice stem should be gone");
+            assert!(!system.exists(), "system stem should be gone");
+            assert!(!embeddings.exists(), "embeddings sidecar should be gone");
             assert!(
                 !meetings.join("archive/2026-04-01-force.md").exists(),
                 "nothing in archive for force delete"
             );
+        });
+    }
+
+    #[test]
+    fn setup_demo_installs_five_mcp_fixture_meetings_idempotently() {
+        with_temp_home(|_| {
+            let demo_dir = Config::minutes_dir().join("demo");
+
+            let first = demo_data::install_mcp_demo_fixtures(&demo_dir).unwrap();
+            assert_eq!(first.total_fixtures, 5);
+            assert_eq!(first.updated_fixtures, 5);
+
+            let files = std::fs::read_dir(&demo_dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
+                .count();
+            assert_eq!(files, 5);
+
+            let one_fixture =
+                std::fs::read_to_string(demo_dir.join("2026-02-28-pricing-strategy.md")).unwrap();
+            assert!(one_fixture.contains("minutes_demo: true"));
+
+            let second = demo_data::install_mcp_demo_fixtures(&demo_dir).unwrap();
+            assert_eq!(second.total_fixtures, 5);
+            assert_eq!(second.updated_fixtures, 0);
         });
     }
 
@@ -4681,9 +5534,8 @@ fn cmd_delete(meeting: &str, with_audio: bool, force: bool, config: &Config) -> 
         .to_string_lossy()
         .to_string();
 
-    // Find associated audio file (.wav with same stem in same directory)
-    let audio_path = md_path.with_extension("wav");
-    let has_audio = audio_path.exists();
+    let audio_artifacts = minutes_core::capture::meeting_audio_artifact_paths(&md_path);
+    let has_audio = audio_artifacts.iter().any(|path| path.exists());
 
     if force {
         // Permanent delete
@@ -4691,8 +5543,10 @@ fn cmd_delete(meeting: &str, with_audio: bool, force: bool, config: &Config) -> 
         eprintln!("Deleted: {}", md_path.display());
 
         if with_audio && has_audio {
-            std::fs::remove_file(&audio_path)?;
-            eprintln!("Deleted audio: {}", audio_path.display());
+            for path in audio_artifacts.iter().filter(|path| path.exists()) {
+                std::fs::remove_file(path)?;
+                eprintln!("Deleted audio artifact: {}", path.display());
+            }
         }
     } else {
         // Soft delete: move to archive directory
@@ -4704,16 +5558,18 @@ fn cmd_delete(meeting: &str, with_audio: bool, force: bool, config: &Config) -> 
         eprintln!("Archived: {} → {}", title, dest_md.display());
 
         if with_audio && has_audio {
-            let dest_audio = archive_dir.join(audio_path.file_name().unwrap());
-            std::fs::rename(&audio_path, &dest_audio)?;
-            eprintln!("Archived audio: {}", dest_audio.display());
+            for path in audio_artifacts.iter().filter(|path| path.exists()) {
+                let dest_audio = archive_dir.join(path.file_name().unwrap());
+                std::fs::rename(path, &dest_audio)?;
+                eprintln!("Archived audio artifact: {}", dest_audio.display());
+            }
         }
     }
 
     if has_audio && !with_audio {
         eprintln!(
-            "Note: audio file still exists at {}. Use --with-audio to remove it.",
-            audio_path.display()
+            "Note: audio artifacts still exist alongside {}. Use --with-audio to remove them.",
+            md_path.display()
         );
     }
 
@@ -4727,17 +5583,71 @@ fn cmd_schema() -> Result<()> {
     Ok(())
 }
 
-fn cmd_get(slug: &str, config: &Config) -> Result<()> {
-    match minutes_core::search::resolve_slug(slug, config) {
-        Some(path) => {
-            let content = std::fs::read_to_string(&path)?;
-            println!("{}", content);
-            Ok(())
+fn cmd_get(slug_or_path: &str, json: bool, compact_json: bool, config: &Config) -> Result<()> {
+    // Accept either a slug ("2026-03-17-advisor-call") or a path to the
+    // meeting markdown. MCP and Tauri pass paths; humans pass slugs. Paths —
+    // whether absolute or relative to cwd — must resolve to a .md file
+    // inside the configured meetings directory. The check happens via
+    // `notes::validate_meeting_path`, which canonicalizes both sides and
+    // rejects escapes (preventing `minutes get /etc/passwd.md` from
+    // leaking arbitrary files).
+    let path = if let Some(p) = minutes_core::search::resolve_slug(slug_or_path, config) {
+        p
+    } else {
+        let candidate = std::path::PathBuf::from(slug_or_path);
+        if !candidate.exists() || candidate.extension().and_then(|s| s.to_str()) != Some("md") {
+            anyhow::bail!("no meeting found matching slug or path: {}", slug_or_path);
         }
-        None => {
-            anyhow::bail!("no meeting found matching slug: {}", slug);
+        if let Err(msg) = minutes_core::notes::validate_meeting_path(&candidate, &config.output_dir)
+        {
+            anyhow::bail!("{}", msg);
         }
+        candidate
+    };
+
+    let content = std::fs::read_to_string(&path)?;
+
+    if !json {
+        println!("{}", content);
+        return Ok(());
     }
+
+    // Structured JSON with overlays layered in. Raw body is preserved verbatim;
+    // only speaker_map is rewritten to reflect sidecar confirmations. Agents
+    // and UIs can apply the renaming to body lines themselves if they want to,
+    // but the markdown on disk stays untouched.
+    let (frontmatter_str, body) = minutes_core::markdown::split_frontmatter(&content);
+    let mut frontmatter: minutes_core::markdown::Frontmatter = if frontmatter_str.is_empty() {
+        anyhow::bail!("meeting has no frontmatter: {}", path.display());
+    } else {
+        serde_yaml::from_str(frontmatter_str.trim())?
+    };
+
+    let overlay_db = minutes_core::overlays::default_db_path();
+    let confirmations =
+        minutes_core::overlays::load_speaker_confirmations_for_meeting_at(&overlay_db, &path)
+            .unwrap_or_default();
+    let overlay_applied = !confirmations.is_empty();
+    minutes_core::overlays::apply_speaker_confirmations(
+        &mut frontmatter.speaker_map,
+        &confirmations,
+    );
+
+    let payload = serde_json::json!({
+        "path": path.to_string_lossy(),
+        "frontmatter": frontmatter,
+        "body": body,
+        "overlay_applied": overlay_applied,
+    });
+    let payload = if compact_json {
+        payload
+    } else {
+        let mut payload = payload;
+        payload["raw_markdown"] = serde_json::Value::String(content);
+        payload
+    };
+    println!("{}", serde_json::to_string_pretty(&payload)?);
+    Ok(())
 }
 
 fn cmd_events(limit: usize, since: Option<String>, _config: &Config) -> Result<()> {
@@ -4833,6 +5743,282 @@ fn cmd_insights(
 
     let json = serde_json::to_string_pretty(&output)?;
     println!("{}", json);
+    Ok(())
+}
+
+fn cmd_context(action: ContextAction) -> Result<()> {
+    match action {
+        ContextAction::ActivitySummary {
+            session,
+            path,
+            start,
+            end,
+            json,
+        } => cmd_context_activity_summary(
+            session.as_deref(),
+            path.as_deref(),
+            start.as_deref(),
+            end.as_deref(),
+            json,
+        ),
+        ContextAction::Search { query, limit, json } => cmd_context_search(&query, limit, json),
+        ContextAction::GetMoment {
+            session,
+            path,
+            at,
+            before_minutes,
+            after_minutes,
+            json,
+        } => cmd_context_get_moment(
+            session.as_deref(),
+            path.as_deref(),
+            at.as_deref(),
+            before_minutes,
+            after_minutes,
+            json,
+        ),
+    }
+}
+
+fn parse_rfc3339_local(raw: &str) -> Result<chrono::DateTime<Local>> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw)?;
+    Ok(parsed.with_timezone(&Local))
+}
+
+fn resolve_context_session(
+    session: Option<&str>,
+    path: Option<&Path>,
+) -> Result<Option<minutes_core::context_store::ContextSession>> {
+    if let Some(session_id) = session {
+        return Ok(minutes_core::context_store::get_session(session_id)?);
+    }
+    if let Some(path) = path {
+        let canonical = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display()
+            .to_string();
+        if let Some(session) = minutes_core::context_store::get_session_for_artifact(&canonical)? {
+            return Ok(Some(session));
+        }
+        let original = path.display().to_string();
+        return Ok(minutes_core::context_store::get_session_for_artifact(
+            &original,
+        )?);
+    }
+    Ok(None)
+}
+
+fn summarize_counts(values: impl Iterator<Item = Option<String>>) -> Vec<ContextCount> {
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for value in values.flatten() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        *counts.entry(trimmed.to_string()).or_insert(0) += 1;
+    }
+    let mut pairs = counts
+        .into_iter()
+        .map(|(name, count)| ContextCount { name, count })
+        .collect::<Vec<_>>();
+    pairs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    pairs.truncate(10);
+    pairs
+}
+
+fn cmd_context_activity_summary(
+    session: Option<&str>,
+    path: Option<&Path>,
+    start: Option<&str>,
+    end: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let resolved_session = resolve_context_session(session, path)?;
+
+    let (events, links, window_start, window_end) = if let Some(session_row) = &resolved_session {
+        let events =
+            minutes_core::context_store::list_events_for_session(&session_row.id, None, None)?;
+        let links = minutes_core::context_store::list_links_for_session(&session_row.id)?;
+        let start = session_row.started_at;
+        let end = session_row.ended_at.unwrap_or_else(Local::now);
+        (events, links, start, end)
+    } else {
+        let start_dt = start.map(parse_rfc3339_local).transpose()?.ok_or_else(|| {
+            anyhow::anyhow!("provide --session, --path, or both --start and --end")
+        })?;
+        let end_dt = end.map(parse_rfc3339_local).transpose()?.ok_or_else(|| {
+            anyhow::anyhow!("provide --session, --path, or both --start and --end")
+        })?;
+        let events = minutes_core::context_store::list_events_in_window(start_dt, end_dt)?;
+        (events, vec![], start_dt, end_dt)
+    };
+
+    let output = ContextSummaryOutput {
+        session: resolved_session,
+        links,
+        top_apps: summarize_counts(events.iter().map(|e| e.app_name.clone())),
+        top_windows: summarize_counts(events.iter().map(|e| e.window_title.clone())),
+        events,
+        window: ContextWindow {
+            start: window_start.to_rfc3339(),
+            end: window_end.to_rfc3339(),
+        },
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    eprintln!(
+        "Desktop context summary: {} → {}",
+        output.window.start, output.window.end
+    );
+    if let Some(session_row) = &output.session {
+        eprintln!(
+            "  session: {} [{} / {}]",
+            session_row.id,
+            serde_json::to_string(&session_row.session_type)?,
+            serde_json::to_string(&session_row.state)?
+        );
+    }
+    if !output.top_apps.is_empty() {
+        eprintln!(
+            "  top apps: {}",
+            output
+                .top_apps
+                .iter()
+                .map(|entry| format!("{} ({})", entry.name, entry.count))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !output.top_windows.is_empty() {
+        eprintln!(
+            "  top windows: {}",
+            output
+                .top_windows
+                .iter()
+                .map(|entry| format!("{} ({})", entry.name, entry.count))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn cmd_context_search(query: &str, limit: usize, json: bool) -> Result<()> {
+    let results = minutes_core::context_store::search_events(query, limit)?;
+    let output = ContextSearchOutput { results };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    if output.results.is_empty() {
+        eprintln!("No desktop-context events found for \"{}\".", query);
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    eprintln!("Desktop-context matches for \"{}\":", query);
+    for event in &output.results {
+        eprintln!(
+            "  {} — {}{}{}",
+            event.observed_at.to_rfc3339(),
+            event
+                .app_name
+                .as_deref()
+                .or(event.bundle_id.as_deref())
+                .unwrap_or("unknown"),
+            event
+                .window_title
+                .as_deref()
+                .map(|title| format!(" :: {}", title))
+                .unwrap_or_default(),
+            event
+                .url
+                .as_deref()
+                .map(|url| format!(" <{}>", url))
+                .unwrap_or_default()
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn cmd_context_get_moment(
+    session: Option<&str>,
+    path: Option<&Path>,
+    at: Option<&str>,
+    before_minutes: i64,
+    after_minutes: i64,
+    json: bool,
+) -> Result<()> {
+    let resolved_session = resolve_context_session(session, path)?;
+    let anchor = if let Some(session_row) = &resolved_session {
+        session_row.started_at
+    } else if let Some(raw) = at {
+        parse_rfc3339_local(raw)?
+    } else {
+        anyhow::bail!("provide --session, --path, or --at");
+    };
+
+    let window_start = anchor - chrono::Duration::minutes(before_minutes);
+    let window_end = anchor + chrono::Duration::minutes(after_minutes);
+    let events = if let Some(session_row) = &resolved_session {
+        minutes_core::context_store::list_events_for_session(
+            &session_row.id,
+            Some(window_start),
+            Some(window_end),
+        )?
+    } else {
+        minutes_core::context_store::list_events_in_window(window_start, window_end)?
+    };
+    let links = if let Some(session_row) = &resolved_session {
+        minutes_core::context_store::list_links_for_session(&session_row.id)?
+    } else {
+        vec![]
+    };
+
+    let output = ContextMomentOutput {
+        session: resolved_session,
+        links,
+        events,
+        window: ContextWindow {
+            start: window_start.to_rfc3339(),
+            end: window_end.to_rfc3339(),
+        },
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    eprintln!(
+        "Desktop-context moment window: {} → {}",
+        output.window.start, output.window.end
+    );
+    if let Some(session_row) = &output.session {
+        eprintln!("  session: {}", session_row.id);
+    }
+    for event in &output.events {
+        eprintln!(
+            "  {} — {}{}",
+            event.observed_at.to_rfc3339(),
+            event.app_name.as_deref().unwrap_or("unknown"),
+            event
+                .window_title
+                .as_deref()
+                .map(|title| format!(" :: {}", title))
+                .unwrap_or_default()
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
@@ -5744,6 +6930,7 @@ fn cmd_confirm(
     config: &Config,
 ) -> Result<()> {
     use minutes_core::diarize::{AttributionSource, Confidence};
+    use minutes_core::overlays;
     use minutes_core::voice;
 
     if !meeting_path.exists() {
@@ -5755,7 +6942,7 @@ fn cmd_confirm(
 
     // Read the meeting file
     let content = std::fs::read_to_string(meeting_path)?;
-    let (yaml_str, body) = minutes_core::markdown::split_frontmatter(&content);
+    let (yaml_str, _body) = minutes_core::markdown::split_frontmatter(&content);
 
     if yaml_str.is_empty() {
         return Err(anyhow::anyhow!("Meeting has no YAML frontmatter"));
@@ -5773,6 +6960,7 @@ fn cmd_confirm(
 
     // Load meeting embeddings (for optional voice save)
     let meeting_embeddings = voice::load_meeting_embeddings(meeting_path);
+    let mut overlay_writes: Vec<(String, String, String)> = Vec::new();
 
     // Non-interactive mode: confirm a specific speaker
     if let (Some(speaker_label), Some(new_name)) = (speaker, name) {
@@ -5783,9 +6971,11 @@ fn cmd_confirm(
 
         if let Some(attr) = found {
             let old_confidence = attr.confidence;
+            let old_name = attr.name.clone();
             attr.name = new_name.to_string();
             attr.confidence = Confidence::High;
             attr.source = AttributionSource::Manual;
+            overlay_writes.push((speaker_label.to_string(), new_name.to_string(), old_name));
             eprintln!(
                 "Confirmed: {} = {} (was {:?} → High)",
                 speaker_label, new_name, old_confidence
@@ -5865,16 +7055,20 @@ fn cmd_confirm(
                 || input.eq_ignore_ascii_case("y")
                 || input.eq_ignore_ascii_case("yes")
             {
+                let old_name = attr.name.clone();
                 attr.confidence = Confidence::High;
                 attr.source = AttributionSource::Manual;
+                overlay_writes.push((attr.speaker_label.clone(), attr.name.clone(), old_name));
                 eprintln!("    → Confirmed: {} = {}", attr.speaker_label, attr.name);
             } else if input.eq_ignore_ascii_case("n") || input.eq_ignore_ascii_case("no") {
                 eprintln!("    → Skipped");
             } else {
                 // User typed a different name
+                let old_name = attr.name.clone();
                 attr.name = input.to_string();
                 attr.confidence = Confidence::High;
                 attr.source = AttributionSource::Manual;
+                overlay_writes.push((attr.speaker_label.clone(), attr.name.clone(), old_name));
                 eprintln!("    → Updated: {} = {}", attr.speaker_label, attr.name);
             }
         }
@@ -5915,13 +7109,25 @@ fn cmd_confirm(
         }
     }
 
-    // Rewrite the meeting file with updated speaker_map
-    // Also apply High-confidence names to transcript body
-    let new_body = minutes_core::diarize::apply_confirmed_names(body, &frontmatter.speaker_map);
-    let new_yaml = serde_yaml::to_string(&frontmatter)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize frontmatter: {}", e))?;
-    let new_content = format!("---\n{}---\n{}", new_yaml, new_body);
-    std::fs::write(meeting_path, new_content)?;
+    for (speaker_label, confirmed_name, previous_name) in &overlay_writes {
+        overlays::write_speaker_confirmation(
+            meeting_path,
+            speaker_label,
+            confirmed_name,
+            Some(previous_name),
+            Some("minutes confirm"),
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+
+    if !overlay_writes.is_empty() {
+        if let Err(error) = minutes_core::graph::rebuild_index(config) {
+            eprintln!(
+                "Warning: speaker overlay saved, but graph rebuild failed: {}",
+                error
+            );
+        }
+    }
 
     let confirmed_count = frontmatter
         .speaker_map
@@ -5929,7 +7135,7 @@ fn cmd_confirm(
         .filter(|a| a.confidence == Confidence::High)
         .count();
     eprintln!(
-        "\nMeeting updated: {}/{} speakers confirmed.",
+        "\nSpeaker overlay updated: {}/{} speakers confirmed. Meeting markdown was not rewritten.",
         confirmed_count,
         frontmatter.speaker_map.len()
     );
@@ -5942,6 +7148,11 @@ fn cmd_live(config: &Config) -> Result<()> {
     use std::sync::Arc;
 
     eprintln!("Starting live transcript session...");
+    if config.transcription.engine == "apple-speech" {
+        eprintln!(
+            "[minutes] Apple Speech experimental live path selected. If unavailable or weak, Minutes will fall back to Parakeet or Whisper for this session."
+        );
+    }
     eprintln!("Press Ctrl-C or run `minutes stop` to end.\n");
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -5966,7 +7177,26 @@ fn cmd_live(config: &Config) -> Result<()> {
 
     // No sentinel watcher needed — run_inner already polls check_and_clear_sentinel
     // directly in its main loop, avoiding the thread-join and double-consume race.
-    match minutes_core::live_transcript::run(stop, config) {
+    let live_context_session_id =
+        minutes_core::desktop_context::maybe_start_live_transcript_session(
+            &config.desktop_context,
+            Local::now(),
+        );
+    let _desktop_context_collector = live_context_session_id.as_ref().and_then(|session_id| {
+        match minutes_core::desktop_context::DesktopContextCollector::start(
+            session_id.clone(),
+            minutes_core::desktop_context::DesktopContextSessionKind::LiveTranscript,
+            config.desktop_context.clone(),
+        ) {
+            Ok(collector) => Some(collector),
+            Err(error) => {
+                tracing::warn!(error = %error, "desktop context collector unavailable for CLI live transcript");
+                None
+            }
+        }
+    });
+
+    match minutes_core::live_transcript::run(stop, config, live_context_session_id) {
         Ok((lines, duration, path)) => {
             eprintln!("\nLive transcript complete:");
             eprintln!("  {} utterances in {:.0}s", lines, duration);
