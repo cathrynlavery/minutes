@@ -3007,15 +3007,14 @@ mod tests {
     /// The availability check must canonicalize the input first or it
     /// would falsely flag legitimate pins as Missing and clear them.
     ///
-    /// Skipped on Windows: cpal's WASAPI host enumeration on GitHub
-    /// runners intermittently triggers `STATUS_ACCESS_VIOLATION`
-    /// (0xc0000005) when called twice in quick succession from the
-    /// same test, which is what this assertion does (once to find a
-    /// real device, once inside `check_input_device_availability`).
-    /// The behavior under test is platform-agnostic Rust, so macOS +
-    /// Linux coverage is sufficient.
-    #[cfg(not(target_os = "windows"))]
+    /// Ignored on Windows: cpal's WASAPI host enumeration on GitHub
+    /// runners triggers `STATUS_ACCESS_VIOLATION` (0xc0000005) once
+    /// the per-process cpal call count crosses a small threshold.
+    /// Same convention as `list_input_devices_returns_vec_of_strings`.
+    /// macOS + Linux coverage is sufficient for this platform-agnostic
+    /// Rust behavior.
     #[test]
+    #[cfg_attr(target_os = "windows", ignore)]
     fn check_input_device_availability_handles_decorated_pin() {
         // Find an actually-available device on this host, then build a
         // decorated form of its canonical name and verify the check
@@ -3051,7 +3050,15 @@ mod tests {
         assert_eq!(config.recording.device, Some(String::new()));
     }
 
+    /// Ignored on Windows: this test makes two back-to-back cpal
+    /// enumeration calls (one through `auto_heal`, one through
+    /// `check_input_device_availability`), and combined with other
+    /// cpal-driven tests in the same binary it pushes WASAPI on
+    /// GitHub runners over the threshold that triggers
+    /// `STATUS_ACCESS_VIOLATION`. Same convention as
+    /// `list_input_devices_returns_vec_of_strings`.
     #[test]
+    #[cfg_attr(target_os = "windows", ignore)]
     fn auto_heal_missing_recording_device_clears_when_definitely_missing() {
         // Use a device name that no real system would expose so the
         // verdict is deterministic regardless of the test host's audio
