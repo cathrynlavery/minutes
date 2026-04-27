@@ -125,7 +125,7 @@ git log "$LAST_PUBLISH_COMMIT"..HEAD -- crates/whisper-guard/
 
 If that diff is non-empty, publish whisper-guard first. The full procedure lives in `CLAUDE.md` Release Checklist Step 11.5.
 
-**Why this matters:** whisper-guard has external consumers (~277 downloads at last check). Repo state drifting ahead of crates.io means downstream users — including potentially Tracegrain (`~/Sites/patternwork`) — silently miss anti-hallucination fixes shipped here.
+**Why this matters:** whisper-guard has external consumers (~277 downloads at last check). Repo state drifting ahead of crates.io means downstream users silently miss anti-hallucination fixes shipped here.
 
 <!-- BEGIN BEADS INTEGRATION profile:full hash:d4f96305 -->
 ## Issue Tracking with bd (beads)
