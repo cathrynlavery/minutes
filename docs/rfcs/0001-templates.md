@@ -201,7 +201,7 @@ The `compliance` field encodes declarative rules checked by the pipeline:
 | Field | Type | Behavior |
 |---|---|---|
 | `redact_phi` | bool | Post-extraction, redact likely PHI patterns (names, DOBs, phone numbers, MRNs) before persistence |
-| `forbid_in_summary` | [string] | Enum of `[phone_number, full_ssn, full_dob, full_name, email, mrn]`; validator rejects summary if detected |
+| `forbid_in_summary` | [string] | Enum of `[phone_number, full_ssn, full_dob, full_name, email, mrn, credit_card_number, bank_account_number, auth_secret, dea_number]`; validator rejects summary if detected. The last four are non-clinical high-risk identifiers (financial, credentials, prescriber registration) that should not surface in any summary regardless of template purpose. |
 | `require_local_processing` | bool | If true, Minutes errors when a cloud summarization engine (Claude, OpenAI, Mistral) is configured |
 | `retention_days` | int | Annotates frontmatter with `retention_until`; downstream tools can enforce deletion |
 | `audit_log` | bool | Writes a timestamped entry to `~/.minutes/logs/audit.log` (template, action, file hash) |
@@ -356,20 +356,24 @@ extract:
     referrals: "Specialist consults requested"
     follow_up: "Disposition and follow-up timing"
 compliance:
-  redact_phi: true
-  forbid_in_summary: [full_ssn, mrn, full_date_of_birth, full_name]
+  redact_phi: false
+  forbid_in_summary: [full_ssn, credit_card_number, bank_account_number, auth_secret]
   require_local_processing: true
   audit_log: true
 post_record_skill: minutes-soap-review
 agent_context: |
-  This is a clinical SOAP summary. Treat all content as protected health information and default to redaction-friendly phrasing in agent responses (refer to "the patient" rather than identifiers). Do not echo SSNs, MRNs, dates of birth, or full names into responses.
+  This is a clinical SOAP summary and contains protected health information. It is the working medical record for many clinical workflows, so patient identifiers (names, MRNs, dates of birth) are part of the content and may be referenced when discussing clinical care. SSNs, credit card numbers, bank account numbers, and authentication secrets should not appear in a clinical note; if any surface in the transcript, omit them from the summary.
 additional_instructions: |
   Document pertinent positives AND pertinent negatives in ROS and physical exam. Order differentials most-to-least likely with explicit clinical reasoning for the leading diagnosis, and include dangerous diagnoses even when less likely. Plan items should reference the assessment problem they address.
 language: en
 ---
 ```
 
-The `forbid_in_summary` default includes `full_name` because Minutes outputs are agent-readable summaries on local disk, not the canonical clinical record; the conservative default is to PHI-redact the summary even though the canonical record (in an EHR) is identified. Deployments that need identified working documents can override `redact_phi: false` if the surrounding deployment is hardened to support it. `require_local_processing: true` is a Minutes product/safety policy; HIPAA itself permits cloud processing under appropriate Business Associate Agreements.
+The `soap` template ships **identified by default**. A clinical SOAP note is the working medical record for many clinicians (small practices, telehealth, outpatient settings without an integrated EHR), and stripping patient names, MRNs, or DOBs from the canonical clinical artifact would defeat the template's primary purpose. The privacy posture comes from `require_local_processing: true` (the audio and transcript stay on the user's machine; no cloud LLM ingestion) plus `audit_log: true` (local activity logging), not from redacting the content of the note itself. `forbid_in_summary` is the safety-net validator: it rejects any summary containing SSNs, credit card numbers, bank account numbers, or authentication secrets, since those should never appear in a clinical note regardless of intent.
+
+Deployments with different needs can override:
+- Research, teaching, or agent-only use cases that require de-identified output: set `redact_phi: true` and add the relevant clinical identifiers (`full_name`, `mrn`, `full_dob`, `phone_number`, `email`) to `forbid_in_summary`.
+- Cloud-processing deployments under appropriate Business Associate Agreements: override `require_local_processing: false`. HIPAA itself permits cloud processing with a BAA; `require_local_processing` is a Minutes product/safety policy, not a HIPAA requirement.
 
 #### `psych-soap` (community, extends `soap`)
 
