@@ -304,11 +304,16 @@ export default function Home() {
         </p>
 
         <p className="mx-auto mt-4 max-w-[620px] text-[14px] leading-6 text-[var(--text-secondary)]">
-          v{MINUTES_RELEASE_VERSION} keeps the 0.14 desktop context tools,
-          <span className="mx-1 font-mono text-[var(--text)]">/minutes-video-review</span>,
-          and the self-healing Claude Desktop extension, while tightening the
-          first-wave regressions in call-end auto-stop and source-aware
-          diarization.
+          v{MINUTES_RELEASE_VERSION} adds an OpenAI-compatible summarization
+          backend (works against any compatible cloud or local server, with
+          keys in macOS Keychain), propagates speaker-identity overlays
+          across desktop, CLI, and MCP so a confirmed name in one place is
+          honored everywhere, ships
+          <span className="mx-1 font-mono text-[var(--text)]">humanizeTranscript()</span>
+          for nicer SDK rendering, adds Pi agent support, and keeps the 0.14
+          desktop context tools and
+          <span className="mx-1 font-mono text-[var(--text)]">/minutes-video-review</span>
+          in place.
         </p>
 
         <div className="mt-12">
