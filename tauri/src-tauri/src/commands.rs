@@ -2621,11 +2621,45 @@ pub fn spawn_processing_worker(
     completion_notifications_enabled: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
-        let config = Config::load();
-        let result = minutes_core::jobs::process_pending_jobs(&config, |job| {
+        if minutes_core::jobs::current_worker_pid().is_some() {
             sync_processing_indicator(&processing, &processing_stage);
+            return;
+        }
 
-            if let Some(notice) = output_notice_from_job(job) {
+        // Keep batch ASR/diarization work out of the GUI process. Long or
+        // mostly-silent captures can stress native backends; the CLI already
+        // uses this process boundary for queued jobs.
+        let child_result = std::env::current_exe().and_then(|exe| {
+            std::process::Command::new(exe)
+                .arg("--process-queue-worker")
+                .env(
+                    "RUST_LOG",
+                    std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
+                )
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        });
+
+        match child_result {
+            Ok(mut child) => {
+                let status = child.wait();
+                if let Err(error) = status {
+                    eprintln!("[minutes] processing worker wait failed: {}", error);
+                }
+            }
+            Err(error) => {
+                eprintln!("[minutes] failed to spawn processing worker: {}", error);
+            }
+        }
+
+        sync_processing_indicator(&processing, &processing_stage);
+        if let Some(job) = minutes_core::jobs::display_jobs(Some(1), true)
+            .into_iter()
+            .find(|job| job.state.is_terminal())
+        {
+            if let Some(notice) = output_notice_from_job(&job) {
                 set_latest_output(&latest_output, Some(notice.clone()));
                 if notice.kind == "saved" {
                     mark_activation_first_artifact_saved(
@@ -2639,18 +2673,7 @@ pub fn spawn_processing_worker(
                     &notice,
                 );
             }
-        });
-
-        if let Err(error) = result {
-            if !matches!(
-                error,
-                minutes_core::MinutesError::Pid(minutes_core::error::PidError::AlreadyRecording(_))
-            ) {
-                eprintln!("[minutes] processing worker failed: {}", error);
-            }
         }
-
-        sync_processing_indicator(&processing, &processing_stage);
     });
 }
 
@@ -4568,14 +4591,25 @@ pub fn cmd_mic_mute_state() -> bool {
 pub fn cmd_status(state: tauri::State<AppState>) -> serde_json::Value {
     let recording = state.recording.load(Ordering::Relaxed);
     let shared_processing = minutes_core::pid::read_processing_status();
-    let processing = state.processing.load(Ordering::Relaxed) || shared_processing.processing;
+    let active_jobs = minutes_core::jobs::active_jobs();
+    if active_jobs.is_empty() && !shared_processing.processing {
+        state.processing.store(false, Ordering::Relaxed);
+        set_processing_stage(&state.processing_stage, None);
+    }
+    let processing = state.processing.load(Ordering::Relaxed)
+        || shared_processing.processing
+        || !active_jobs.is_empty();
     let status = minutes_core::pid::status();
-    let processing_stage = state
+    let local_processing_stage = state
         .processing_stage
         .lock()
         .ok()
-        .and_then(|stage| stage.clone())
-        .or(shared_processing.stage);
+        .and_then(|stage| stage.clone());
+    let processing_stage = shared_processing
+        .stage
+        .clone()
+        .or_else(|| active_jobs.first().and_then(|job| job.stage.clone()))
+        .or(local_processing_stage);
     let processing_stage_label =
         pipeline_stage_label(processing_stage.as_deref(), status.recording_mode);
     let latest_output = state
@@ -4588,10 +4622,8 @@ pub fn cmd_status(state: tauri::State<AppState>) -> serde_json::Value {
         .lock()
         .ok()
         .and_then(|health| health.clone());
-    let processing_jobs: Vec<ProcessingJobView> = minutes_core::jobs::active_jobs()
-        .into_iter()
-        .map(processing_job_view)
-        .collect();
+    let processing_jobs: Vec<ProcessingJobView> =
+        active_jobs.into_iter().map(processing_job_view).collect();
     let update_state = state
         .update_install_state
         .lock()

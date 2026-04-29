@@ -102,6 +102,24 @@ fn maybe_run_hotkey_diagnostic() -> Option<i32> {
     Some(if probe.status == "active" { 0 } else { 2 })
 }
 
+fn maybe_run_process_queue_worker() -> Option<i32> {
+    if !std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--process-queue-worker")
+    {
+        return None;
+    }
+
+    let config = minutes_core::config::Config::load();
+    match minutes_core::jobs::process_pending_jobs(&config, |_| {}) {
+        Ok(()) => Some(0),
+        Err(error) => {
+            eprintln!("[minutes] processing worker failed: {}", error);
+            Some(1)
+        }
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         win.show().ok();
@@ -785,6 +803,10 @@ fn spawn_meetings_refresh_watcher(app: &tauri::AppHandle, output_dir: std::path:
 fn main() {
     #[cfg(target_os = "macos")]
     if let Some(code) = maybe_run_hotkey_diagnostic() {
+        std::process::exit(code);
+    }
+
+    if let Some(code) = maybe_run_process_queue_worker() {
         std::process::exit(code);
     }
 
