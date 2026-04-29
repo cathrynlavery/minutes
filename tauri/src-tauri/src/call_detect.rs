@@ -651,11 +651,12 @@ impl CallDetector {
         });
     }
 
-    fn note_mic_state(&self, mic_live: bool) {
+    fn note_mic_state(&self, mic_live: bool) -> bool {
         let mut last = self.last_mic_live.lock().unwrap();
         if last.is_some() && *last == Some(mic_live) {
-            return;
+            return false;
         }
+        let just_activated = *last == Some(false) && mic_live;
         *last = Some(mic_live);
         log_call_detect_event(
             "info",
@@ -668,20 +669,22 @@ impl CallDetector {
             None,
             serde_json::json!({ "mic_live": mic_live }),
         );
+        just_activated
     }
 
     /// Check if any configured call app is active.
     fn detect_active_call(&self, config: &CallDetectionConfig) -> DetectActiveCallResult {
         let mic_live = is_mic_in_use();
-        self.note_mic_state(mic_live);
+        let mic_just_activated = self.note_mic_state(mic_live);
 
         let running = running_process_names();
         self.detect_active_call_from_snapshot(
             config,
             mic_live,
             &running,
+            mic_just_activated,
             |detector, running, has_google_meet, has_teams_web| {
-                if (has_google_meet || has_teams_web) && detector.browser_probe_due() {
+                if has_google_meet || has_teams_web {
                     detector.schedule_next_browser_probe();
                     Some(detector.detect_browser_meeting(running, has_google_meet, has_teams_web))
                 } else {
@@ -696,6 +699,7 @@ impl CallDetector {
         config: &CallDetectionConfig,
         mic_live: bool,
         running: &[String],
+        force_browser_probe: bool,
         mut browser_probe: F,
     ) -> DetectActiveCallResult
     where
@@ -745,22 +749,24 @@ impl CallDetector {
             }
         }
 
-        if let Some(probe) = browser_probe(self, running, has_google_meet, has_teams_web) {
-            match probe {
-                BrowserMeetProbe::Detected { provider } => {
-                    let sticky = match provider {
-                        MeetingProvider::GoogleMeet => &self.recent_google_meet_until,
-                        MeetingProvider::TeamsWeb => &self.recent_teams_web_until,
-                    };
-                    remember_sticky(sticky, provider.sticky_duration());
-                    return detected_for(provider);
+        if (has_google_meet || has_teams_web) && (force_browser_probe || self.browser_probe_due()) {
+            if let Some(probe) = browser_probe(self, running, has_google_meet, has_teams_web) {
+                match probe {
+                    BrowserMeetProbe::Detected { provider } => {
+                        let sticky = match provider {
+                            MeetingProvider::GoogleMeet => &self.recent_google_meet_until,
+                            MeetingProvider::TeamsWeb => &self.recent_teams_web_until,
+                        };
+                        remember_sticky(sticky, provider.sticky_duration());
+                        return detected_for(provider);
+                    }
+                    BrowserMeetProbe::PermissionDenied { browser_app } => {
+                        return DetectActiveCallResult::PermissionWarning { browser_app };
+                    }
+                    BrowserMeetProbe::Error
+                    | BrowserMeetProbe::NoBrowserProcesses
+                    | BrowserMeetProbe::NoMatch => {}
                 }
-                BrowserMeetProbe::PermissionDenied { browser_app } => {
-                    return DetectActiveCallResult::PermissionWarning { browser_app };
-                }
-                BrowserMeetProbe::Error
-                | BrowserMeetProbe::NoBrowserProcesses
-                | BrowserMeetProbe::NoMatch => {}
             }
         }
 
@@ -1562,6 +1568,7 @@ mod tests {
             &config,
             true,
             &running,
+            false,
             |_detector, _running, want_meet, want_teams| {
                 assert!(want_meet);
                 assert!(!want_teams);
@@ -1587,6 +1594,7 @@ mod tests {
             &config,
             true,
             &running,
+            false,
             |_detector, _running, _want_meet, _want_teams| {
                 panic!("Zoom should be detected before browser probing")
             },
@@ -1614,6 +1622,7 @@ mod tests {
             &config,
             true,
             &running,
+            false,
             |_detector, _running, _want_meet, _want_teams| Some(BrowserMeetProbe::NoMatch),
         );
 
@@ -1624,6 +1633,33 @@ mod tests {
                 process_name: "Slack".into(),
             }
         );
+    }
+
+    #[test]
+    fn mic_activation_forces_browser_probe_before_slack_even_when_rate_limited() {
+        let detector = CallDetector::new(test_call_detection_config(vec![
+            "Slack".into(),
+            "google-meet".into(),
+        ]));
+        detector.schedule_next_browser_probe();
+        let config = detector.current_config();
+        let running = vec!["Slack".into(), "Google Chrome".into()];
+
+        let result = detector.detect_active_call_from_snapshot(
+            &config,
+            true,
+            &running,
+            true,
+            |_detector, _running, want_meet, want_teams| {
+                assert!(want_meet);
+                assert!(!want_teams);
+                Some(BrowserMeetProbe::Detected {
+                    provider: MeetingProvider::GoogleMeet,
+                })
+            },
+        );
+
+        assert_eq!(result, detected_for(MeetingProvider::GoogleMeet));
     }
 
     #[test]
