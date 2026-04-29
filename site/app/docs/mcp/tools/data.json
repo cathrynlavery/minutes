@@ -250,6 +250,14 @@
       "docsUrl": "https://useminutes.app/docs/mcp/tools#resource-recent-events"
     },
     {
+      "name": "agent_annotations",
+      "uri": "minutes://events/agent-annotations",
+      "description": "Recent append-only agent.annotation events, separate from human meeting markdown",
+      "group": "Status",
+      "anchorId": "resource-agent-annotations",
+      "docsUrl": "https://useminutes.app/docs/mcp/tools#resource-agent-annotations"
+    },
+    {
       "name": "recent-ideas",
       "uri": "minutes://ideas/recent",
       "description": "Recent voice memos and ideas captured from any device (last 14 days)",

@@ -1384,7 +1384,18 @@ mod tests {
             assert_eq!(body.error, "agent_not_allowlisted");
             assert_eq!(body.agent_id, "codex");
             assert_eq!(body.event_type, AGENT_ANNOTATION_EVENT_TYPE);
-            assert!(body.allowlist_path.ends_with(".minutes/agents.allow"));
+            let allowlist_path = PathBuf::from(&body.allowlist_path);
+            assert_eq!(
+                allowlist_path.file_name().and_then(|name| name.to_str()),
+                Some("agents.allow")
+            );
+            assert_eq!(
+                allowlist_path
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str()),
+                Some(".minutes")
+            );
             assert!(read_events_inner(None, None).unwrap().is_empty());
         });
     }

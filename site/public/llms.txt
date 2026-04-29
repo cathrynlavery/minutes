@@ -18,7 +18,7 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 
 ## For AI Agents
 
-minutes exposes a standard MCP server with 29 tools, 7 resources, and 6 prompt templates. Any MCP-compatible client can use it as a conversation memory layer.
+minutes exposes a standard MCP server with 29 tools, 8 resources, and 6 prompt templates. Any MCP-compatible client can use it as a conversation memory layer.
 
 ## Choose Your Surface
 
@@ -80,6 +80,7 @@ Recommended install:
 - `minutes://status` — Current recording status Docs: https://useminutes.app/docs/mcp/tools#resource-recording-status
 - `minutes://actions/open` — All open action items across meetings Docs: https://useminutes.app/docs/mcp/tools#resource-open-actions
 - `minutes://events/recent` — Recent pipeline events (recordings, processing, notes) Docs: https://useminutes.app/docs/mcp/tools#resource-recent-events
+- `minutes://events/agent-annotations` — Recent append-only agent.annotation events, separate from human meeting markdown Docs: https://useminutes.app/docs/mcp/tools#resource-agent-annotations
 - `minutes://ideas/recent` — Recent voice memos and ideas captured from any device (last 14 days) Docs: https://useminutes.app/docs/mcp/tools#resource-recent-ideas
 - `minutes://meetings/{slug}` — Get a specific meeting by its filename slug Docs: https://useminutes.app/docs/mcp/tools#resource-meeting
 
