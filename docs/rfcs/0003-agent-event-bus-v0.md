@@ -63,9 +63,9 @@ and dotted agent-facing names used by new or normalized events.
 | Event | v0 status | Notes |
 | --- | --- | --- |
 | `live.utterance.final` | canonical, shipped | Emitted by live transcript writer. Legacy `LiveUtteranceFinal` is accepted as an alias. |
-| `recording.completed` | canonical alias, compatibility bridge | Existing emitters still serialize `RecordingCompleted`; readers accept `recording.completed`. `minutes-l5sa.2` owns normalizing emitters and payload fields. |
+| `recording.completed` | canonical, shipped | Emitted by recording completion paths. Legacy `RecordingCompleted` is accepted as an alias. |
 | `meeting.insight.detected` | canonical alias, compatibility bridge | Existing emitters still serialize `MeetingInsightExtracted`; readers accept `meeting.insight.detected`. `minutes-l5sa.3` owns normalizing semantics. |
-| `recording.started` | planned | Owned by `minutes-l5sa.2`. Emit only after capture actually starts. |
+| `recording.started` | canonical, shipped | Emitted after capture/live/dictation/watch processing actually starts. |
 | `transcript.delta` | undecided for v0 | Owned by `minutes-l5sa.3`. Either implement behind an explicit gate or formally punt from v0. |
 | `agent.annotation` | planned | Owned by `minutes-l5sa.4`. Must be append-only, attributed, allowlisted, and separate from human-authored notes. |
 

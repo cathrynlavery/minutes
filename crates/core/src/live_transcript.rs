@@ -656,6 +656,11 @@ fn run_inner(
     let mut writer =
         LiveTranscriptWriter::new(config, context_session_id, TranscriptSource::Standalone)?;
     writer.mark_healthy();
+    crate::events::append_event(crate::events::recording_started_event(
+        writer.session_id.clone(),
+        "live",
+        ["audio.capture", "live.utterance.final"],
+    ));
 
     let mut vad = Vad::new();
     let mut streaming = StreamingWhisper::new(config.transcription.language.clone());

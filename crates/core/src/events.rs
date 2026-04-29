@@ -124,7 +124,15 @@ impl EventEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type")]
 pub enum MinutesEvent {
-    #[serde(alias = "recording.completed")]
+    #[serde(rename = "recording.started")]
+    RecordingStarted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        source: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
+    },
+    #[serde(rename = "recording.completed", alias = "RecordingCompleted")]
     RecordingCompleted {
         path: String,
         title: String,
@@ -947,6 +955,18 @@ pub fn recording_completed_event(
     }
 }
 
+pub fn recording_started_event(
+    session_id: Option<String>,
+    source: impl Into<String>,
+    capabilities: impl IntoIterator<Item = impl Into<String>>,
+) -> MinutesEvent {
+    MinutesEvent::RecordingStarted {
+        session_id,
+        source: source.into(),
+        capabilities: capabilities.into_iter().map(Into::into).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,6 +1215,66 @@ mod tests {
         assert!(json.contains("\"seq\":42"));
         assert!(json.contains("\"event_type\":\"NoteAdded\""));
         assert!(json.contains("\"text\":\"Important point\""));
+    }
+
+    #[test]
+    fn recording_started_serializes_with_v0_dotted_name() {
+        let envelope = EventEnvelope {
+            v: EVENT_SCHEMA_VERSION,
+            seq: 3,
+            timestamp: Local::now(),
+            event: recording_started_event(
+                Some("session-1".into()),
+                "capture",
+                ["audio.capture", "live.utterance.final"],
+            ),
+        };
+
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(value["event_type"], "recording.started");
+        assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["source"], "capture");
+        assert_eq!(value["capabilities"][0], "audio.capture");
+        assert_eq!(value["capabilities"][1], "live.utterance.final");
+    }
+
+    #[test]
+    fn recording_completed_serializes_dotted_and_reads_legacy_name() {
+        let envelope = EventEnvelope {
+            v: EVENT_SCHEMA_VERSION,
+            seq: 4,
+            timestamp: Local::now(),
+            event: MinutesEvent::RecordingCompleted {
+                path: "/tmp/test.md".into(),
+                title: "Test Meeting".into(),
+                word_count: 100,
+                content_type: "meeting".into(),
+                duration: "5m".into(),
+            },
+        };
+
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(value["event_type"], "recording.completed");
+
+        let legacy_json = serde_json::json!({
+            "v": EVENT_SCHEMA_VERSION,
+            "seq": 4,
+            "timestamp": Local::now(),
+            "event_type": "RecordingCompleted",
+            "path": "/tmp/test.md",
+            "title": "Test Meeting",
+            "word_count": 100,
+            "content_type": "meeting",
+            "duration": "5m"
+        })
+        .to_string();
+        let parsed: EventEnvelope = serde_json::from_str(&legacy_json).unwrap();
+        match parsed.event {
+            MinutesEvent::RecordingCompleted { title, .. } => {
+                assert_eq!(title, "Test Meeting");
+            }
+            other => panic!("expected RecordingCompleted, got {other:?}"),
+        }
     }
 
     #[test]

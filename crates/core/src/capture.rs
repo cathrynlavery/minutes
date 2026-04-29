@@ -377,6 +377,13 @@ pub enum RecordingIntent {
     Call,
 }
 
+#[derive(Debug, Clone)]
+pub struct RecordingStartedContext {
+    pub session_id: Option<String>,
+    pub source: String,
+    pub capabilities: Vec<String>,
+}
+
 impl RecordingIntent {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -938,6 +945,7 @@ fn record_to_wav_dual_source(
     stop_flag: Arc<AtomicBool>,
     config: &Config,
     plan: DualCapturePlan,
+    started_context: Option<RecordingStartedContext>,
 ) -> Result<(), CaptureError> {
     crate::pid::check_and_clear_sentinel();
     // Refresh the in-process mic-mute flag from the sentinel. The CLI
@@ -976,6 +984,7 @@ fn record_to_wav_dual_source(
         system = %system_stream.as_ref().expect("system stream").device_name,
         "using dual-source audio input devices"
     );
+    emit_recording_started(started_context);
 
     let _screen_handle = if config.screen_context.enabled {
         if !crate::screen::check_screen_permission() {
@@ -1287,12 +1296,21 @@ pub fn record_to_wav(
     stop_flag: Arc<AtomicBool>,
     config: &Config,
 ) -> Result<(), CaptureError> {
+    record_to_wav_with_lifecycle(output_path, stop_flag, config, None)
+}
+
+pub fn record_to_wav_with_lifecycle(
+    output_path: &Path,
+    stop_flag: Arc<AtomicBool>,
+    config: &Config,
+    started_context: Option<RecordingStartedContext>,
+) -> Result<(), CaptureError> {
     use cpal::traits::DeviceTrait;
 
     let capture_plan = resolve_capture_plan(config)?;
     #[cfg(feature = "streaming")]
     if let CapturePlan::Dual(plan) = capture_plan.clone() {
-        return record_to_wav_dual_source(output_path, stop_flag, config, plan);
+        return record_to_wav_dual_source(output_path, stop_flag, config, plan, started_context);
     }
 
     // Clear any stale stop sentinel from a previous session
@@ -1345,6 +1363,7 @@ pub fn record_to_wav(
         &live_tx,
     )?);
     tracing::info!("audio capture started");
+    emit_recording_started(started_context);
 
     // Device change monitor. When the user pinned a specific device via config
     // or --device, don't auto-switch on default-device changes — the override is
@@ -1564,6 +1583,16 @@ pub fn record_to_wav(
     }
 
     Ok(())
+}
+
+fn emit_recording_started(started_context: Option<RecordingStartedContext>) {
+    if let Some(context) = started_context {
+        crate::events::append_event(crate::events::recording_started_event(
+            context.session_id,
+            context.source,
+            context.capabilities,
+        ));
+    }
 }
 
 /// Spawn a live transcript sidecar thread that receives audio samples and

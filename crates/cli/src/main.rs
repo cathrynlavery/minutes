@@ -1745,7 +1745,21 @@ fn cmd_record(
 
     // Record audio from default input device
     let wav_path = minutes_core::pid::current_wav_path();
-    minutes_core::capture::record_to_wav(&wav_path, stop_flag, config)
+    minutes_core::capture::record_to_wav_with_lifecycle(
+        &wav_path,
+        stop_flag,
+        config,
+        Some(minutes_core::capture::RecordingStartedContext {
+            session_id: context_session_id.clone(),
+            source: "capture".into(),
+            capabilities: vec![
+                "audio.capture".into(),
+                "live.utterance.final".into(),
+                format!("mode.{}", capture_mode.noun().replace(' ', "-")),
+                format!("intent.{}", preflight.intent.as_str()),
+            ],
+        }),
+    )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let recording_finished_at = Local::now();
     let user_notes = minutes_core::notes::read_notes();

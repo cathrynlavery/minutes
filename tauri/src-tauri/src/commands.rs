@@ -2086,6 +2086,15 @@ fn start_native_call_recording(
         .ok();
     crate::update_tray_state(app_handle, true);
     minutes_core::notes::save_recording_start().ok();
+    minutes_core::events::append_event(minutes_core::events::recording_started_event(
+        context_session_id.clone(),
+        "capture",
+        [
+            "native-call.capture".to_string(),
+            "screen-capture-kit".to_string(),
+            format!("mode.{}", mode.noun().replace(' ', "-")),
+        ],
+    ));
 
     eprintln!(
         "[minutes] Native call capture started: {}",
@@ -3843,7 +3852,20 @@ pub fn start_recording(
     });
 
     let mut clear_processing_on_exit = true;
-    match minutes_core::capture::record_to_wav(&wav_path, stop_flag, &config) {
+    match minutes_core::capture::record_to_wav_with_lifecycle(
+        &wav_path,
+        stop_flag,
+        &config,
+        Some(minutes_core::capture::RecordingStartedContext {
+            session_id: context_session_id.clone(),
+            source: "capture".into(),
+            capabilities: vec![
+                "audio.capture".into(),
+                "live.utterance.final".into(),
+                format!("mode.{}", mode.noun().replace(' ', "-")),
+            ],
+        }),
+    ) {
         Ok(()) => {
             recording.store(false, Ordering::Relaxed);
             let should_discard = discard_short_hotkey_capture
