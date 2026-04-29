@@ -7,9 +7,10 @@ and a small recording dot in the upper-right corner using the dark-mode
 `--red` (`#FF453A`). Per DESIGN.md the red is reserved for recording state,
 so its use here is semantic — the icon literally tells you the app records.
 
-Outputs `tauri/src-tauri/icons/app-icon.png` at 1024x1024. Run
-`cargo tauri icon tauri/src-tauri/icons/app-icon.png` afterwards to
-regenerate `icon.icns`, `icon.ico`, and the size-set PNGs from this source.
+Outputs `tauri/src-tauri/icons/app-icon.png` and the MCP bundle `icon.png`
+at 1024x1024. Run `cargo tauri icon tauri/src-tauri/icons/app-icon.png`
+afterwards to regenerate `icon.icns`, `icon.ico`, and the size-set PNGs from
+this source.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ITALIC_TTF = REPO_ROOT / "tauri" / "src-tauri" / "dmg" / "fonts" / "InstrumentSerif-Italic.ttf"
 OUTPUT_PATH = REPO_ROOT / "tauri" / "src-tauri" / "icons" / "app-icon.png"
+MCP_ICON_PATH = REPO_ROOT / "icon.png"
 
 # DESIGN.md palette
 WARM_DARK = (13, 13, 11)        # #0D0D0B — dark-mode --bg
@@ -73,7 +75,9 @@ def main() -> None:
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     img.convert("RGBA").save(OUTPUT_PATH, format="PNG", optimize=True)
+    img.convert("RGBA").save(MCP_ICON_PATH, format="PNG", optimize=True)
     print(f"Generated {OUTPUT_PATH} ({SIZE}x{SIZE})")
+    print(f"Generated {MCP_ICON_PATH} ({SIZE}x{SIZE})")
     print("Next: cargo tauri icon tauri/src-tauri/icons/app-icon.png")
 
 

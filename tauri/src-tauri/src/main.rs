@@ -110,7 +110,7 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
     if let Ok(win) = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         // Empty title hides the centered "Minutes" text in the macOS title bar.
-        // The in-app brand mark (italic M + recording dot) carries the identity now,
+        // The in-app brand mark (italic m + recording dot) carries the identity now,
         // so the title text was double-branding the same window.
         .title("")
         .inner_size(520.0, 700.0)
@@ -192,7 +192,7 @@ pub fn update_tray_state_with_mode(app: &tauri::AppHandle, is_active: bool, is_l
         } else if is_active {
             include_bytes!("../icons/icon-recording.png")
         } else {
-            include_bytes!("../icons/icon.png")
+            include_bytes!("../icons/icon-tray.png")
         };
         if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
             tray.set_icon(Some(icon)).ok();
@@ -1406,7 +1406,7 @@ fn main() {
             }
             menu.append_items(&[&sep2, &screen_share_item, &check_update_item, &quit_item])?;
 
-            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon-tray.png"))
                 .expect("load tray icon");
 
             let _tray = TrayIconBuilder::with_id("minutes-tray")

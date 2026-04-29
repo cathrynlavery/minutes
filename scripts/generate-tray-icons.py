@@ -3,13 +3,13 @@
 
 Three states (per `tauri/src-tauri/src/main.rs:188-194`):
 
-- `icon.png` — idle (template). Just the italic M on transparent. macOS tints
+- `icon-tray.png` — idle (template). Just the italic m on transparent. macOS tints
   this based on menubar appearance so a single solid color works for both
   dark and light menubars.
-- `icon-recording.png` — full color. M + prominent red dot, ~25% canvas so
+- `icon-recording.png` — full color. m + prominent red dot, ~25% canvas so
   it survives 44px rendering. The red is the recording semantic per
   DESIGN.md.
-- `icon-live.png` — full color. M + prominent green dot in a different
+- `icon-live.png` — full color. m + prominent green dot in a different
   position so a glance distinguishes it from recording.
 
 Renders at 88×88 (44pt @ 2x for retina menubar). Tauri sets these via
@@ -38,13 +38,14 @@ GREEN = (48, 209, 88)    # #30D158 — live transcript distinguishing color
 # 44pt menubar @ 2x retina = 88px. Apple Human Interface Guidelines.
 SIZE = 88
 
-# Glyph: italic M optically centered, leaving room for a state dot in the
+# Glyph: italic m optically centered, leaving room for a state dot in the
 # corner without crowding.
-M_FONT_SIZE = 70
+M_FONT_SIZE = 76
+M_CY_OFFSET = -3
 
 # Idle "brand dot" — small template-tinted dot upper-right. Re-establishes
-# the brand identity (italic M alone is too generic; Monologue and others
-# use the same letterform). Tiny enough that it doesn't dominate.
+# the brand identity (italic m alone is too generic; other apps can share
+# the same letterform). Tiny enough that it doesn't dominate.
 IDLE_DOT_DIAMETER = 8
 IDLE_DOT_CX = SIZE - 12
 IDLE_DOT_CY = 12
@@ -90,8 +91,8 @@ def render(
             fill=(*color, 255),
         )
 
-    # Optically center the M. anchor='mm' uses the glyph bbox center.
-    draw.text((SIZE // 2, SIZE // 2), "M", font=font, fill=(*m_color, 255), anchor="mm")
+    # Optically center the m. anchor='mm' uses the glyph bbox center.
+    draw.text((SIZE // 2, SIZE // 2 + M_CY_OFFSET), "m", font=font, fill=(*m_color, 255), anchor="mm")
     return img
 
 
@@ -105,19 +106,19 @@ def main() -> None:
     ICONS_DIR.mkdir(parents=True, exist_ok=True)
     font = ImageFont.truetype(str(ITALIC_TTF), size=M_FONT_SIZE)
 
-    # Idle: template-style. M + small "brand dot" upper-right, both black so
+    # Idle: template-style. m + small "brand dot" upper-right, both black so
     # macOS auto-tints them together. Differentiates Minutes from other
-    # italic-M tray icons (Monologue, etc) without dominating.
+    # italic-m tray icons without dominating.
     idle = render(
         font,
         dot=(BLACK, IDLE_DOT_CX, IDLE_DOT_CY, IDLE_DOT_DIAMETER),
         m_color=BLACK,
     )
-    idle_path = ICONS_DIR / "icon.png"
+    idle_path = ICONS_DIR / "icon-tray.png"
     idle.save(idle_path, format="PNG", optimize=True)
     print(f"Generated {idle_path} ({SIZE}x{SIZE}) — idle template, small brand dot upper-right")
 
-    # Recording: cream M + RED dot upper-right (the brand dot grew bright).
+    # Recording: cream m + RED dot upper-right (the brand dot grew bright).
     rec = render(
         font,
         dot=(RED, RECORDING_DOT_CX, RECORDING_DOT_CY, RECORDING_DOT_DIAMETER),
@@ -127,7 +128,7 @@ def main() -> None:
     rec.save(rec_path, format="PNG", optimize=True)
     print(f"Generated {rec_path} ({SIZE}x{SIZE}) — recording, big red dot upper-right")
 
-    # Live: cream M + GREEN dot lower-right. Position-difference (not just
+    # Live: cream m + GREEN dot lower-right. Position-difference (not just
     # color) is the primary state cue.
     live = render(
         font,
