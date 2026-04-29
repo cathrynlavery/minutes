@@ -73,6 +73,7 @@ import {
   probeCapabilitiesSync,
   type CapabilityProbeResult,
 } from "./capabilities.js";
+import { downloadReleaseBinaryWithChecksum } from "./autoInstall.js";
 
 crashTrace("imports-complete");
 
@@ -473,7 +474,6 @@ async function tryAutoInstall(): Promise<boolean> {
   const binaryName = getReleaseBinaryName();
   if (binaryName) {
     try {
-      const url = `https://github.com/silverstein/minutes/releases/latest/download/${binaryName}`;
       const installDir = getInstallDir();
       const isWindows = process.platform === "win32";
       const targetName = isWindows ? "minutes.exe" : "minutes";
@@ -482,10 +482,15 @@ async function tryAutoInstall(): Promise<boolean> {
       console.error(`[Minutes] Downloading ${binaryName} from latest release...`);
 
       // Ensure install directory exists
-      await execFileAsync("mkdir", ["-p", installDir], { timeout: 5000 }).catch(() => {});
+      await mkdir(installDir, { recursive: true });
 
-      // Download with curl (available on macOS, Linux, and modern Windows)
-      await execFileAsync("curl", ["-fSL", "-o", targetPath, url], { timeout: 120000 });
+      // Download with curl (available on macOS, Linux, and modern Windows),
+      // verify SHA256SUMS.txt, then move the verified binary into place.
+      await downloadReleaseBinaryWithChecksum({
+        binaryName,
+        targetPath,
+        execFileAsync,
+      });
 
       // Make executable (not needed on Windows)
       if (!isWindows) {
