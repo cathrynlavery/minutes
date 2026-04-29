@@ -3615,6 +3615,7 @@ fn build_capability_report() -> CapabilityReport {
     features.insert("add_note".into(), true);
     features.insert("confirm_speaker".into(), true);
     features.insert("consistency_report".into(), true);
+    features.insert("events_since_seq".into(), true);
     features.insert("get_meeting".into(), true);
     features.insert("get_meeting_insights".into(), true);
     features.insert("get_person_profile".into(), true);

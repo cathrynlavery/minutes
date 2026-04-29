@@ -378,8 +378,7 @@ fn read_events_since_seq_inner(
     events.sort_by_key(|envelope| envelope.seq);
 
     if let Some(limit) = limit {
-        let skip = events.len().saturating_sub(limit);
-        events = events.into_iter().skip(skip).collect();
+        events.truncate(limit);
     }
 
     Ok(events)
@@ -985,17 +984,32 @@ mod tests {
                     text: "second".into(),
                 },
             };
+            let third = EventEnvelope {
+                v: EVENT_SCHEMA_VERSION,
+                seq: 0,
+                timestamp: Local::now() + chrono::Duration::minutes(5),
+                event: MinutesEvent::NoteAdded {
+                    meeting_path: "/tmp/third.md".into(),
+                    text: "third".into(),
+                },
+            };
 
             append_event_inner(&first).unwrap();
             append_event_inner(&second).unwrap();
+            append_event_inner(&third).unwrap();
 
             let events = read_events_since_seq_inner(1, None).unwrap();
-            assert_eq!(events.len(), 1);
+            assert_eq!(events.len(), 2);
             assert_eq!(events[0].seq, 2);
+            assert_eq!(events[1].seq, 3);
             match &events[0].event {
                 MinutesEvent::NoteAdded { text, .. } => assert_eq!(text, "second"),
                 _ => panic!("expected NoteAdded"),
             }
+
+            let limited = read_events_since_seq_inner(1, Some(1)).unwrap();
+            assert_eq!(limited.len(), 1);
+            assert_eq!(limited[0].seq, 2);
         });
     }
 
