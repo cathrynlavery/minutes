@@ -242,6 +242,11 @@ enum Commands {
         /// mid-recording with `minutes mic-toggle`.
         #[arg(long)]
         mute_mic: bool,
+
+        /// Template slug to apply to summarization (e.g. "standup", "1-on-1").
+        /// Use `minutes template list` to see available templates.
+        #[arg(long)]
+        template: Option<String>,
     },
 
     /// Toggle microphone mute for an active dual-source recording. System
@@ -569,6 +574,17 @@ enum Commands {
         /// Transcription language (e.g. "en", "ur", "es"). Overrides config.toml setting.
         #[arg(short, long)]
         language: Option<String>,
+
+        /// Template slug to apply to summarization (e.g. "standup", "1-on-1").
+        /// Use `minutes template list` to see available templates.
+        #[arg(long)]
+        template: Option<String>,
+    },
+
+    /// Manage summarization templates (list, show, validate)
+    Template {
+        #[command(subcommand)]
+        cmd: TemplateCmd,
     },
 
     /// Watch a folder for new audio files and process them automatically
@@ -1042,6 +1058,22 @@ enum AppleSpeechAction {
 }
 
 #[derive(Subcommand)]
+enum TemplateCmd {
+    /// List installed templates (project + user + bundled)
+    List,
+    /// Print the contents of a template by slug
+    Show {
+        /// Template slug (e.g. "standup", "1-on-1")
+        slug: String,
+    },
+    /// Validate a template file (schema check, no execution)
+    Validate {
+        /// Path to a `.md` template file
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum ContextAction {
     /// Summarize desktop context for a session, artifact, or explicit time window
     ActivitySummary {
@@ -1137,9 +1169,17 @@ fn main() -> Result<()> {
             call,
             diagnose,
             mute_mic,
+            template,
         } => {
             if let Some(lang) = language {
                 config.transcription.language = Some(lang);
+            }
+            // Validate the template now so the user gets immediate feedback
+            // if they typo a slug rather than discovering it after a recording.
+            if let Some(slug) = template.as_deref() {
+                minutes_core::TemplateResolver::new()
+                    .resolve(slug)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
             }
 
             resolve_recording_device_overrides(&mut config, &source, device, call)?;
@@ -1188,6 +1228,7 @@ fn main() -> Result<()> {
                     &mode,
                     effective_intent,
                     allow_degraded,
+                    template,
                     &config,
                 )
             }
@@ -1342,6 +1383,7 @@ fn main() -> Result<()> {
             note,
             title,
             language,
+            template,
         } => {
             if let Some(lang) = language {
                 config.transcription.language = Some(lang);
@@ -1350,12 +1392,27 @@ fn main() -> Result<()> {
             if let Some(ref n) = note {
                 minutes_core::notes::save_context(n)?;
             }
-            let result = cmd_process(&path, &content_type, title.as_deref(), &config);
+            let resolved_template = match template.as_deref() {
+                Some(slug) => Some(
+                    minutes_core::TemplateResolver::new()
+                        .resolve(slug)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?,
+                ),
+                None => None,
+            };
+            let result = cmd_process(
+                &path,
+                &content_type,
+                title.as_deref(),
+                resolved_template.as_ref(),
+                &config,
+            );
             if note.is_some() {
                 minutes_core::notes::cleanup();
             }
             result
         }
+        Commands::Template { cmd } => cmd_template(cmd),
         Commands::Watch { dir, language } => {
             if let Some(lang) = language {
                 config.transcription.language = Some(lang);
@@ -1721,6 +1778,7 @@ fn cmd_record(
     mode: &str,
     intent: &str,
     allow_degraded: bool,
+    template_slug: Option<String>,
     config: &Config,
 ) -> Result<()> {
     // Ensure directories exist
@@ -1855,6 +1913,7 @@ fn cmd_record(
             Some(recording_finished_at),
             context_session_id.clone(),
             calendar_event,
+            template_slug.clone(),
         )?;
 
         let queued_result = serde_json::to_string_pretty(&serde_json::json!({
@@ -3306,6 +3365,7 @@ fn cmd_process(
     path: &Path,
     content_type: &str,
     title: Option<&str>,
+    template: Option<&minutes_core::Template>,
     config: &Config,
 ) -> Result<()> {
     if !path.exists() {
@@ -3319,7 +3379,15 @@ fn cmd_process(
     };
 
     config.ensure_dirs()?;
-    let result = minutes_core::process(path, ct, title, config)?;
+    let result = minutes_core::pipeline::process_with_template(
+        path,
+        ct,
+        title,
+        config,
+        None,
+        template,
+        |_| {},
+    )?;
     eprintln!("Saved: {}", result.path.display());
 
     // Update relationship graph index
@@ -3335,6 +3403,76 @@ fn cmd_process(
     }))?;
     println!("{}", json);
     Ok(())
+}
+
+fn cmd_template(cmd: TemplateCmd) -> Result<()> {
+    let resolver = minutes_core::TemplateResolver::new();
+    match cmd {
+        TemplateCmd::List => {
+            let listings = resolver.list();
+            if listings.is_empty() {
+                eprintln!("No templates installed.");
+                return Ok(());
+            }
+            let slug_width = listings
+                .iter()
+                .map(|l| l.slug.len())
+                .max()
+                .unwrap_or(8)
+                .max(8);
+            let source_width = 8; // "bundled" / "project" / "user"
+            println!(
+                "{slug:slug_w$}  {src:src_w$}  DESCRIPTION",
+                slug = "SLUG",
+                src = "SOURCE",
+                slug_w = slug_width,
+                src_w = source_width,
+            );
+            for listing in listings {
+                println!(
+                    "{:slug_w$}  {:src_w$}  {}",
+                    listing.slug,
+                    listing.source.as_str(),
+                    listing.description,
+                    slug_w = slug_width,
+                    src_w = source_width,
+                );
+            }
+            Ok(())
+        }
+        TemplateCmd::Show { slug } => {
+            let template = resolver
+                .resolve(&slug)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            match template.path.as_ref() {
+                Some(path) => {
+                    let body = std::fs::read_to_string(path)
+                        .map_err(|e| anyhow::anyhow!("could not read {}: {}", path.display(), e))?;
+                    print!("{}", body);
+                }
+                None => {
+                    let yaml = serde_yaml::to_string(&template.frontmatter)
+                        .map_err(|e| anyhow::anyhow!("could not render template: {}", e))?;
+                    println!("---\n{}---\n", yaml);
+                    print!("{}", template.body);
+                }
+            }
+            Ok(())
+        }
+        TemplateCmd::Validate { path } => {
+            if !path.exists() {
+                anyhow::bail!("file not found: {}", path.display());
+            }
+            let template =
+                minutes_core::Template::load_file(&path, minutes_core::TemplateSource::Project)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            println!(
+                "OK: template '{}' ({} v{})",
+                template.frontmatter.slug, template.frontmatter.name, template.frontmatter.version
+            );
+            Ok(())
+        }
+    }
 }
 
 /// Process an existing WAV file as a mock recording with full diagnostic output.
