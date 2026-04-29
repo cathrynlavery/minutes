@@ -478,6 +478,7 @@ Then use commands like:
 Minutes works with Mario Zechner's `pi` coding agent in two places:
 
 - `engine = "agent"` can call `pi` directly for local meeting summarization.
+- The desktop Recall panel can launch Pi when `[assistant].agent = "pi"`.
 - Pi auto-discovers this repo's existing `.agents/skills/minutes/` skill pack, so there is no separate `.pi/skills` tree to keep in sync.
 
 Install Pi, log in or configure a provider, then set:
@@ -489,6 +490,8 @@ agent_command = "pi"
 ```
 
 Minutes invokes Pi in non-interactive, no-tools mode with a private prompt file. Configure provider/model defaults in Pi itself; Minutes does not currently forward extra `[summarization]` CLI flags. That keeps summarization opt-in and prevents the agent from writing to the repo while it is turning a transcript into notes.
+
+For the interactive Recall panel, Minutes launches Pi directly and passes `[assistant].agent_args` through. Pi still owns provider auth and model selection: use Pi's `/login` and `/model` flows first. If a GitHub Copilot model reports that personal access tokens are unsupported, refresh the Pi Copilot login instead of adding a GitHub PAT to Minutes.
 
 This is separate from Inflection's Pi chatbot/model. Inflection's Pi models are optimized for warmth and emotional intelligence, but the Inflection API terms say not to send regulated personal data. Meeting transcripts often contain personal data, so Minutes does not route transcripts to Inflection by default.
 
