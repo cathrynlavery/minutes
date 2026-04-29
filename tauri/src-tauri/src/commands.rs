@@ -2454,6 +2454,46 @@ fn set_call_detection_sentinel(config: &mut Config, sentinel: &str, enabled: boo
     }
 }
 
+fn configured_call_source(config: &Config) -> Option<&str> {
+    config
+        .recording
+        .sources
+        .as_ref()
+        .and_then(|sources| sources.call.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn arm_desktop_call_capture_route(
+    config: &mut Config,
+    requested_intent: Option<RecordingIntent>,
+    loopback_device: Option<String>,
+) -> bool {
+    if requested_intent != Some(RecordingIntent::Call) || configured_call_source(config).is_some() {
+        return false;
+    }
+
+    let Some(loopback_device) = loopback_device.map(|value| value.trim().to_string()) else {
+        return false;
+    };
+    if loopback_device.is_empty() {
+        return false;
+    }
+
+    let voice = config
+        .recording
+        .sources
+        .as_ref()
+        .and_then(|sources| sources.voice.clone())
+        .or_else(|| config.recording.device.clone());
+    config.recording.sources = Some(minutes_core::config::SourcesConfig {
+        voice,
+        call: Some(loopback_device),
+    });
+    config.recording.device = None;
+    true
+}
+
 fn stage_label(stage: minutes_core::pipeline::PipelineStage, mode: CaptureMode) -> &'static str {
     match (stage, mode) {
         (minutes_core::pipeline::PipelineStage::Transcribing, CaptureMode::Meeting) => {
@@ -3709,6 +3749,12 @@ pub fn start_recording(
     // startup-side persistence stays in main.rs so users keep their
     // pin for when the device reconnects on a future launch.
     minutes_core::capture::auto_heal_missing_recording_device(&mut config);
+    let desktop_call_loopback = if requested_intent == Some(RecordingIntent::Call) {
+        minutes_core::capture::detect_loopback_device()
+    } else {
+        None
+    };
+    arm_desktop_call_capture_route(&mut config, requested_intent, desktop_call_loopback);
     let preflight = match minutes_core::capture::preflight_recording_with_native_call_capture(
         mode,
         requested_intent,
@@ -4402,6 +4448,12 @@ pub fn cmd_start_recording(
 ) -> Result<(), String> {
     let capture_mode = parse_capture_mode(mode.as_deref())?;
     let requested_intent = parse_recording_intent(intent.as_deref())?;
+    let from_call_detect = source.as_deref() == Some("call_detect");
+    let requested_intent = if from_call_detect && requested_intent.is_none() {
+        Some(RecordingIntent::Call)
+    } else {
+        requested_intent
+    };
 
     // Early-out BEFORE mutating any call-detect session atomics: if another
     // recording is already in flight, launch_recording will reject this call
@@ -4417,7 +4469,6 @@ pub fn cmd_start_recording(
     // Session-level flag that scopes the stop_when_call_ends auto-stop only
     // to recordings started via the call detection banner. Manual starts
     // never get auto-stopped, even when the config flag is on.
-    let from_call_detect = source.as_deref() == Some("call_detect");
     state
         .recording_started_by_call_detect
         .store(from_call_detect, Ordering::Relaxed);
@@ -7615,6 +7666,49 @@ mod tests {
         set_call_detection_sentinel(&mut config, "teams-web", false);
         assert!(!call_detection_has_sentinel(&config, "teams-web"));
         assert!(call_detection_has_sentinel(&config, "google-meet"));
+    }
+
+    #[test]
+    fn desktop_call_capture_route_preserves_selected_mic_and_sets_loopback() {
+        let mut config = Config::default();
+        config.recording.device = Some("MacBook Pro Microphone".into());
+
+        let armed = arm_desktop_call_capture_route(
+            &mut config,
+            Some(RecordingIntent::Call),
+            Some("MMAudio Device".into()),
+        );
+
+        assert!(armed);
+        assert!(config.recording.device.is_none());
+        let sources = config.recording.sources.unwrap();
+        assert_eq!(sources.voice.as_deref(), Some("MacBook Pro Microphone"));
+        assert_eq!(sources.call.as_deref(), Some("MMAudio Device"));
+    }
+
+    #[test]
+    fn desktop_call_capture_route_keeps_existing_call_source() {
+        let mut config = Config::default();
+        config.recording.device = Some("MacBook Pro Microphone".into());
+        config.recording.sources = Some(minutes_core::config::SourcesConfig {
+            voice: Some("Studio Mic".into()),
+            call: Some("BlackHole 2ch".into()),
+        });
+
+        let armed = arm_desktop_call_capture_route(
+            &mut config,
+            Some(RecordingIntent::Call),
+            Some("MMAudio Device".into()),
+        );
+
+        assert!(!armed);
+        assert_eq!(
+            config.recording.device.as_deref(),
+            Some("MacBook Pro Microphone")
+        );
+        let sources = config.recording.sources.unwrap();
+        assert_eq!(sources.voice.as_deref(), Some("Studio Mic"));
+        assert_eq!(sources.call.as_deref(), Some("BlackHole 2ch"));
     }
 
     #[test]

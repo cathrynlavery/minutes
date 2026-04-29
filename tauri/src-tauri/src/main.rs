@@ -113,8 +113,8 @@ fn show_main_window(app: &tauri::AppHandle) {
         // The in-app brand mark (italic m + recording dot) carries the identity now,
         // so the title text was double-branding the same window.
         .title("")
-        .inner_size(520.0, 700.0)
-        .min_inner_size(420.0, 520.0)
+        .inner_size(560.0, 700.0)
+        .min_inner_size(460.0, 520.0)
         .transparent(true)
         .content_protected(Config::load().privacy.hide_from_screen_share)
         .focused(true)

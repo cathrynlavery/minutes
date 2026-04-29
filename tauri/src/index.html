@@ -6340,9 +6340,21 @@
     });
 
     // ── Recording controls ──
+    function recordingStartArgsForCurrentUi() {
+      if (activeCallSession && !activeCallSession.dismissed && callBanner.classList.contains('active')) {
+        return { intent: 'call', source: 'call_detect' };
+      }
+      return undefined;
+    }
+
+    function startDesktopRecordingFromUi() {
+      const args = recordingStartArgsForCurrentUi();
+      return args ? invoke('cmd_start_recording', args) : invoke('cmd_start_recording');
+    }
+
     document.getElementById('btn-record').addEventListener('click', async () => {
       try {
-        await invoke('cmd_start_recording');
+        await startDesktopRecordingFromUi();
       } catch (e) {
         console.error('Record:', e);
       }
@@ -7417,7 +7429,7 @@
 
           document.getElementById('btn-record-upcoming').onclick = async () => {
             try {
-              await invoke('cmd_start_recording');
+              await startDesktopRecordingFromUi();
             } catch (e) { console.error('Record:', e); }
           };
         } else {
@@ -9295,7 +9307,7 @@
     const assistantBtn = document.getElementById('btn-assistant');
     const splitHandle = document.getElementById('split-handle');
 
-    const COLLAPSED_WIDTH = 480;
+    const COLLAPSED_WIDTH = 520;
     const EXPANDED_WIDTH = 960;
     const SESSION_ID = 'assistant';
 
