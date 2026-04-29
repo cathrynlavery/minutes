@@ -9,6 +9,8 @@ Agents have run logs. Humans have conversations. **minutes** captures the human 
 
 Record a meeting. Capture a voice memo on a walk. Ask Claude *"what did I promise Sarah?"* — and get an answer. Your AI remembers every conversation you've had.
 
+Minutes is not just a meeting-notes app. It is local conversation infrastructure for agents: audio capture, transcripts, decisions, commitments, people, and provenance exposed through plain files, CLI commands, MCP tools, and live transcript streams.
+
 > **Own every conversation you've ever had.** Cloud meeting tools rent your own conversations back to you. Minutes writes every meeting to `~/meetings/` as plain markdown, which every AI you use (Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Pi) reads directly. No SDK. No API key. No vendor to outlive. Ten years from now, `grep` still works on your corpus. &nbsp;[**For agents →**](https://useminutes.app/for-agents) &nbsp;·&nbsp; [**Frontmatter schema →**](docs/frontmatter-schema.md)
 
 <p align="center">
@@ -1119,7 +1121,7 @@ Single `minutes-core` library shared by CLI, MCP server, and Tauri app. Zero cod
 
 ### Building your own agent on Minutes
 
-Minutes is designed as infrastructure for AI agents. The MCP server is the primary integration surface:
+Minutes is designed as infrastructure for AI agents. Files are the durable substrate; MCP is the active interface; live transcript JSONL is the real-time path. The MCP server is the primary integration surface today:
 
 - **Read meetings**: `list_meetings`, `search_meetings`, `get_meeting` return structured JSON
 - **Track people**: `get_person_profile` builds cross-meeting profiles with topics, open commitments

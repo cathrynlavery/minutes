@@ -11,9 +11,9 @@ import {
 const featureGrid = [
   {
     label: "For agents",
-    title: "Memory with structure",
+    title: "Local audio context",
     description:
-      `${MINUTES_MCP_TOOL_COUNT} MCP tools and structured markdown let Claude, Codex, Gemini CLI, and Cowork query what happened instead of guessing.`,
+      `${MINUTES_MCP_TOOL_COUNT} MCP tools, live transcript reads, and structured markdown let Claude, Codex, Gemini CLI, and Cowork work from what was actually said.`,
   },
   {
     label: "For developers",
@@ -117,7 +117,7 @@ const comparisons = [
   ["Local transcription", "No", "No", "Yes", "Yes"],
   ["Open source", "No", "No", "Yes", "MIT"],
   ["Free", "$18/mo", "Freemium", "Free", "Free"],
-  ["AI agent integration", "No", "No", "No", `${MINUTES_MCP_TOOL_COUNT} MCP tools`],
+  ["Agent surface", "Hosted MCP/API", "Hosted integrations", "Local app", `Files + ${MINUTES_MCP_TOOL_COUNT} MCP tools`],
   ["Cross-meeting intelligence", "No", "No", "No", "Yes"],
   ["Dictation mode", "No", "No", "No", "Yes"],
   ["Voice memos", "No", "No", "No", "iPhone pipeline"],
@@ -260,7 +260,7 @@ export default function Home() {
         <p className="mx-auto mt-5 max-w-[600px] text-[16px] leading-7 text-[var(--text-secondary)] sm:text-[17px]">
           Cloud meeting tools rent your own conversations back to you. Minutes
           captures meetings and voice memos locally, writes them as structured
-          markdown to your disk, and lets every AI you use read the same folder.
+          markdown to your disk, and lets you and every AI you use read the same folder.
         </p>
 
         <div className="mt-8 flex flex-wrap justify-center gap-3">
