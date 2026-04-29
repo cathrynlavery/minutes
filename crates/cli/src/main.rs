@@ -5865,7 +5865,14 @@ fn cmd_events_follow(
     let mut initial_events = if let Some(seq) = since_seq {
         minutes_core::events::read_events_since_seq(seq, None)
     } else {
-        minutes_core::events::read_events(since_dt, Some(limit))
+        minutes_core::events::read_events(
+            since_dt,
+            if event_type.is_some() {
+                None
+            } else {
+                Some(limit)
+            },
+        )
     };
     filter_events_by_type(&mut initial_events, event_type.as_deref());
     apply_events_limit(&mut initial_events, limit, since_seq.is_some());
