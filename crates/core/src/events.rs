@@ -176,7 +176,7 @@ pub enum MinutesEvent {
     },
     /// Structured insight extracted from a meeting (decision, commitment, etc.).
     /// Subscribable by external systems via MCP notifications.
-    #[serde(alias = "meeting.insight.detected")]
+    #[serde(rename = "meeting.insight.detected", alias = "MeetingInsightExtracted")]
     MeetingInsightExtracted {
         insight: MeetingInsight,
         meeting_title: String,
@@ -1376,6 +1376,63 @@ mod tests {
     }
 
     #[test]
+    fn meeting_insight_detected_serializes_dotted_and_reads_legacy_name() {
+        let envelope = EventEnvelope {
+            v: EVENT_SCHEMA_VERSION,
+            seq: 11,
+            timestamp: Local::now(),
+            event: MinutesEvent::MeetingInsightExtracted {
+                insight: MeetingInsight {
+                    kind: InsightKind::Commitment,
+                    content: "Send pricing doc".into(),
+                    confidence: InsightConfidence::Strong,
+                    participants: vec!["Sarah".into()],
+                    owner: Some("Sarah".into()),
+                    deadline: Some("Friday".into()),
+                    topic: None,
+                    source_meeting: "/meetings/test.md".into(),
+                },
+                meeting_title: "Pricing Review".into(),
+            },
+        };
+
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(value["event_type"], "meeting.insight.detected");
+        assert_eq!(value["insight"]["kind"], "commitment");
+        assert_eq!(value["insight"]["confidence"], "strong");
+
+        let legacy_json = serde_json::json!({
+            "v": EVENT_SCHEMA_VERSION,
+            "seq": 11,
+            "timestamp": Local::now(),
+            "event_type": "MeetingInsightExtracted",
+            "insight": {
+                "kind": "commitment",
+                "content": "Send pricing doc",
+                "confidence": "strong",
+                "participants": ["Sarah"],
+                "owner": "Sarah",
+                "deadline": "Friday",
+                "source_meeting": "/meetings/test.md"
+            },
+            "meeting_title": "Pricing Review"
+        })
+        .to_string();
+        let parsed: EventEnvelope = serde_json::from_str(&legacy_json).unwrap();
+        match parsed.event {
+            MinutesEvent::MeetingInsightExtracted {
+                insight,
+                meeting_title,
+            } => {
+                assert_eq!(meeting_title, "Pricing Review");
+                assert_eq!(insight.kind, InsightKind::Commitment);
+                assert_eq!(insight.owner.as_deref(), Some("Sarah"));
+            }
+            other => panic!("expected MeetingInsightExtracted, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn read_events_returns_empty_for_missing_file() {
         with_temp_home(|_| {
             let events = read_events_inner(None, None);
@@ -1548,7 +1605,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&envelope).unwrap();
-        assert!(json.contains("\"event_type\":\"MeetingInsightExtracted\""));
+        assert!(json.contains("\"event_type\":\"meeting.insight.detected\""));
         assert!(json.contains("\"kind\":\"commitment\""));
         assert!(json.contains("\"confidence\":\"strong\""));
 

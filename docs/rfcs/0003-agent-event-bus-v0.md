@@ -64,9 +64,9 @@ and dotted agent-facing names used by new or normalized events.
 | --- | --- | --- |
 | `live.utterance.final` | canonical, shipped | Emitted by live transcript writer. Legacy `LiveUtteranceFinal` is accepted as an alias. |
 | `recording.completed` | canonical, shipped | Emitted by recording completion paths. Legacy `RecordingCompleted` is accepted as an alias. |
-| `meeting.insight.detected` | canonical alias, compatibility bridge | Existing emitters still serialize `MeetingInsightExtracted`; readers accept `meeting.insight.detected`. `minutes-l5sa.3` owns normalizing semantics. |
+| `meeting.insight.detected` | canonical, shipped | Emitted by semantic insight extraction. Legacy `MeetingInsightExtracted` is accepted as an alias. |
 | `recording.started` | canonical, shipped | Emitted after capture/live/dictation/watch processing actually starts. |
-| `transcript.delta` | undecided for v0 | Owned by `minutes-l5sa.3`. Either implement behind an explicit gate or formally punt from v0. |
+| `transcript.delta` | punted from v0 | Partial streaming revisions are high-volume and model-specific. Keep v0 on final utterances; revisit deltas in a gated v1 design. |
 | `agent.annotation` | planned | Owned by `minutes-l5sa.4`. Must be append-only, attributed, allowlisted, and separate from human-authored notes. |
 
 Existing internal or legacy events such as `AudioProcessed`, `WatchProcessed`,
@@ -74,6 +74,24 @@ Existing internal or legacy events such as `AudioProcessed`, `WatchProcessed`,
 `KnowledgeUpdated`, `MicMuted`, and `MicUnmuted` remain valid log entries.
 They are not part of the #194 v0 agent contract unless a later bead promotes
 them into the dotted taxonomy.
+
+## `transcript.delta` Decision
+
+`transcript.delta` is intentionally out of v0.
+
+The two live transcript hot paths can produce partial streaming revisions while
+someone is still speaking. Those revisions are useful for future mid-utterance
+coaching, but they are also noisy:
+
+- a single utterance can produce many revised partials before the final text
+- Whisper/Parakeet/Apple Speech do not expose identical partial semantics
+- high-volume partial events would make `events.jsonl` noisier for local tails
+- consumers need revision IDs or replacement semantics to avoid treating draft
+  tokens as stable speech
+
+For v0, `live.utterance.final` is the stable live transcript event. A future v1
+can add `transcript.delta` behind an explicit config flag with volume limits,
+revision IDs, and host compatibility tests.
 
 ## Closure Rules For #194
 

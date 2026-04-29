@@ -983,7 +983,8 @@ fn run_inner(
                 }
             } else if let Ok(whisper_ctx) = ensure_live_whisper_ctx(&mut whisper_ctx, config) {
                 if let Some(_sr) = streaming.feed(&chunk.samples, whisper_ctx) {
-                    // Partial result available — could emit event in the future
+                    // Intentionally not emitted in event-bus v0. Partial
+                    // revisions are high-volume and need a gated v1 contract.
                 }
             }
 
@@ -1982,7 +1983,8 @@ fn run_sidecar_inner_mpsc(
                     parakeet_utterance_samples.extend_from_slice(&samples);
                 }
             } else if let Some(_sr) = streaming.feed(&samples, &whisper_ctx) {
-                // Partial result — could emit event in future
+                // Intentionally not emitted in event-bus v0. Partial
+                // revisions are high-volume and need a gated v1 contract.
             }
 
             if utterance_samples >= max_utterance_samples {
