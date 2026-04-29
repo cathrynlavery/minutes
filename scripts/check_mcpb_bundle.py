@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 REQUIRED = [
+    "manifest.json",
     "crates/mcp/dist/index.js",
     "crates/mcp/dist-ui/index.html",
     "crates/mcp/node_modules/@modelcontextprotocol/ext-apps/package.json",
@@ -119,6 +120,9 @@ def report_forbidden(paths: list[str]) -> None:
 def check_bundle(bundle: str) -> None:
     with zipfile.ZipFile(bundle) as zf:
         names = set(zf.namelist())
+        packed_manifest = (
+            json.loads(zf.read("manifest.json")) if "manifest.json" in names else {}
+        )
 
     missing = [path for path in REQUIRED if path not in names]
     # Claude Desktop 1.3109.0 rejects any zip entry containing `..` as path
@@ -139,6 +143,33 @@ def check_bundle(bundle: str) -> None:
         if package is not None
     }
     unexpected_deps = sorted(bundled_deps - allowed_runtime_deps)
+
+    expected_manifest_path = Path("manifest.mcpb.json")
+    if expected_manifest_path.exists():
+        with expected_manifest_path.open() as f:
+            expected_manifest = json.load(f)
+        mismatched_manifest_fields = [
+            field
+            for field in ("display_name", "description", "long_description", "version")
+            if packed_manifest.get(field) != expected_manifest.get(field)
+        ]
+    else:
+        expected_manifest = {}
+        mismatched_manifest_fields = []
+
+    root_manifest_path = Path("manifest.json")
+    if root_manifest_path.exists() and expected_manifest:
+        with root_manifest_path.open() as f:
+            root_manifest = json.load(f)
+        listing_fields = {"display_name", "description", "long_description"}
+        drifted_manifest_fields = [
+            field
+            for field in sorted(set(root_manifest) | set(expected_manifest))
+            if field not in listing_fields
+            and root_manifest.get(field) != expected_manifest.get(field)
+        ]
+    else:
+        drifted_manifest_fields = []
 
     if missing:
         print("MCPB bundle is missing required runtime files:", file=sys.stderr)
@@ -178,6 +209,36 @@ def check_bundle(bundle: str) -> None:
         print(
             "These are usually dev-only packages from npm install. Add their "
             "paths to .mcpbignore or prune dev dependencies before packing.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    if mismatched_manifest_fields:
+        print(
+            "MCPB bundle manifest.json does not match manifest.mcpb.json for "
+            "Claude listing fields:",
+            file=sys.stderr,
+        )
+        for field in mismatched_manifest_fields:
+            print(f"  - {field}", file=sys.stderr)
+        print(
+            "Pack with scripts/pack_mcpb.sh so the Claude-specific listing is "
+            "used inside minutes.mcpb.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    if drifted_manifest_fields:
+        print(
+            "manifest.mcpb.json has drifted from manifest.json outside Claude "
+            "listing copy:",
+            file=sys.stderr,
+        )
+        for field in drifted_manifest_fields:
+            print(f"  - {field}", file=sys.stderr)
+        print(
+            "Keep runtime fields in sync; only display_name, description, and "
+            "long_description should differ.",
             file=sys.stderr,
         )
         raise SystemExit(1)
