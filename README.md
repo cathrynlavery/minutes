@@ -1121,13 +1121,14 @@ Single `minutes-core` library shared by CLI, MCP server, and Tauri app. Zero cod
 
 ### Building your own agent on Minutes
 
-Minutes is designed as infrastructure for AI agents. Files are the durable substrate; MCP is the active interface; live transcript JSONL is the real-time path. The MCP server is the primary integration surface today:
+Minutes is designed as infrastructure for AI agents. Files are the durable substrate; MCP is the active interface; live transcript JSONL and the local event log are the real-time paths. The MCP server is the primary integration surface today:
 
 - **Read meetings**: `list_meetings`, `search_meetings`, `get_meeting` return structured JSON
 - **Track people**: `get_person_profile` builds cross-meeting profiles with topics, open commitments
 - **Monitor consistency**: `consistency_report` flags conflicting decisions and stale commitments
 - **Record + process**: `start_recording`, `stop_recording`, `process_audio` for pipeline control
 - **Live coaching**: `start_live_transcript`, `read_live_transcript` for real-time mid-meeting access
+- **Local event stream**: `minutes events --follow --since-seq N` tails newline-delimited events, including finalized live utterances, for agents that want a durable cursor
 - **Voice profiles**: `list_voices`, `confirm_speaker` for speaker identification workflows
 - **Resources**: Stable URIs (`minutes://meetings/recent`, `minutes://actions/open`) for agent context injection
 

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Local};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -23,6 +24,11 @@ use crate::markdown::ContentType;
 // ──────────────────────────────────────────────────────────────
 
 const MAX_EVENT_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10MB
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
+
+fn default_event_schema_version() -> u32 {
+    EVENT_SCHEMA_VERSION
+}
 
 // ── Confidence model ──────────────────────────────────────────
 // Mirrors the speaker attribution confidence system (L0–L3).
@@ -92,9 +98,24 @@ pub struct MeetingInsight {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
+    #[serde(default = "default_event_schema_version")]
+    pub v: u32,
+    #[serde(default)]
+    pub seq: u64,
     pub timestamp: DateTime<Local>,
     #[serde(flatten)]
     pub event: MinutesEvent,
+}
+
+impl EventEnvelope {
+    pub fn new(event: MinutesEvent) -> Self {
+        Self {
+            v: EVENT_SCHEMA_VERSION,
+            seq: 0,
+            timestamp: Local::now(),
+            event,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,10 +184,26 @@ pub enum MinutesEvent {
     MicUnmuted {
         source: String,
     },
+    /// Finalized utterance from standalone live transcript or recording sidecar.
+    #[serde(rename = "live.utterance.final", alias = "LiveUtteranceFinal")]
+    LiveUtteranceFinal {
+        session_id: Option<String>,
+        source: String,
+        transcript_path: String,
+        line: usize,
+        text: String,
+        speaker: Option<String>,
+        offset_ms: u64,
+        duration_ms: u64,
+    },
 }
 
 fn events_path() -> PathBuf {
     Config::minutes_dir().join("events.jsonl")
+}
+
+fn events_lock_path() -> PathBuf {
+    Config::minutes_dir().join("events.lock")
 }
 
 fn event_log_paths() -> std::io::Result<Vec<PathBuf>> {
@@ -196,6 +233,33 @@ fn event_log_paths() -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn with_event_log_lock<T>(f: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+    let path = events_lock_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let creating = !path.exists();
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+
+    #[cfg(unix)]
+    if creating {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    file.lock_exclusive()?;
+    let result = f();
+    if let Err(error) = file.unlock() {
+        tracing::warn!(error = %error, "failed to unlock event log");
+    }
+    result
+}
+
 fn rotated_events_path_for(now: DateTime<Local>) -> PathBuf {
     let dir = Config::minutes_dir();
     let base = now.format("events.%Y-%m-%d-%H%M%S%3f").to_string();
@@ -217,36 +281,43 @@ fn rotated_events_path_for(now: DateTime<Local>) -> PathBuf {
 
 /// Append one event as a JSON line to ~/.minutes/events.jsonl.
 pub fn append_event(event: MinutesEvent) {
-    let envelope = EventEnvelope {
-        timestamp: Local::now(),
-        event,
-    };
+    let envelope = EventEnvelope::new(event);
 
     if let Err(e) = append_event_inner(&envelope) {
         tracing::warn!(error = %e, "failed to append event");
     }
 }
 
-fn append_event_inner(envelope: &EventEnvelope) -> std::io::Result<()> {
-    rotate_if_needed()?;
+fn append_event_inner(envelope: &EventEnvelope) -> std::io::Result<EventEnvelope> {
+    let mut envelope = envelope.clone();
+    with_event_log_lock(|| {
+        rotate_if_needed()?;
 
-    let path = events_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+        let path = events_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
-    let creating = !path.exists();
-    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let creating = !path.exists();
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
 
-    // Set 0600 on newly created files (sensitive meeting data)
-    #[cfg(unix)]
-    if creating {
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    }
+        // Set 0600 on newly created files (sensitive meeting data)
+        #[cfg(unix)]
+        if creating {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        }
 
-    let line = serde_json::to_string(envelope).map_err(|e| std::io::Error::other(e.to_string()))?;
-    writeln!(file, "{}", line)?;
-    Ok(())
+        if envelope.seq == 0 {
+            envelope.seq = next_event_seq_inner()?;
+        }
+        envelope.v = EVENT_SCHEMA_VERSION;
+
+        let line =
+            serde_json::to_string(&envelope).map_err(|e| std::io::Error::other(e.to_string()))?;
+        writeln!(file, "{}", line)?;
+        Ok(())
+    })?;
+    Ok(envelope)
 }
 
 /// Read events from the log, optionally filtered by time and limited.
@@ -260,16 +331,85 @@ pub fn read_events(since: Option<DateTime<Local>>, limit: Option<usize>) -> Vec<
     }
 }
 
+/// Read events after a stable event sequence cursor.
+pub fn read_events_since_seq(since_seq: u64, limit: Option<usize>) -> Vec<EventEnvelope> {
+    match read_events_since_seq_inner(since_seq, limit) {
+        Ok(events) => events,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read events since seq");
+            vec![]
+        }
+    }
+}
+
+/// Return the latest stable event sequence cursor.
+pub fn latest_event_seq() -> u64 {
+    match latest_event_seq_inner() {
+        Ok(seq) => seq,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read latest event seq");
+            0
+        }
+    }
+}
+
 fn read_events_inner(
     since: Option<DateTime<Local>>,
     limit: Option<usize>,
 ) -> std::io::Result<Vec<EventEnvelope>> {
+    let mut events = read_all_event_envelopes_inner()?;
+
+    if let Some(ref since_dt) = since {
+        events.retain(|envelope| envelope.timestamp >= *since_dt);
+    }
+
+    events.sort_by_key(|envelope| envelope.seq);
+
+    if let Some(limit) = limit {
+        let skip = events.len().saturating_sub(limit);
+        events = events.into_iter().skip(skip).collect();
+    }
+
+    Ok(events)
+}
+
+fn read_events_since_seq_inner(
+    since_seq: u64,
+    limit: Option<usize>,
+) -> std::io::Result<Vec<EventEnvelope>> {
+    let mut events = read_all_event_envelopes_inner()?;
+
+    events.retain(|envelope| envelope.seq > since_seq);
+    events.sort_by_key(|envelope| envelope.seq);
+
+    if let Some(limit) = limit {
+        let skip = events.len().saturating_sub(limit);
+        events = events.into_iter().skip(skip).collect();
+    }
+
+    Ok(events)
+}
+
+fn latest_event_seq_inner() -> std::io::Result<u64> {
+    Ok(read_all_event_envelopes_inner()?
+        .into_iter()
+        .map(|envelope| envelope.seq)
+        .max()
+        .unwrap_or(0))
+}
+
+fn next_event_seq_inner() -> std::io::Result<u64> {
+    Ok(latest_event_seq_inner()?.saturating_add(1))
+}
+
+fn read_all_event_envelopes_inner() -> std::io::Result<Vec<EventEnvelope>> {
     let paths = event_log_paths()?;
     if paths.is_empty() {
         return Ok(vec![]);
     }
 
     let mut events: Vec<EventEnvelope> = Vec::new();
+    let mut synthetic_seq: u64 = 0;
 
     for path in paths {
         let file = fs::File::open(&path)?;
@@ -281,11 +421,10 @@ fn read_events_inner(
                 continue;
             }
             match serde_json::from_str::<EventEnvelope>(&line) {
-                Ok(envelope) => {
-                    if let Some(ref since_dt) = since {
-                        if envelope.timestamp < *since_dt {
-                            continue;
-                        }
+                Ok(mut envelope) => {
+                    synthetic_seq = synthetic_seq.saturating_add(1);
+                    if envelope.seq == 0 {
+                        envelope.seq = synthetic_seq;
                     }
                     events.push(envelope);
                 }
@@ -294,13 +433,6 @@ fn read_events_inner(
                 }
             }
         }
-    }
-
-    events.sort_by_key(|envelope| envelope.timestamp);
-
-    if let Some(limit) = limit {
-        let skip = events.len().saturating_sub(limit);
-        events = events.into_iter().skip(skip).collect();
     }
 
     Ok(events)
@@ -712,6 +844,8 @@ mod tests {
     fn append_and_read_events() {
         with_temp_home(|_| {
             let envelope = EventEnvelope {
+                v: EVENT_SCHEMA_VERSION,
+                seq: 0,
                 timestamp: Local::now(),
                 event: MinutesEvent::RecordingCompleted {
                     path: "/tmp/test.md".into(),
@@ -722,10 +856,13 @@ mod tests {
                 },
             };
 
-            append_event_inner(&envelope).unwrap();
+            let written = append_event_inner(&envelope).unwrap();
+            assert_eq!(written.v, EVENT_SCHEMA_VERSION);
+            assert_eq!(written.seq, 1);
 
             let events = read_events_inner(None, None).unwrap();
             assert_eq!(events.len(), 1);
+            assert_eq!(events[0].seq, 1);
             match &events[0].event {
                 MinutesEvent::RecordingCompleted { title, .. } => {
                     assert_eq!(title, "Test Meeting");
@@ -738,6 +875,8 @@ mod tests {
     #[test]
     fn event_envelope_serializes_with_tag() {
         let envelope = EventEnvelope {
+            v: EVENT_SCHEMA_VERSION,
+            seq: 42,
             timestamp: Local::now(),
             event: MinutesEvent::NoteAdded {
                 meeting_path: "/tmp/test.md".into(),
@@ -746,8 +885,29 @@ mod tests {
         };
 
         let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("\"v\":1"));
+        assert!(json.contains("\"seq\":42"));
         assert!(json.contains("\"event_type\":\"NoteAdded\""));
         assert!(json.contains("\"text\":\"Important point\""));
+    }
+
+    #[test]
+    fn event_envelope_deserializes_legacy_lines_without_version_or_seq() {
+        let json = serde_json::json!({
+            "timestamp": Local::now(),
+            "event_type": "NoteAdded",
+            "meeting_path": "/tmp/test.md",
+            "text": "legacy"
+        })
+        .to_string();
+
+        let parsed: EventEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.v, EVENT_SCHEMA_VERSION);
+        assert_eq!(parsed.seq, 0);
+        match parsed.event {
+            MinutesEvent::NoteAdded { text, .. } => assert_eq!(text, "legacy"),
+            _ => panic!("expected NoteAdded"),
+        }
     }
 
     #[test]
@@ -763,6 +923,8 @@ mod tests {
     fn read_events_includes_rotated_logs() {
         with_temp_home(|_| {
             let older = EventEnvelope {
+                v: EVENT_SCHEMA_VERSION,
+                seq: 0,
                 timestamp: Local::now() - chrono::Duration::minutes(10),
                 event: MinutesEvent::NoteAdded {
                     meeting_path: "/tmp/older.md".into(),
@@ -770,6 +932,8 @@ mod tests {
                 },
             };
             let newer = EventEnvelope {
+                v: EVENT_SCHEMA_VERSION,
+                seq: 0,
                 timestamp: Local::now(),
                 event: MinutesEvent::NoteAdded {
                     meeting_path: "/tmp/newer.md".into(),
@@ -792,6 +956,8 @@ mod tests {
 
             let events = read_events_inner(None, None).unwrap();
             assert_eq!(events.len(), 2);
+            assert_eq!(events[0].seq, 1);
+            assert_eq!(events[1].seq, 2);
             match &events[0].event {
                 MinutesEvent::NoteAdded { text, .. } => assert_eq!(text, "older"),
                 _ => panic!("expected older NoteAdded"),
@@ -799,6 +965,41 @@ mod tests {
             match &events[1].event {
                 MinutesEvent::NoteAdded { text, .. } => assert_eq!(text, "newer"),
                 _ => panic!("expected newer NoteAdded"),
+            }
+        });
+    }
+
+    #[test]
+    fn read_events_since_seq_filters_and_orders_by_cursor() {
+        with_temp_home(|_| {
+            let first = EventEnvelope {
+                v: EVENT_SCHEMA_VERSION,
+                seq: 0,
+                timestamp: Local::now() - chrono::Duration::minutes(5),
+                event: MinutesEvent::NoteAdded {
+                    meeting_path: "/tmp/first.md".into(),
+                    text: "first".into(),
+                },
+            };
+            let second = EventEnvelope {
+                v: EVENT_SCHEMA_VERSION,
+                seq: 0,
+                timestamp: Local::now(),
+                event: MinutesEvent::NoteAdded {
+                    meeting_path: "/tmp/second.md".into(),
+                    text: "second".into(),
+                },
+            };
+
+            append_event_inner(&first).unwrap();
+            append_event_inner(&second).unwrap();
+
+            let events = read_events_since_seq_inner(1, None).unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].seq, 2);
+            match &events[0].event {
+                MinutesEvent::NoteAdded { text, .. } => assert_eq!(text, "second"),
+                _ => panic!("expected NoteAdded"),
             }
         });
     }
@@ -848,6 +1049,8 @@ mod tests {
     #[test]
     fn insight_event_serializes_with_tag() {
         let envelope = EventEnvelope {
+            v: EVENT_SCHEMA_VERSION,
+            seq: 0,
             timestamp: Local::now(),
             event: MinutesEvent::MeetingInsightExtracted {
                 insight: MeetingInsight {

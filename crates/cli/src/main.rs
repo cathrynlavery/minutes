@@ -16,7 +16,9 @@ use serde::Serialize;
 
 mod dashboard;
 mod demo_data;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Bundled native Silero VAD weights for parakeet.cpp's `--vad` path.
 const PARAKEET_NATIVE_VAD_WEIGHTS: &[u8] =
@@ -708,6 +710,14 @@ enum Commands {
         /// Only events since this date (ISO format)
         #[arg(long)]
         since: Option<String>,
+
+        /// Stream events as newline-delimited JSON and keep waiting for new events
+        #[arg(long)]
+        follow: bool,
+
+        /// Start after this event sequence cursor
+        #[arg(long)]
+        since_seq: Option<u64>,
     },
 
     /// Query structured meeting insights (decisions, commitments, questions)
@@ -1361,7 +1371,12 @@ fn main() -> Result<()> {
             json,
             compact_json,
         } => cmd_get(&slug, json, compact_json, &config),
-        Commands::Events { limit, since } => cmd_events(limit, since, &config),
+        Commands::Events {
+            limit,
+            since,
+            follow,
+            since_seq,
+        } => cmd_events(limit, since, follow, since_seq, &config),
         Commands::Insights {
             kind,
             confidence,
@@ -5650,17 +5665,86 @@ fn cmd_get(slug_or_path: &str, json: bool, compact_json: bool, config: &Config) 
     Ok(())
 }
 
-fn cmd_events(limit: usize, since: Option<String>, _config: &Config) -> Result<()> {
-    let since_dt = since.as_deref().and_then(|s| {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .ok()
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .and_then(|ndt| chrono::Local.from_local_datetime(&ndt).single())
-    });
+fn cmd_events(
+    limit: usize,
+    since: Option<String>,
+    follow: bool,
+    since_seq: Option<u64>,
+    _config: &Config,
+) -> Result<()> {
+    if since.is_some() && since_seq.is_some() {
+        anyhow::bail!("use either --since or --since-seq, not both");
+    }
 
-    let events = minutes_core::events::read_events(since_dt, Some(limit));
+    if follow {
+        return cmd_events_follow(limit, since, since_seq);
+    }
+
+    let since_dt = parse_events_since(since.as_deref())?;
+
+    let events = if let Some(seq) = since_seq {
+        minutes_core::events::read_events_since_seq(seq, Some(limit))
+    } else {
+        minutes_core::events::read_events(since_dt, Some(limit))
+    };
     let json = serde_json::to_string_pretty(&events)?;
     println!("{}", json);
+    Ok(())
+}
+
+fn cmd_events_follow(limit: usize, since: Option<String>, since_seq: Option<u64>) -> Result<()> {
+    let since_dt = parse_events_since(since.as_deref())?;
+    let mut cursor = since_seq.unwrap_or(0);
+
+    let initial_events = if let Some(seq) = since_seq {
+        minutes_core::events::read_events_since_seq(seq, None)
+    } else {
+        minutes_core::events::read_events(since_dt, Some(limit))
+    };
+
+    for event in &initial_events {
+        cursor = cursor.max(event.seq);
+        print_event_jsonl(event)?;
+    }
+
+    if since_seq.is_none() && initial_events.is_empty() {
+        cursor = minutes_core::events::latest_event_seq();
+    }
+
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        for event in minutes_core::events::read_events_since_seq(cursor, None) {
+            cursor = cursor.max(event.seq);
+            print_event_jsonl(&event)?;
+        }
+    }
+}
+
+fn parse_events_since(raw: Option<&str>) -> Result<Option<chrono::DateTime<Local>>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(Some(parsed.with_timezone(&Local)));
+    }
+
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        return Ok(date
+            .and_hms_opt(0, 0, 0)
+            .and_then(|ndt| chrono::Local.from_local_datetime(&ndt).single()));
+    }
+
+    Err(anyhow::anyhow!(
+        "invalid --since value '{}' (expected YYYY-MM-DD or RFC3339)",
+        raw
+    ))
+}
+
+fn print_event_jsonl(event: &minutes_core::events::EventEnvelope) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{}", serde_json::to_string(event)?)?;
+    stdout.flush()?;
     Ok(())
 }
 
