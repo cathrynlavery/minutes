@@ -10,15 +10,13 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 
 29 tools • 7 resources • Interactive MCP App dashboard • Prompt templates
 
-**What's new in 0.15.0:**
-• **OpenAI-compatible summarization backend.** Plug Minutes into Mistral, OpenAI, or any OpenAI-compatible local server (Ollama, llama.cpp, LM Studio, etc.) for automated summaries. API keys live in macOS Keychain, not in plaintext config. Hardened HTTP path with retry and runtime-summary preservation across upgrades.
-• **Speaker overlays propagate cleanly across surfaces.** A new sidecar overlay store at the core layer lets the desktop, CLI, and MCP all see the same speaker-identity edits. Confirm a speaker once and that mapping is honored in every meeting view, every report, every MCP query. Reports now resolve overlay owners; the SDK reads through the overlay layer.
-• **`humanizeTranscript()` SDK helper.** Render meeting bodies with paragraph wrapping and clean speaker breaks, suitable for any UI surfacing transcripts beyond the raw markdown. Available in `minutes-sdk@0.15.0`.
-• **Pi agent support.** Inflection's Pi joins the list of natively-supported clients. Same plugin skills, same MCP tools, same filesystem corpus.
-• **Unified palette meeting actions.** The desktop command palette exposes a single, coherent meeting-action set instead of duplicate verbs scattered across surfaces.
-• **Auto-heal stale `recording.device` pins.** When the configured input device (USB mixer, Bluetooth headset, virtual loopback) is unplugged before launch, Minutes silently falls back to the system default instead of crashing on Start Recording. Three-state availability check (Available, Missing, Unknown) avoids clobbering real configs on transient enumeration failures.
-• **whisper-guard 0.2.0** (independent crate) ships a `clean_segments` API and a pipeline-order fix used by the in-tree transcription path. Now consumable as a standalone crate via crates.io.
-• **First-run + local-test gating in MCP.** Cleaner first-run defaults; local test paths no longer trip publish-mode safety checks.
+**What's new in 0.16.0:**
+• **Agent Event Bus v0.** Minutes now writes an append-only local event stream with stable sequence cursors. The CLI can follow it with `minutes events --follow`, MCP exposes `minutes://events/live`, and local agents can observe recording lifecycle events, meeting insights, and allowlisted `agent.annotation` entries without mutating human-authored meeting markdown.
+• **Fast local search.** Search now uses a SQLite FTS5-backed index. CLI search has explicit `--sync` and `--no-sync` controls, desktop search errors surface as banners, and large meeting archives no longer require a full file walk for every query.
+• **Calmer desktop recording.** Minutes re-heals stale device pins on every recording start, refuses unsafe mic-only routes when a call is active, prefers browser meeting detection over stale Slack fallback state, and isolates queued processing work so a long or silent-tail job does not freeze the GUI.
+• **Templates Phase 1.** Prompt-only templates let meeting, one-on-one, standup, and voice-memo captures produce more appropriate summaries without changing the core transcript pipeline.
+• **Design and packaging polish.** The lowercase italic `m` now carries through the dock icon, tray icon, favicon, DMG, and desktop surfaces. The DMG installer, MCP UI, call-detected card, toasts, Recall, and window persistence all received polish.
+• **Safer distribution.** MCPB bundle checks are stricter, the Claude-specific MCPB manifest is used for the desktop extension package, MCP auto-install verifies downloaded CLI checksums, and `whisper-guard` 0.2.1 is published for downstream Rust users.
 
 **Setup:** `npx minutes-mcp` gets you search, browsing, and the dashboard right away. For recording and transcription, Minutes can auto-install the CLI on first use, or you can install it yourself with `brew install silverstein/tap/minutes` or `cargo install minutes-cli`, then run `minutes setup --model tiny`, `minutes setup --parakeet`, or `minutes setup --demo`.
 
@@ -33,9 +31,10 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 • Desktop-context rewind and activity summaries around recordings and live sessions
 • Full-text search across every meeting and memo
 • Decisions, commitments, questions, and relationship context across meetings
+• Agent Event Bus for local workflow automation
 • An interactive MCP App dashboard inside Claude conversations
 
-**Privacy:** all audio processing happens locally via whisper.cpp or parakeet.cpp plus pyannote-rs. Summarization is opt-in; the OpenAI-compatible backend points wherever you tell it (including local servers). No audio is sent anywhere unless you explicitly enable a cloud summary backend, and even then only the transcript text travels.
+**Privacy:** all audio processing happens locally via whisper.cpp or parakeet.cpp plus pyannote-rs. Summarization is opt-in; the OpenAI-compatible backend points wherever you tell it (including local servers). No audio is sent anywhere unless you explicitly enable a cloud summary backend, and even then only the transcript text travels. Agent Event Bus entries are local files on your disk.
 
 
 ## Choose your surface
