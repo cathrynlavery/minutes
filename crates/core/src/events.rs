@@ -124,6 +124,7 @@ impl EventEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type")]
 pub enum MinutesEvent {
+    #[serde(alias = "recording.completed")]
     RecordingCompleted {
         path: String,
         title: String,
@@ -167,6 +168,7 @@ pub enum MinutesEvent {
     },
     /// Structured insight extracted from a meeting (decision, commitment, etc.).
     /// Subscribable by external systems via MCP notifications.
+    #[serde(alias = "meeting.insight.detected")]
     MeetingInsightExtracted {
         insight: MeetingInsight,
         meeting_title: String,
@@ -1196,6 +1198,35 @@ mod tests {
     }
 
     #[test]
+    fn event_envelope_v0_wire_contract_is_flattened() {
+        let envelope = EventEnvelope {
+            v: EVENT_SCHEMA_VERSION,
+            seq: 42,
+            timestamp: Local::now(),
+            event: MinutesEvent::LiveUtteranceFinal {
+                session_id: Some("session-1".into()),
+                source: "standalone".into(),
+                transcript_path: "/tmp/live-transcript.jsonl".into(),
+                line: 7,
+                text: "ship the contract before adding more events".into(),
+                speaker: Some("Mat".into()),
+                offset_ms: 1_250,
+                duration_ms: 900,
+            },
+        };
+
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(value["v"], EVENT_SCHEMA_VERSION);
+        assert_eq!(value["seq"], 42);
+        assert!(value.get("timestamp").is_some());
+        assert_eq!(value["event_type"], "live.utterance.final");
+        assert_eq!(value["text"], "ship the contract before adding more events");
+        assert!(value.get("event").is_none());
+        assert!(value.get("kind").is_none());
+        assert!(value.get("ts").is_none());
+    }
+
+    #[test]
     fn event_envelope_deserializes_legacy_lines_without_version_or_seq() {
         let json = serde_json::json!({
             "timestamp": Local::now(),
@@ -1211,6 +1242,56 @@ mod tests {
         match parsed.event {
             MinutesEvent::NoteAdded { text, .. } => assert_eq!(text, "legacy"),
             _ => panic!("expected NoteAdded"),
+        }
+    }
+
+    #[test]
+    fn event_envelope_deserializes_dotted_v0_aliases_for_legacy_variants() {
+        let recording_json = serde_json::json!({
+            "v": EVENT_SCHEMA_VERSION,
+            "seq": 9,
+            "timestamp": Local::now(),
+            "event_type": "recording.completed",
+            "path": "/meetings/demo.md",
+            "title": "Demo",
+            "word_count": 123,
+            "content_type": "meeting",
+            "duration": "5m"
+        })
+        .to_string();
+
+        let recording: EventEnvelope = serde_json::from_str(&recording_json).unwrap();
+        match recording.event {
+            MinutesEvent::RecordingCompleted { title, .. } => assert_eq!(title, "Demo"),
+            other => panic!("expected RecordingCompleted, got {other:?}"),
+        }
+
+        let insight_json = serde_json::json!({
+            "v": EVENT_SCHEMA_VERSION,
+            "seq": 10,
+            "timestamp": Local::now(),
+            "event_type": "meeting.insight.detected",
+            "insight": {
+                "kind": "decision",
+                "content": "Use the flat event envelope for v0",
+                "confidence": "explicit",
+                "source_meeting": "/meetings/demo.md"
+            },
+            "meeting_title": "Demo"
+        })
+        .to_string();
+
+        let insight: EventEnvelope = serde_json::from_str(&insight_json).unwrap();
+        match insight.event {
+            MinutesEvent::MeetingInsightExtracted {
+                insight,
+                meeting_title,
+            } => {
+                assert_eq!(meeting_title, "Demo");
+                assert_eq!(insight.kind, InsightKind::Decision);
+                assert_eq!(insight.confidence, InsightConfidence::Explicit);
+            }
+            other => panic!("expected MeetingInsightExtracted, got {other:?}"),
         }
     }
 
