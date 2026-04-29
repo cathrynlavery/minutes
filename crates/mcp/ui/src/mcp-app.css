@@ -170,6 +170,33 @@ html, body {
   border-bottom: 1px solid var(--border-color);
 }
 
+/* Brand link — minimal attribution back to useminutes.app. Plain-text
+   button so the brand mark + name still read as a header, not a CTA. */
+.brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius);
+  transition: opacity 0.15s;
+}
+
+.brand-link:hover .brand-name,
+.brand-link:focus-visible .brand-name {
+  color: var(--accent);
+}
+
+.brand-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .brand-mark {
   position: relative;
   display: inline-flex;
