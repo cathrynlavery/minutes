@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn is_healthy_false_on_user_version_mismatch() {
         let (_dir, conn) = fresh_db();
-        conn.pragma_update(None, "user_version", &999_i64).unwrap();
+        conn.pragma_update(None, "user_version", 999_i64).unwrap();
         assert!(!is_healthy(&conn).unwrap());
     }
 

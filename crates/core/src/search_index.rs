@@ -538,8 +538,10 @@ mod tests {
 
     fn temp_config() -> (tempfile::TempDir, Config) {
         let dir = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.output_dir = dir.path().join("meetings");
+        let config = Config {
+            output_dir: dir.path().join("meetings"),
+            ..Default::default()
+        };
         std::fs::create_dir_all(&config.output_dir).unwrap();
         (dir, config)
     }
@@ -716,8 +718,10 @@ mod tests {
         .unwrap();
         let idx = make_index(&dir, &config);
         idx.sync(&config, SyncMode::Auto).unwrap();
-        let mut filters = SearchFilters::default();
-        filters.content_type = Some("memo".into());
+        let filters = SearchFilters {
+            content_type: Some("memo".into()),
+            ..Default::default()
+        };
         let results = idx.search("", &filters, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Memo");
@@ -746,8 +750,10 @@ mod tests {
         );
         let idx = make_index(&dir, &config);
         idx.sync(&config, SyncMode::Auto).unwrap();
-        let mut filters = SearchFilters::default();
-        filters.attendee = Some("mat".into()); // case-insensitive substring
+        let filters = SearchFilters {
+            attendee: Some("mat".into()), // case-insensitive substring
+            ..Default::default()
+        };
         let results = idx.search("", &filters, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "With Mat");

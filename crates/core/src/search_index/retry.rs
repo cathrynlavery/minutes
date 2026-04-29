@@ -108,8 +108,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("test.db");
         let c1 = Connection::open(&db).unwrap();
-        c1.pragma_update(None, "journal_mode", &"WAL").unwrap();
-        c1.pragma_update(None, "busy_timeout", &10_i32).unwrap();
+        c1.pragma_update(None, "journal_mode", "WAL").unwrap();
+        c1.pragma_update(None, "busy_timeout", 10_i32).unwrap();
         c1.execute_batch("CREATE TABLE t (x INTEGER)").unwrap();
 
         let c2 = Connection::open_with_flags(
@@ -117,7 +117,7 @@ mod tests {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .unwrap();
-        c2.pragma_update(None, "busy_timeout", &10_i32).unwrap();
+        c2.pragma_update(None, "busy_timeout", 10_i32).unwrap();
 
         let _txn = c1
             .unchecked_transaction()
