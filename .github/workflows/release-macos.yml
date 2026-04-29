@@ -2,6 +2,11 @@ name: Release macOS
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload assets to, for example v0.16.0"
+        required: true
+        type: string
   push:
     tags:
       - "v*"
@@ -14,6 +19,7 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
   CXXFLAGS: -I$(xcrun --show-sdk-path)/usr/include/c++/v1
   TAURI_CLI_VERSION: "2.10.1"
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   macos-release:
@@ -96,7 +102,18 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: cargo tauri build --features parakeet,metal --bundles app,dmg
+        run: cargo tauri build --features parakeet,metal --bundles app
+
+      - name: Create DMG
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          mkdir -p target/release/bundle/dmg
+          hdiutil create \
+            -volname "Minutes" \
+            -srcfolder target/release/bundle/macos/Minutes.app \
+            -ov \
+            -format UDZO \
+            "target/release/bundle/dmg/Minutes_${VERSION}_aarch64.dmg"
 
       - name: Upload signed app bundle
         uses: actions/upload-artifact@v4
@@ -113,25 +130,25 @@ jobs:
           if-no-files-found: error
 
       - name: Verify release exists before uploading assets
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" >/dev/null
+          gh release view "${RELEASE_TAG}" >/dev/null
 
       - name: Generate latest.json for auto-updater
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           SIG=$(cat target/release/bundle/macos/Minutes.app.tar.gz.sig)
           if [ -z "$SIG" ]; then
             echo "ERROR: .sig file empty or missing" >&2
             exit 1
           fi
-          URL="https://github.com/silverstein/minutes/releases/download/${GITHUB_REF_NAME}/Minutes.app.tar.gz"
-          NOTES=$(gh release view "${GITHUB_REF_NAME}" --json body -q .body 2>/dev/null || echo "")
+          URL="https://github.com/silverstein/minutes/releases/download/${RELEASE_TAG}/Minutes.app.tar.gz"
+          NOTES=$(gh release view "${RELEASE_TAG}" --json body -q .body 2>/dev/null || echo "")
           export UPDATE_VERSION="$VERSION"
           export UPDATE_SIG="$SIG"
           export UPDATE_URL="$URL"
@@ -154,11 +171,11 @@ jobs:
           PYEOF
 
       - name: Upload release assets to existing tag release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          gh release upload "${RELEASE_TAG}" \
             target/release/bundle/dmg/*.dmg \
             target/release/bundle/macos/Minutes.app.tar.gz \
             target/release/bundle/macos/Minutes.app.tar.gz.sig \
