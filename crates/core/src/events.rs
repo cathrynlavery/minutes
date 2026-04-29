@@ -6,7 +6,6 @@ use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use crate::config::Config;
 use crate::markdown::ContentType;
@@ -225,11 +224,7 @@ fn event_log_paths() -> std::io::Result<Vec<PathBuf>> {
         })
         .collect::<Vec<_>>();
 
-    paths.sort_by_key(|path| {
-        path.metadata()
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    });
+    paths.sort_by_key(|path| path.file_name().map(|name| name.to_os_string()));
     Ok(paths)
 }
 
