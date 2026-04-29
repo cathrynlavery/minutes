@@ -67,7 +67,7 @@ and dotted agent-facing names used by new or normalized events.
 | `meeting.insight.detected` | canonical, shipped | Emitted by semantic insight extraction. Legacy `MeetingInsightExtracted` is accepted as an alias. |
 | `recording.started` | canonical, shipped | Emitted after capture/live/dictation/watch processing actually starts. |
 | `transcript.delta` | punted from v0 | Partial streaming revisions are high-volume and model-specific. Keep v0 on final utterances; revisit deltas in a gated v1 design. |
-| `agent.annotation` | planned | Owned by `minutes-l5sa.4`. Must be append-only, attributed, allowlisted, and separate from human-authored notes. |
+| `agent.annotation` | canonical, shipped | Append-only attributed agent commentary. Gated by `~/.minutes/agents.allow`; never mutates human-authored meeting markdown/frontmatter. |
 
 Existing internal or legacy events such as `AudioProcessed`, `WatchProcessed`,
 `NoteAdded`, `VaultSynced`, `VoiceMemoProcessed`, `DeviceChanged`,
@@ -92,6 +92,35 @@ coaching, but they are also noisy:
 For v0, `live.utterance.final` is the stable live transcript event. A future v1
 can add `transcript.delta` behind an explicit config flag with volume limits,
 revision IDs, and host compatibility tests.
+
+## Agent Annotation Discipline
+
+`agent.annotation` is the only v0 write-back event for agents. It is commentary
+about a meeting or transcript span, not a rewrite of the human-authored meeting
+record.
+
+Rules:
+
+- Agents never mutate meeting markdown or frontmatter.
+- Writes append a new `agent.annotation` event to `~/.minutes/events.jsonl`.
+- Each annotation carries `agent`, `subkind`, `target`, `body`, `citations`,
+  `confidence`, and `provenance`.
+- The write path is default-deny unless the agent ID is present in
+  `~/.minutes/agents.allow`.
+- Rejected writes return a structured error with `error`, `agent_id`,
+  `event_type`, and `allowlist_path`.
+
+Allowlist format:
+
+```text
+# one agent_id per line
+codex
+review-agent: agent.annotation
+workflow-agent: agent.annotation, meeting.insight.detected
+```
+
+A bare `agent_id` allows all current agent event writes for that ID. Scoped
+lines allow only the comma-separated event types after `:`.
 
 ## Closure Rules For #194
 

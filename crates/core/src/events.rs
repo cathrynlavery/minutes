@@ -99,6 +99,141 @@ pub struct MeetingInsight {
     pub source_meeting: String,
 }
 
+pub const AGENT_ANNOTATION_EVENT_TYPE: &str = "agent.annotation";
+
+/// Agent identity attached to an append-only annotation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAnnotationAgent {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+}
+
+/// Optional source span the annotation comments on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAnnotationSpan {
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+/// Meeting or transcript target for an agent annotation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAnnotationTarget {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meeting_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meeting_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<AgentAnnotationSpan>,
+}
+
+/// Request for a gated agent.annotation append.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAnnotationRequest {
+    pub agent: AgentAnnotationAgent,
+    pub subkind: String,
+    pub target: AgentAnnotationTarget,
+    pub body: String,
+    #[serde(default)]
+    pub citations: Vec<String>,
+    pub confidence: String,
+    #[serde(default)]
+    pub provenance: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentAnnotationErrorBody {
+    pub ok: bool,
+    pub error: String,
+    pub message: String,
+    pub agent_id: String,
+    pub event_type: String,
+    pub allowlist_path: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AgentAnnotationError {
+    #[error("{reason}")]
+    InvalidPayload {
+        reason: String,
+        agent_id: String,
+        allowlist_path: PathBuf,
+    },
+    #[error("agent '{agent_id}' is not allowlisted for {event_type}")]
+    NotAllowlisted {
+        agent_id: String,
+        event_type: String,
+        allowlist_path: PathBuf,
+    },
+    #[error("failed to read agent allowlist at {allowlist_path}: {source}")]
+    AllowlistRead {
+        agent_id: String,
+        allowlist_path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to append agent annotation event: {source}")]
+    Append {
+        agent_id: String,
+        allowlist_path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+impl AgentAnnotationError {
+    pub fn to_body(&self) -> AgentAnnotationErrorBody {
+        match self {
+            Self::InvalidPayload {
+                reason,
+                agent_id,
+                allowlist_path,
+            } => AgentAnnotationErrorBody {
+                ok: false,
+                error: "invalid_payload".into(),
+                message: reason.clone(),
+                agent_id: agent_id.clone(),
+                event_type: AGENT_ANNOTATION_EVENT_TYPE.into(),
+                allowlist_path: allowlist_path.display().to_string(),
+            },
+            Self::NotAllowlisted {
+                agent_id,
+                event_type,
+                allowlist_path,
+            } => AgentAnnotationErrorBody {
+                ok: false,
+                error: "agent_not_allowlisted".into(),
+                message: format!("agent '{agent_id}' is not allowlisted for {event_type}"),
+                agent_id: agent_id.clone(),
+                event_type: event_type.clone(),
+                allowlist_path: allowlist_path.display().to_string(),
+            },
+            Self::AllowlistRead {
+                agent_id,
+                allowlist_path,
+                source,
+            } => AgentAnnotationErrorBody {
+                ok: false,
+                error: "allowlist_read_failed".into(),
+                message: source.to_string(),
+                agent_id: agent_id.clone(),
+                event_type: AGENT_ANNOTATION_EVENT_TYPE.into(),
+                allowlist_path: allowlist_path.display().to_string(),
+            },
+            Self::Append {
+                agent_id,
+                allowlist_path,
+                source,
+            } => AgentAnnotationErrorBody {
+                ok: false,
+                error: "append_failed".into(),
+                message: source.to_string(),
+                agent_id: agent_id.clone(),
+                event_type: AGENT_ANNOTATION_EVENT_TYPE.into(),
+                allowlist_path: allowlist_path.display().to_string(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
     #[serde(default = "default_event_schema_version")]
@@ -209,6 +344,19 @@ pub enum MinutesEvent {
         offset_ms: u64,
         duration_ms: u64,
     },
+    /// Append-only agent commentary. This never mutates human-authored notes.
+    #[serde(rename = "agent.annotation")]
+    AgentAnnotation {
+        agent: AgentAnnotationAgent,
+        subkind: String,
+        target: AgentAnnotationTarget,
+        body: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<String>,
+        confidence: String,
+        #[serde(default)]
+        provenance: serde_json::Value,
+    },
 }
 
 fn events_path() -> PathBuf {
@@ -225,6 +373,10 @@ fn event_seq_path() -> PathBuf {
 
 fn event_seq_tmp_path() -> PathBuf {
     Config::minutes_dir().join("events.seq.tmp")
+}
+
+pub fn agents_allowlist_path() -> PathBuf {
+    Config::minutes_dir().join("agents.allow")
 }
 
 fn event_log_paths() -> std::io::Result<Vec<PathBuf>> {
@@ -303,6 +455,149 @@ pub fn append_event(event: MinutesEvent) {
     if let Err(e) = append_event_inner(&envelope) {
         tracing::warn!(error = %e, "failed to append event");
     }
+}
+
+pub fn append_agent_annotation(
+    request: AgentAnnotationRequest,
+) -> Result<EventEnvelope, AgentAnnotationError> {
+    let allowlist_path = agents_allowlist_path();
+    validate_agent_annotation_request(&request, &allowlist_path)?;
+
+    match is_agent_event_allowlisted(
+        &request.agent.id,
+        AGENT_ANNOTATION_EVENT_TYPE,
+        &allowlist_path,
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(AgentAnnotationError::NotAllowlisted {
+                agent_id: request.agent.id.clone(),
+                event_type: AGENT_ANNOTATION_EVENT_TYPE.into(),
+                allowlist_path,
+            });
+        }
+        Err(source) => {
+            return Err(AgentAnnotationError::AllowlistRead {
+                agent_id: request.agent.id.clone(),
+                allowlist_path,
+                source,
+            });
+        }
+    }
+
+    let agent_id = request.agent.id.clone();
+    let envelope = EventEnvelope::new(MinutesEvent::AgentAnnotation {
+        agent: request.agent,
+        subkind: request.subkind,
+        target: request.target,
+        body: request.body,
+        citations: request.citations,
+        confidence: request.confidence,
+        provenance: request.provenance,
+    });
+
+    append_event_inner(&envelope).map_err(|source| AgentAnnotationError::Append {
+        agent_id,
+        allowlist_path,
+        source,
+    })
+}
+
+fn validate_agent_annotation_request(
+    request: &AgentAnnotationRequest,
+    allowlist_path: &Path,
+) -> Result<(), AgentAnnotationError> {
+    let invalid = |reason: &str| AgentAnnotationError::InvalidPayload {
+        reason: reason.into(),
+        agent_id: request.agent.id.clone(),
+        allowlist_path: allowlist_path.to_path_buf(),
+    };
+
+    let agent_id = request.agent.id.trim();
+    if agent_id.is_empty() {
+        return Err(invalid("agent_id is required"));
+    }
+    if agent_id
+        .chars()
+        .any(|ch| ch == ':' || ch == ',' || ch.is_control())
+    {
+        return Err(invalid(
+            "agent_id must not contain control characters, ':' or ','",
+        ));
+    }
+    if request.subkind.trim().is_empty() {
+        return Err(invalid("subkind is required"));
+    }
+    if request.body.trim().is_empty() {
+        return Err(invalid("body is required"));
+    }
+    if !matches!(
+        request.confidence.as_str(),
+        "low" | "medium" | "high" | "tentative" | "inferred" | "strong" | "explicit"
+    ) {
+        return Err(invalid(
+            "confidence must be one of low, medium, high, tentative, inferred, strong, explicit",
+        ));
+    }
+    if let Some(span) = &request.target.span {
+        if span.end_ms < span.start_ms {
+            return Err(invalid("target span end_ms must be >= start_ms"));
+        }
+    }
+    Ok(())
+}
+
+fn is_agent_event_allowlisted(
+    agent_id: &str,
+    event_type: &str,
+    allowlist_path: &Path,
+) -> std::io::Result<bool> {
+    if !allowlist_path.exists() {
+        return Ok(false);
+    }
+
+    let allowlist = fs::read_to_string(allowlist_path)?;
+    Ok(parse_agents_allowlist_allows(
+        &allowlist, agent_id, event_type,
+    ))
+}
+
+fn parse_agents_allowlist_allows(input: &str, agent_id: &str, event_type: &str) -> bool {
+    input.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+
+        let Some((candidate, scopes)) = parse_agents_allowlist_line(line) else {
+            return false;
+        };
+        if candidate != agent_id {
+            return false;
+        }
+
+        scopes.is_empty() || scopes.contains(&event_type)
+    })
+}
+
+fn parse_agents_allowlist_line(line: &str) -> Option<(&str, Vec<&str>)> {
+    let mut parts = line.splitn(2, ':');
+    let agent_id = parts.next()?.trim();
+    if agent_id.is_empty() {
+        return None;
+    }
+
+    let scopes = parts
+        .next()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|scope| !scope.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some((agent_id, scopes))
 }
 
 fn append_event_inner(envelope: &EventEnvelope) -> std::io::Result<EventEnvelope> {
@@ -1005,6 +1300,31 @@ mod tests {
         }
     }
 
+    fn annotation_request(agent_id: &str) -> AgentAnnotationRequest {
+        AgentAnnotationRequest {
+            agent: AgentAnnotationAgent {
+                id: agent_id.into(),
+                tools: vec!["codex".into()],
+            },
+            subkind: "coaching".into(),
+            target: AgentAnnotationTarget {
+                meeting_id: Some("meeting-1".into()),
+                meeting_path: Some("/tmp/meeting.md".into()),
+                span: Some(AgentAnnotationSpan {
+                    start_ms: 1000,
+                    end_ms: 2500,
+                }),
+            },
+            body: "Ask for the action owner before moving on.".into(),
+            citations: vec!["events:42".into()],
+            confidence: "medium".into(),
+            provenance: serde_json::json!({
+                "model": "gpt-test",
+                "prompt_hash": "abc123"
+            }),
+        }
+    }
+
     fn legacy_note_line(text: &str, timestamp: DateTime<Local>) -> String {
         serde_json::json!({
             "timestamp": timestamp,
@@ -1013,6 +1333,94 @@ mod tests {
             "text": text,
         })
         .to_string()
+    }
+
+    #[test]
+    fn agent_annotation_appends_when_agent_is_allowlisted() {
+        with_temp_home(|_| {
+            fs::create_dir_all(agents_allowlist_path().parent().unwrap()).unwrap();
+            fs::write(agents_allowlist_path(), "codex\n").unwrap();
+
+            let written = append_agent_annotation(annotation_request("codex")).unwrap();
+            let value = serde_json::to_value(&written).unwrap();
+
+            assert_eq!(written.seq, 1);
+            assert_eq!(value["event_type"], AGENT_ANNOTATION_EVENT_TYPE);
+            assert_eq!(value["agent"]["id"], "codex");
+            assert_eq!(value["agent"]["tools"][0], "codex");
+            assert_eq!(value["subkind"], "coaching");
+            assert_eq!(value["target"]["meeting_id"], "meeting-1");
+            assert_eq!(value["body"], "Ask for the action owner before moving on.");
+            assert_eq!(value["citations"][0], "events:42");
+            assert_eq!(value["provenance"]["prompt_hash"], "abc123");
+        });
+    }
+
+    #[test]
+    fn agent_annotation_respects_event_type_scoped_allowlist() {
+        with_temp_home(|_| {
+            fs::create_dir_all(agents_allowlist_path().parent().unwrap()).unwrap();
+            fs::write(
+                agents_allowlist_path(),
+                "codex: meeting.insight.detected\nscoped: agent.annotation\n",
+            )
+            .unwrap();
+
+            let denied = append_agent_annotation(annotation_request("codex")).unwrap_err();
+            assert_eq!(denied.to_body().error, "agent_not_allowlisted");
+
+            let written = append_agent_annotation(annotation_request("scoped")).unwrap();
+            assert_eq!(written.seq, 1);
+        });
+    }
+
+    #[test]
+    fn agent_annotation_rejects_non_allowlisted_agents_with_structured_error() {
+        with_temp_home(|_| {
+            let error = append_agent_annotation(annotation_request("codex")).unwrap_err();
+            let body = error.to_body();
+
+            assert!(!body.ok);
+            assert_eq!(body.error, "agent_not_allowlisted");
+            assert_eq!(body.agent_id, "codex");
+            assert_eq!(body.event_type, AGENT_ANNOTATION_EVENT_TYPE);
+            assert!(body.allowlist_path.ends_with(".minutes/agents.allow"));
+            assert!(read_events_inner(None, None).unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn agent_annotation_rejects_malformed_payload() {
+        with_temp_home(|_| {
+            fs::create_dir_all(agents_allowlist_path().parent().unwrap()).unwrap();
+            fs::write(agents_allowlist_path(), "codex\n").unwrap();
+            let mut request = annotation_request("codex");
+            request.body.clear();
+
+            let error = append_agent_annotation(request).unwrap_err().to_body();
+
+            assert_eq!(error.error, "invalid_payload");
+            assert_eq!(error.message, "body is required");
+            assert!(read_events_inner(None, None).unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn agent_annotation_never_mutates_meeting_markdown() {
+        with_temp_home(|dir| {
+            fs::create_dir_all(agents_allowlist_path().parent().unwrap()).unwrap();
+            fs::write(agents_allowlist_path(), "codex: agent.annotation\n").unwrap();
+
+            let meeting_path = dir.path().join("meeting.md");
+            let original = "---\ntitle: Human Note\n---\n\nHuman transcript.\n";
+            fs::write(&meeting_path, original).unwrap();
+
+            let mut request = annotation_request("codex");
+            request.target.meeting_path = Some(meeting_path.display().to_string());
+            append_agent_annotation(request).unwrap();
+
+            assert_eq!(fs::read_to_string(&meeting_path).unwrap(), original);
+        });
     }
 
     #[test]

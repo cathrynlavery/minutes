@@ -727,6 +727,10 @@ enum Commands {
         #[arg(short, long, default_value = "50")]
         limit: usize,
 
+        /// Only events with this event_type
+        #[arg(long)]
+        event_type: Option<String>,
+
         /// Only events since this date (ISO format)
         #[arg(long)]
         since: Option<String>,
@@ -738,6 +742,53 @@ enum Commands {
         /// Start after this event sequence cursor
         #[arg(long)]
         since_seq: Option<u64>,
+    },
+
+    /// Append an allowlisted agent.annotation event without mutating meeting markdown
+    AgentAnnotate {
+        /// Stable agent identifier from ~/.minutes/agents.allow
+        #[arg(long)]
+        agent_id: String,
+
+        /// Tool or model names used to produce the annotation
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+
+        /// Annotation subtype, e.g. coaching, correction, risk, summary
+        #[arg(long, default_value = "commentary")]
+        subkind: String,
+
+        /// Target meeting identifier, if known
+        #[arg(long)]
+        meeting_id: Option<String>,
+
+        /// Target meeting markdown path, if known
+        #[arg(long)]
+        meeting_path: Option<String>,
+
+        /// Start offset of the target span in milliseconds
+        #[arg(long)]
+        span_start_ms: Option<u64>,
+
+        /// End offset of the target span in milliseconds
+        #[arg(long)]
+        span_end_ms: Option<u64>,
+
+        /// Annotation body
+        #[arg(long)]
+        body: String,
+
+        /// Citation or source reference; may be repeated
+        #[arg(long = "citation")]
+        citations: Vec<String>,
+
+        /// Confidence label
+        #[arg(long, default_value = "medium")]
+        confidence: String,
+
+        /// JSON object describing provenance
+        #[arg(long)]
+        provenance: Option<String>,
     },
 
     /// Query structured meeting insights (decisions, commitments, questions)
@@ -1403,10 +1454,36 @@ fn main() -> Result<()> {
         } => cmd_get(&slug, json, compact_json, &config),
         Commands::Events {
             limit,
+            event_type,
             since,
             follow,
             since_seq,
-        } => cmd_events(limit, since, follow, since_seq, &config),
+        } => cmd_events(limit, event_type, since, follow, since_seq, &config),
+        Commands::AgentAnnotate {
+            agent_id,
+            tools,
+            subkind,
+            meeting_id,
+            meeting_path,
+            span_start_ms,
+            span_end_ms,
+            body,
+            citations,
+            confidence,
+            provenance,
+        } => cmd_agent_annotate(
+            agent_id,
+            tools,
+            subkind,
+            meeting_id,
+            meeting_path,
+            span_start_ms,
+            span_end_ms,
+            body,
+            citations,
+            confidence,
+            provenance,
+        ),
         Commands::Insights {
             kind,
             confidence,
@@ -1760,7 +1837,7 @@ fn cmd_record(
             ],
         }),
     )
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
     let recording_finished_at = Local::now();
     let user_notes = minutes_core::notes::read_notes();
     let pre_context = minutes_core::notes::read_context();
@@ -5734,6 +5811,7 @@ fn cmd_get(slug_or_path: &str, json: bool, compact_json: bool, config: &Config) 
 
 fn cmd_events(
     limit: usize,
+    event_type: Option<String>,
     since: Option<String>,
     follow: bool,
     since_seq: Option<u64>,
@@ -5744,30 +5822,53 @@ fn cmd_events(
     }
 
     if follow {
-        return cmd_events_follow(limit, since, since_seq);
+        return cmd_events_follow(limit, event_type, since, since_seq);
     }
 
     let since_dt = parse_events_since(since.as_deref())?;
 
-    let events = if let Some(seq) = since_seq {
-        minutes_core::events::read_events_since_seq(seq, Some(limit))
+    let mut events = if let Some(seq) = since_seq {
+        minutes_core::events::read_events_since_seq(
+            seq,
+            if event_type.is_some() {
+                None
+            } else {
+                Some(limit)
+            },
+        )
     } else {
-        minutes_core::events::read_events(since_dt, Some(limit))
+        minutes_core::events::read_events(
+            since_dt,
+            if event_type.is_some() {
+                None
+            } else {
+                Some(limit)
+            },
+        )
     };
+    filter_events_by_type(&mut events, event_type.as_deref());
+    apply_events_limit(&mut events, limit, since_seq.is_some());
     let json = serde_json::to_string_pretty(&events)?;
     println!("{}", json);
     Ok(())
 }
 
-fn cmd_events_follow(limit: usize, since: Option<String>, since_seq: Option<u64>) -> Result<()> {
+fn cmd_events_follow(
+    limit: usize,
+    event_type: Option<String>,
+    since: Option<String>,
+    since_seq: Option<u64>,
+) -> Result<()> {
     let since_dt = parse_events_since(since.as_deref())?;
     let mut cursor = since_seq.unwrap_or(0);
 
-    let initial_events = if let Some(seq) = since_seq {
+    let mut initial_events = if let Some(seq) = since_seq {
         minutes_core::events::read_events_since_seq(seq, None)
     } else {
         minutes_core::events::read_events(since_dt, Some(limit))
     };
+    filter_events_by_type(&mut initial_events, event_type.as_deref());
+    apply_events_limit(&mut initial_events, limit, since_seq.is_some());
 
     for event in &initial_events {
         cursor = cursor.max(event.seq);
@@ -5782,7 +5883,122 @@ fn cmd_events_follow(limit: usize, since: Option<String>, since_seq: Option<u64>
         std::thread::sleep(Duration::from_millis(500));
         for event in minutes_core::events::read_events_since_seq(cursor, None) {
             cursor = cursor.max(event.seq);
-            print_event_jsonl(&event)?;
+            if event_matches_type(&event, event_type.as_deref()) {
+                print_event_jsonl(&event)?;
+            }
+        }
+    }
+}
+
+fn filter_events_by_type(
+    events: &mut Vec<minutes_core::events::EventEnvelope>,
+    event_type: Option<&str>,
+) {
+    if let Some(event_type) = event_type {
+        events.retain(|event| event_matches_type(event, Some(event_type)));
+    }
+}
+
+fn apply_events_limit(
+    events: &mut Vec<minutes_core::events::EventEnvelope>,
+    limit: usize,
+    since_seq_mode: bool,
+) {
+    if events.len() <= limit {
+        return;
+    }
+    if since_seq_mode {
+        events.truncate(limit);
+    } else {
+        let skip = events.len().saturating_sub(limit);
+        events.drain(0..skip);
+    }
+}
+
+fn event_matches_type(
+    event: &minutes_core::events::EventEnvelope,
+    event_type: Option<&str>,
+) -> bool {
+    let Some(event_type) = event_type else {
+        return true;
+    };
+
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|value| value.get("event_type").cloned())
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .map(|actual| actual == event_type)
+        .unwrap_or(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_agent_annotate(
+    agent_id: String,
+    tools: Vec<String>,
+    subkind: String,
+    meeting_id: Option<String>,
+    meeting_path: Option<String>,
+    span_start_ms: Option<u64>,
+    span_end_ms: Option<u64>,
+    body: String,
+    citations: Vec<String>,
+    confidence: String,
+    provenance: Option<String>,
+) -> Result<()> {
+    use minutes_core::events::{
+        append_agent_annotation, AgentAnnotationAgent, AgentAnnotationRequest, AgentAnnotationSpan,
+        AgentAnnotationTarget,
+    };
+
+    let span = match (span_start_ms, span_end_ms) {
+        (Some(start_ms), Some(end_ms)) => Some(AgentAnnotationSpan { start_ms, end_ms }),
+        (None, None) => None,
+        _ => {
+            let error = serde_json::json!({
+                "ok": false,
+                "error": "invalid_payload",
+                "message": "--span-start-ms and --span-end-ms must be provided together",
+                "agent_id": agent_id,
+                "event_type": minutes_core::events::AGENT_ANNOTATION_EVENT_TYPE,
+                "allowlist_path": minutes_core::events::agents_allowlist_path().display().to_string()
+            });
+            eprintln!("{}", serde_json::to_string_pretty(&error)?);
+            std::process::exit(2);
+        }
+    };
+
+    let provenance = provenance
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("invalid --provenance JSON: {error}"))?
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let request = AgentAnnotationRequest {
+        agent: AgentAnnotationAgent {
+            id: agent_id,
+            tools,
+        },
+        subkind,
+        target: AgentAnnotationTarget {
+            meeting_id,
+            meeting_path,
+            span,
+        },
+        body,
+        citations,
+        confidence,
+        provenance,
+    };
+
+    match append_agent_annotation(request) {
+        Ok(envelope) => {
+            println!("{}", serde_json::to_string_pretty(&envelope)?);
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("{}", serde_json::to_string_pretty(&error.to_body())?);
+            std::process::exit(2);
         }
     }
 }

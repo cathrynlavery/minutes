@@ -958,8 +958,33 @@ async function readRecentEventsFromCli(limit: number): Promise<unknown[]> {
   return readEventsFromCli(["events", "--limit", String(limit)]);
 }
 
+async function readAgentAnnotationsFromCli(limit: number): Promise<any[]> {
+  const events = await readEventsFromCli([
+    "events",
+    "--event-type",
+    "agent.annotation",
+    "--limit",
+    String(limit),
+  ]);
+  return events.filter((event: any) => event?.event_type === "agent.annotation");
+}
+
 async function readEventsSinceSeqFromCli(sinceSeq: number, limit: number): Promise<unknown[]> {
   return readEventsFromCli(["events", "--since-seq", String(sinceSeq), "--limit", String(limit)]);
+}
+
+function parseStructuredCliError(message: string): any | null {
+  const trimmed = message.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed.slice(start, end + 1));
+  } catch {
+    return null;
+  }
 }
 
 async function latestEventSeqFromCli(): Promise<number> {
@@ -2632,6 +2657,19 @@ server.resource(
   }
 );
 
+server.resource(
+  "agent_annotations",
+  "minutes://events/agent-annotations",
+  { description: "Recent append-only agent.annotation events, separate from human meeting markdown" },
+  async () => {
+    if (!(await isCliAvailable())) {
+      return { contents: [{ uri: "minutes://events/agent-annotations", mimeType: "application/json", text: "[]" }] };
+    }
+    const { stdout } = await runMinutes(["events", "--event-type", "agent.annotation", "--limit", "50"]);
+    return { contents: [{ uri: "minutes://events/agent-annotations", mimeType: "application/json", text: stdout }] };
+  }
+);
+
 if (LIVE_EVENTS_SUPPORTED) {
   server.resource(
     "live_events",
@@ -2902,6 +2940,114 @@ registerTool(
         isError: true,
       };
     }
+  }
+);
+
+// ── Tool: add_agent_annotation ─────────────────────────────
+
+registerTool(
+  "add_agent_annotation",
+  "Append attributed agent commentary as an agent.annotation event. This never edits meeting markdown/frontmatter and is rejected unless the agent_id is allowed in ~/.minutes/agents.allow.",
+  {
+    agent_id: z.string().describe("Stable agent identifier listed in ~/.minutes/agents.allow"),
+    tools: z.array(z.string()).optional().default([]).describe("Tool or model names used to produce the annotation"),
+    subkind: z.string().optional().default("commentary").describe("Annotation subtype, e.g. coaching, correction, risk, summary"),
+    meeting_id: z.string().optional().describe("Target meeting identifier, if known"),
+    meeting_path: z.string().optional().describe("Target meeting markdown path, if known"),
+    span_start_ms: z.number().optional().describe("Start offset of the target span in milliseconds"),
+    span_end_ms: z.number().optional().describe("End offset of the target span in milliseconds"),
+    body: z.string().describe("Annotation body"),
+    citations: z.array(z.string()).optional().default([]).describe("Source citations or event references"),
+    confidence: z.enum(["low", "medium", "high", "tentative", "inferred", "strong", "explicit"]).optional().default("medium"),
+    provenance: z.any().optional().describe("JSON-serializable provenance object"),
+  },
+  { title: "Add Agent Annotation", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async ({
+    agent_id,
+    tools,
+    subkind,
+    meeting_id,
+    meeting_path,
+    span_start_ms,
+    span_end_ms,
+    body,
+    citations,
+    confidence,
+    provenance,
+  }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }], isError: true };
+    }
+
+    const args = [
+      "agent-annotate",
+      "--agent-id",
+      agent_id,
+      "--subkind",
+      subkind,
+      "--body",
+      body,
+      "--confidence",
+      confidence,
+      "--provenance",
+      JSON.stringify(provenance ?? { via: "minutes-mcp", tool: "add_agent_annotation" }),
+    ];
+    for (const tool of tools ?? []) args.push("--tool", tool);
+    for (const citation of citations ?? []) args.push("--citation", citation);
+    if (meeting_id) args.push("--meeting-id", meeting_id);
+    if (meeting_path) args.push("--meeting-path", meeting_path);
+    if (span_start_ms !== undefined || span_end_ms !== undefined) {
+      if (span_start_ms !== undefined) args.push("--span-start-ms", String(span_start_ms));
+      if (span_end_ms !== undefined) args.push("--span-end-ms", String(span_end_ms));
+    }
+
+    try {
+      const { stdout } = await runMinutes(args, 10000);
+      const event = parseJsonOutput(stdout);
+      return {
+        content: [{ type: "text" as const, text: `Appended agent.annotation seq ${event?.seq ?? "unknown"}.` }],
+        structuredContent: { event },
+      };
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      const structured = parseStructuredCliError(message);
+      return {
+        content: [{ type: "text" as const, text: structured?.message || `Failed to append agent.annotation: ${message}` }],
+        structuredContent: structured ? { error: structured } : undefined,
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: get_agent_annotations ────────────────────────────
+
+registerTool(
+  "get_agent_annotations",
+  "Read append-only agent.annotation events separately from human-authored meeting markdown/frontmatter.",
+  {
+    limit: z.number().optional().default(50).describe("Maximum number of annotations"),
+    agent_id: z.string().optional().describe("Filter by agent id"),
+    meeting_id: z.string().optional().describe("Filter by target meeting id"),
+    meeting_path: z.string().optional().describe("Filter by target meeting path"),
+  },
+  { title: "Get Agent Annotations", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  async ({ limit, agent_id, meeting_id, meeting_path }) => {
+    if (!(await isCliAvailable())) {
+      return { content: [{ type: "text" as const, text: CLI_INSTALL_MSG }], isError: true };
+    }
+
+    const annotations = (await readAgentAnnotationsFromCli(limit)).filter((event: any) => {
+      if (agent_id && event?.agent?.id !== agent_id) return false;
+      if (meeting_id && event?.target?.meeting_id !== meeting_id) return false;
+      if (meeting_path && event?.target?.meeting_path !== meeting_path) return false;
+      return true;
+    });
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(annotations, null, 2) }],
+      structuredContent: { annotations },
+    };
   }
 );
 
