@@ -5218,7 +5218,7 @@ fn write_notice_prompt(command: &str, plain_text: &str) -> String {
 fn artifact_switch_prompt(command: &str, artifact_name: Option<&str>) -> String {
     let plain_text = match artifact_name {
         Some(name) => format!(
-            "Minutes opened artifact {name}. Read CURRENT_ARTIFACT.md and CLAUDE.md. The user has this file open in the left pane and may want help editing it. If you update it on disk, the viewer will refresh live."
+            "Minutes opened artifact {name}. Read CURRENT_ARTIFACT.md and your assistant instructions (CLAUDE.md or AGENTS.md). The user has this file open in the left pane and may want help editing it. If you update it on disk, the viewer will refresh live."
         ),
         None => "Minutes cleared the open artifact focus. Ignore CURRENT_ARTIFACT.md unless it reappears. If CURRENT_MEETING.md exists, prioritize it; otherwise continue in general assistant mode."
             .into(),
@@ -6123,9 +6123,9 @@ fn filtered_agent_args(agent_name: &str, args: &[String]) -> Vec<String> {
 fn context_switch_prompt(command: &str, mode: &str, title: &str) -> String {
     let plain_text = match mode {
         "meeting" => format!(
-            "Minutes changed focus to {title}. Read CURRENT_MEETING.md and CLAUDE.md, then help with that meeting."
+            "Minutes changed focus to {title}. Read CURRENT_MEETING.md and your assistant instructions (CLAUDE.md or AGENTS.md), then help with that meeting."
         ),
-        _ => "Minutes cleared the active meeting focus. Resume general assistant mode and reread CLAUDE.md if needed."
+        _ => "Minutes cleared the active meeting focus. Resume general assistant mode and reread your assistant instructions (CLAUDE.md or AGENTS.md) if needed."
             .into(),
     };
 
@@ -7046,6 +7046,43 @@ mod tests {
             filtered_agent_args("opencode", &args),
             vec!["--model".to_string(), "gpt-5-codex".to_string()]
         );
+    }
+
+    #[test]
+    fn assistant_switch_prompts_are_instruction_file_agnostic() {
+        let meeting_prompt = context_switch_prompt("opencode", "meeting", "Discussing: Demo");
+        assert!(meeting_prompt.contains("CURRENT_MEETING.md"));
+        assert!(meeting_prompt.contains("CLAUDE.md or AGENTS.md"));
+        assert!(!meeting_prompt.contains("Read CURRENT_MEETING.md and CLAUDE.md,"));
+
+        let general_prompt = context_switch_prompt("opencode", "assistant", "Minutes Assistant");
+        assert!(general_prompt.contains("CLAUDE.md or AGENTS.md"));
+
+        let artifact_prompt = artifact_switch_prompt("opencode", Some("draft.md"));
+        assert!(artifact_prompt.contains("CURRENT_ARTIFACT.md"));
+        assert!(artifact_prompt.contains("CLAUDE.md or AGENTS.md"));
+    }
+
+    #[test]
+    fn update_assistant_live_context_updates_both_instruction_files() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        std::fs::write(workspace.join("CLAUDE.md"), "# Minutes Assistant\n").unwrap();
+        std::fs::write(workspace.join("AGENTS.md"), "# Minutes Assistant\n").unwrap();
+
+        update_assistant_live_context(workspace, true);
+
+        let claude = std::fs::read_to_string(workspace.join("CLAUDE.md")).unwrap();
+        let agents = std::fs::read_to_string(workspace.join("AGENTS.md")).unwrap();
+        assert!(claude.contains("## Live Transcript Active"));
+        assert!(agents.contains("## Live Transcript Active"));
+
+        update_assistant_live_context(workspace, false);
+
+        let claude = std::fs::read_to_string(workspace.join("CLAUDE.md")).unwrap();
+        let agents = std::fs::read_to_string(workspace.join("AGENTS.md")).unwrap();
+        assert!(!claude.contains("## Live Transcript Active"));
+        assert!(!agents.contains("## Live Transcript Active"));
     }
 
     /// Arms that have no current caller but are deliberately kept pending a
@@ -8938,9 +8975,9 @@ pub fn cmd_live_transcript_status(state: tauri::State<AppState>) -> serde_json::
     })
 }
 
-/// Update the CLAUDE.md in the assistant workspace to mention (or un-mention)
-/// the live transcript. This makes any agent (Claude, Codex, Gemini) aware
-/// of the live JSONL file without requiring MCP.
+/// Update the assistant instruction files to mention (or un-mention)
+/// the live transcript. This makes any agent aware of the live JSONL file
+/// without requiring MCP.
 pub fn handle_live_shortcut_event(
     app: &tauri::AppHandle,
     shortcut_state: tauri_plugin_global_shortcut::ShortcutState,
@@ -9296,10 +9333,8 @@ fn humanize_shortcut(shortcut: &str) -> String {
         .join("")
 }
 
-fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool) {
-    let claude_md = workspace.join("CLAUDE.md");
-    let existing = std::fs::read_to_string(&claude_md).unwrap_or_default();
-
+fn update_assistant_live_context_file(path: &std::path::Path, live_active: bool) {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
     let marker_start = "<!-- LIVE_TRANSCRIPT_START -->";
     let marker_end = "<!-- LIVE_TRANSCRIPT_END -->";
 
@@ -9351,9 +9386,15 @@ fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool)
 
     // Atomic write: write to temp file then rename (T7)
     let content = updated.trim_end().to_string() + "\n";
-    let tmp = claude_md.with_extension("md.tmp");
+    let tmp = path.with_extension("md.tmp");
     if std::fs::write(&tmp, &content).is_ok() {
-        std::fs::rename(&tmp, &claude_md).ok();
+        std::fs::rename(&tmp, path).ok();
+    }
+}
+
+fn update_assistant_live_context(workspace: &std::path::Path, live_active: bool) {
+    for file_name in crate::context::ASSISTANT_INSTRUCTION_FILES {
+        update_assistant_live_context_file(&workspace.join(file_name), live_active);
     }
 }
 

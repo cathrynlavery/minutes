@@ -584,6 +584,7 @@ same local meeting artifacts. It runs as a singleton assistant session:
 
 - `AI Assistant` opens or focuses the persistent assistant window
 - `Discuss with AI` reuses that same assistant and switches its active meeting focus
+- Recall writes matching `CLAUDE.md` and `AGENTS.md` instructions into its assistant workspace so Claude-style and AGENTS.md-aware terminal agents get the same meeting context
 - Auto-updates from GitHub Releases with signed artifacts, never interrupting a recording
 
 ### Cowork / Dispatch

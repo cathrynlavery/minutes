@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub const ACTIVE_MEETING_FILE: &str = "CURRENT_MEETING.md";
 pub const ACTIVE_ARTIFACT_FILE: &str = "CURRENT_ARTIFACT.md";
+pub const ASSISTANT_INSTRUCTION_FILES: &[&str] = &["CLAUDE.md", "AGENTS.md"];
 
 const ARTIFACT_INSTRUCTION: &str = "If CURRENT_ARTIFACT.md exists in this directory, the user has that file open in the Minutes viewer. You can read and edit it at the path shown. Changes you make will appear in real time in the viewer.";
 const ASSISTANT_SKILL_BUNDLE_ENV: &str = "MINUTES_ASSISTANT_SKILL_BUNDLE_ROOT";
@@ -190,7 +191,8 @@ pub fn create_workspace(config: &Config) -> Result<PathBuf, String> {
     // .claude is still user-owned. We keep the existing symlink layout
     // intact and only refresh the app-managed .agents/.opencode mirrors.
 
-    // git init on the assistant workspace (idempotent) so Claude Code discovers CLAUDE.md.
+    // git init on the assistant workspace (idempotent) so agent CLIs discover
+    // repo-scoped instruction files like CLAUDE.md and AGENTS.md.
     if !workspace.join(".git").exists() {
         let git_status = std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -207,7 +209,7 @@ pub fn create_workspace(config: &Config) -> Result<PathBuf, String> {
     Ok(workspace)
 }
 
-/// Generate CLAUDE.md for discussing a specific meeting.
+/// Generate CURRENT_MEETING.md for discussing a specific meeting.
 pub fn generate_meeting_context(meeting_path: &Path, config: &Config) -> Result<String, String> {
     let content =
         std::fs::read_to_string(meeting_path).map_err(|e| format!("Cannot read meeting: {}", e))?;
@@ -301,9 +303,9 @@ pub fn generate_meeting_context(meeting_path: &Path, config: &Config) -> Result<
     Ok(md)
 }
 
-/// Generate CLAUDE.md for general meeting assistant mode.
+/// Generate assistant instructions for general meeting assistant mode.
 pub fn generate_assistant_context(config: &Config) -> Result<String, String> {
-    let mut md = String::with_capacity(4096);
+    let mut md = String::with_capacity(6144);
     md.push_str("# Minutes Assistant\n\n");
     md.push_str("You are a meeting intelligence assistant with access to the user's complete meeting history.\n\n");
     md.push_str(&format!(
@@ -424,6 +426,23 @@ pub fn generate_assistant_context(config: &Config) -> Result<String, String> {
     md.push_str(ARTIFACT_INSTRUCTION);
     md.push('\n');
 
+    md.push_str("\n## Speaker Labels\n\n");
+    md.push_str("Transcripts may use anonymous labels like `SPEAKER_1` unless voice identification resolved names. `recorded_by` means who started the recording; it does not prove which speaker label is that person. Trust `speaker_map` only when confidence is high. Otherwise infer carefully from conversational cues and say when identity is uncertain.\n");
+
+    md.push_str("\n## Recall Response Style\n\n");
+    md.push_str("You are running inside Minutes Recall, an interactive terminal assistant for meeting memory. The user is usually asking about meetings, decisions, commitments, prep, follow-up, or live coaching.\n\n");
+    md.push_str("- Default to a calm, direct answer. Do not narrate every search, file read, or tool call unless the user asks how you investigated.\n");
+    md.push_str("- Do not assume the user always wants short bullet points. Many meeting-memory tasks benefit from a conversational, narrative, or report-style answer.\n");
+    md.push_str("- Choose the shape that fits the request: prose for synthesis, nuance, strategy, and recap; bullets for decisions, action items, commitments, lists, and comparisons.\n");
+    md.push_str("- Quick factual questions: answer in 1-3 sentences.\n");
+    md.push_str("- Meeting recaps: give a short narrative summary first. Add bullets only when they make decisions, actions, themes, or open questions clearer.\n");
+    md.push_str("- Cross-meeting research: summarize the finding first, then name the meetings or dates you used.\n");
+    md.push_str("- Live meeting coaching: be brief, tactical, and low-interruption.\n");
+    md.push_str("- Artifact drafting or editing: do the work, then give a short handoff.\n");
+    md.push_str("- Do not write long reports unless the user asks for depth, analysis, a memo, or a report-style answer.\n");
+    md.push_str("- Always mention the meeting title/date or source you used, but keep citation detail proportional to the answer.\n");
+    md.push_str("- Never attribute a statement to a named person unless speaker identity is verified. If uncertain, say what is uncertain and what you checked.\n");
+
     md.push_str("\n## Instructions\n\n");
     md.push_str("- Synthesize information across multiple meetings\n");
     md.push_str("- Track decisions, action items, and commitments\n");
@@ -451,29 +470,6 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
             e
         )
     })
-}
-
-fn ensure_agents_artifact_instruction(workspace: &Path) -> Result<(), String> {
-    let agents_path = workspace.join("AGENTS.md");
-    if !agents_path.exists() {
-        return Ok(());
-    }
-
-    let existing = std::fs::read_to_string(&agents_path)
-        .map_err(|e| format!("Failed to read {}: {}", agents_path.display(), e))?;
-    if existing.contains(ACTIVE_ARTIFACT_FILE) {
-        return Ok(());
-    }
-
-    let mut updated = existing.trim_end().to_string();
-    if !updated.is_empty() {
-        updated.push_str("\n\n");
-    }
-    updated.push_str("## Open Artifact\n\n");
-    updated.push_str(ARTIFACT_INSTRUCTION);
-    updated.push('\n');
-
-    write_atomic(&agents_path, &updated)
 }
 
 pub fn write_assistant_context(workspace: &Path, config: &Config) -> Result<(), String> {
@@ -513,8 +509,10 @@ pub fn write_assistant_context(workspace: &Path, config: &Config) -> Result<(), 
         assistant_md
     };
 
-    write_atomic(&claude_md_path, &content)?;
-    ensure_agents_artifact_instruction(workspace)
+    for file_name in ASSISTANT_INSTRUCTION_FILES {
+        write_atomic(&workspace.join(file_name), &content)?;
+    }
+    Ok(())
 }
 
 pub fn write_active_meeting_context(
@@ -602,6 +600,33 @@ mod tests {
         let content = generate_assistant_context(&config).expect("assistant context");
         assert!(content.contains(ACTIVE_ARTIFACT_FILE));
         assert!(content.contains("Changes you make will appear in real time"));
+    }
+
+    #[test]
+    fn assistant_context_includes_recall_response_style_contract() {
+        let config = Config::default();
+        let content = generate_assistant_context(&config).expect("assistant context");
+
+        assert!(content.contains("## Recall Response Style"));
+        assert!(content.contains("Do not assume the user always wants short bullet points"));
+        assert!(content.contains("conversational, narrative, or report-style answer"));
+        assert!(content.contains("Never attribute a statement to a named person"));
+    }
+
+    #[test]
+    fn write_assistant_context_writes_claude_and_agents_instructions() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("assistant");
+        fs::create_dir_all(&workspace).unwrap();
+        let config = Config::default();
+
+        write_assistant_context(&workspace, &config).expect("assistant context");
+
+        let claude = fs::read_to_string(workspace.join("CLAUDE.md")).unwrap();
+        let agents = fs::read_to_string(workspace.join("AGENTS.md")).unwrap();
+        assert_eq!(claude, agents);
+        assert!(claude.contains("## Recall Response Style"));
+        assert!(agents.contains(ACTIVE_ARTIFACT_FILE));
     }
 
     #[test]
