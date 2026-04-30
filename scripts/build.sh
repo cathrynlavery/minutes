@@ -36,12 +36,23 @@ echo "=== Building Tauri app ==="
 # The calendar-events Swift helper is compiled and staged into
 # tauri/src-tauri/resources/ by tauri/src-tauri/build.rs, and Tauri bundles it
 # into Minutes.app/Contents/Resources/ automatically via tauri.conf.json.
-TAURI_BUILD_ARGS=(cargo tauri build --features "$MINUTES_BUILD_FEATURES" --bundles app,dmg)
+TAURI_BUILD_ARGS=(cargo tauri build --features "$MINUTES_BUILD_FEATURES" --bundles app)
 if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
     echo "  No TAURI_SIGNING_PRIVATE_KEY configured; building updater artifacts with --no-sign."
     TAURI_BUILD_ARGS+=(--no-sign)
 fi
 "${TAURI_BUILD_ARGS[@]}"
+
+APP_VERSION="$(python3 - <<'PY'
+import json
+from pathlib import Path
+print(json.loads(Path("tauri/src-tauri/tauri.conf.json").read_text())["version"])
+PY
+)"
+./scripts/create-branded-dmg.sh \
+    --app target/release/bundle/macos/Minutes.app \
+    --version "$APP_VERSION" \
+    --output "target/release/bundle/dmg/Minutes_${APP_VERSION}_aarch64.dmg"
 
 echo "=== Signing + Installing CLI ==="
 mkdir -p ~/.local/bin

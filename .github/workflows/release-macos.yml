@@ -107,13 +107,10 @@ jobs:
       - name: Create DMG
         run: |
           VERSION="${RELEASE_TAG#v}"
-          mkdir -p target/release/bundle/dmg
-          hdiutil create \
-            -volname "Minutes" \
-            -srcfolder target/release/bundle/macos/Minutes.app \
-            -ov \
-            -format UDZO \
-            "target/release/bundle/dmg/Minutes_${VERSION}_aarch64.dmg"
+          ./scripts/create-branded-dmg.sh \
+            --app target/release/bundle/macos/Minutes.app \
+            --version "$VERSION" \
+            --output "target/release/bundle/dmg/Minutes_${VERSION}_aarch64.dmg"
 
       - name: Upload signed app bundle
         uses: actions/upload-artifact@v4
