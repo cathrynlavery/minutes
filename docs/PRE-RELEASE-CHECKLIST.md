@@ -110,7 +110,9 @@ The v0.16.1 notes must explicitly carry the v0.16.0 story forward: live events,
 fast local search, desktop reliability during calls, Templates Phase 1, and the
 design/packaging polish. Do not let the patch notes read like only a small
 updater bug fix; this is the make-good release note for the missed launch
-moment.
+moment. Keep the recovery note concise enough to work inside the desktop
+"What's New" modal; point readers to the full v0.16.0 notes instead of pasting
+the whole major-release narrative into the patch body.
 
 ## Phase 6: Cut the release
 

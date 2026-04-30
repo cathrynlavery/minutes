@@ -1725,9 +1725,22 @@ Short meeting.
     fn test_fix_frontmatter_date() {
         let fm = "title: Test\ntype: meeting\ndate: 2026-03-17T14:00:00\nduration: 5m";
         let fixed = fix_frontmatter(fm);
-        // Should have a timezone offset now
+        let date = fixed
+            .lines()
+            .find_map(|line| line.strip_prefix("date: "))
+            .expect("fixed frontmatter should include a date");
+        let offset = &date[date.len().saturating_sub(6)..];
+        let offset_bytes = offset.as_bytes();
+
+        // Should have a local timezone offset, independent of the machine's zone.
         assert!(
-            fixed.contains('+') || fixed.contains("-07:00") || fixed.contains("-08:00"),
+            offset.len() == 6
+                && matches!(offset_bytes[0], b'+' | b'-')
+                && offset_bytes[1].is_ascii_digit()
+                && offset_bytes[2].is_ascii_digit()
+                && offset_bytes[3] == b':'
+                && offset_bytes[4].is_ascii_digit()
+                && offset_bytes[5].is_ascii_digit(),
             "Date should have timezone offset: {}",
             fixed
         );

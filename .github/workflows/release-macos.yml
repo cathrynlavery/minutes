@@ -30,11 +30,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Verify checked out release ref
+        run: |
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if [ "$head_commit" != "$tag_commit" ]; then
+            echo "ERROR: checkout HEAD ($head_commit) does not match ${RELEASE_TAG} ($tag_commit)" >&2
+            exit 1
+          fi
+
       - name: Set C++ include path for whisper.cpp
-        run: echo "CXXFLAGS=-I$(xcrun --show-sdk-path)/usr/include/c++/v1" >> $GITHUB_ENV
+        run: echo "CXXFLAGS=-I$(xcrun --show-sdk-path)/usr/include/c++/v1" >> "$GITHUB_ENV"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
