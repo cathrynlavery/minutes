@@ -10430,7 +10430,32 @@ fn github_release_url_for_version(version: &str) -> String {
     )
 }
 
-fn fetch_github_release_notes(version: &str) -> String {
+const UPDATER_LATEST_JSON_URL: &str =
+    "https://github.com/silverstein/minutes/releases/latest/download/latest.json";
+
+fn github_release_body_from_json(text: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("body").and_then(|b| b.as_str()).map(String::from))
+        .filter(|body| !body.trim().is_empty())
+}
+
+fn updater_notes_from_manifest_json(text: &str, version: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| {
+            let manifest_version = v.get("version").and_then(|value| value.as_str())?;
+            if manifest_version != version {
+                return None;
+            }
+            v.get("notes")
+                .and_then(|notes| notes.as_str())
+                .map(String::from)
+        })
+        .filter(|body| !body.trim().is_empty())
+}
+
+fn fetch_github_release_notes(version: &str) -> Option<String> {
     let tag = format!("v{}", version);
     let url = format!(
         "https://api.github.com/repos/silverstein/minutes/releases/tags/{}",
@@ -10446,11 +10471,30 @@ fn fetch_github_release_notes(version: &str) -> String {
             .into_body()
             .read_to_string()
             .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|v| v.get("body").and_then(|b| b.as_str()).map(String::from))
-            .unwrap_or_default(),
-        Err(_) => String::new(),
+            .and_then(|text| github_release_body_from_json(&text)),
+        Err(_) => None,
     }
+}
+
+fn fetch_updater_manifest_notes(version: &str) -> Option<String> {
+    match ureq::get(UPDATER_LATEST_JSON_URL)
+        .header("Accept", "application/json")
+        .header("User-Agent", "minutes-desktop")
+        .call()
+    {
+        Ok(response) => response
+            .into_body()
+            .read_to_string()
+            .ok()
+            .and_then(|text| updater_notes_from_manifest_json(&text, version)),
+        Err(_) => None,
+    }
+}
+
+fn release_notes_for_version(version: &str) -> String {
+    fetch_github_release_notes(version)
+        .or_else(|| fetch_updater_manifest_notes(version))
+        .unwrap_or_default()
 }
 
 /// Check whether the user should see "What's New" after an update.
@@ -10491,8 +10535,10 @@ pub async fn cmd_check_whats_new(app: tauri::AppHandle) -> Result<serde_json::Va
         return Ok(serde_json::json!({ "show": false }));
     }
 
-    // Version changed → fetch release notes from GitHub
-    let body = fetch_github_release_notes(&current);
+    // Version changed → fetch release notes. Prefer the GitHub release body,
+    // then fall back to the updater manifest so post-update notes do not go
+    // blank when the GitHub API is temporarily unavailable.
+    let body = release_notes_for_version(&current);
     let release_url = github_release_url_for_version(&current);
 
     Ok(serde_json::json!({
@@ -10527,7 +10573,7 @@ pub async fn cmd_get_whats_new(app: tauri::AppHandle) -> Result<serde_json::Valu
         "show": true,
         "version": current,
         "previousVersion": last_seen,
-        "body": fetch_github_release_notes(&current),
+        "body": release_notes_for_version(&current),
         "url": github_release_url_for_version(&current),
     }))
 }
@@ -10929,6 +10975,41 @@ mod palette_window_tests {
 #[cfg(test)]
 mod update_ui_tests {
     use super::*;
+
+    #[test]
+    fn release_notes_parser_reads_github_body() {
+        let body = github_release_body_from_json(
+            r##"{"tag_name":"v0.16.0","body":"# Minutes 0.16.0\n\nBig release."}"##,
+        );
+
+        assert_eq!(body.as_deref(), Some("# Minutes 0.16.0\n\nBig release."));
+    }
+
+    #[test]
+    fn release_notes_parser_rejects_empty_github_body() {
+        assert_eq!(github_release_body_from_json(r#"{"body":"   "}"#), None);
+        assert_eq!(github_release_body_from_json(r#"{"name":"v0.16.0"}"#), None);
+    }
+
+    #[test]
+    fn updater_manifest_notes_require_matching_version() {
+        let manifest = r##"{
+          "version": "0.16.0",
+          "notes": "# Minutes 0.16.0\n\nRelease notes from latest.json",
+          "platforms": {
+            "darwin-aarch64": {
+              "signature": "sig",
+              "url": "https://example.com/Minutes.app.tar.gz"
+            }
+          }
+        }"##;
+
+        assert_eq!(
+            updater_notes_from_manifest_json(manifest, "0.16.0").as_deref(),
+            Some("# Minutes 0.16.0\n\nRelease notes from latest.json")
+        );
+        assert_eq!(updater_notes_from_manifest_json(manifest, "0.15.0"), None);
+    }
 
     #[test]
     fn update_ui_state_tracks_phase_transitions() {

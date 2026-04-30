@@ -3436,6 +3436,97 @@
       display: block;
     }
 
+    .update-banner-notes {
+      display: none;
+      margin-top: 8px;
+      border-top: 1px solid var(--green-border);
+      padding-top: 8px;
+    }
+
+    .update-banner-notes.active {
+      display: block;
+    }
+
+    .update-banner.error-state .update-banner-notes {
+      border-top-color: var(--red-border);
+    }
+
+    .update-banner-notes-summary {
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--text);
+      list-style: none;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .update-banner-notes-summary::-webkit-details-marker { display: none; }
+    .update-banner-notes-summary::before {
+      content: '▸';
+      display: inline-block;
+      color: var(--text-secondary);
+      transition: transform 120ms ease;
+    }
+    .update-banner-notes[open] .update-banner-notes-summary::before {
+      content: '▾';
+    }
+
+    .update-banner-notes-body {
+      margin-top: 8px;
+      max-height: 180px;
+      overflow-y: auto;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.55;
+      padding-right: 4px;
+    }
+
+    .update-banner-notes-body h1,
+    .update-banner-notes-body h2,
+    .update-banner-notes-body h3 {
+      font-family: var(--font-sans);
+      font-size: 12px;
+      font-weight: 600;
+      margin: 10px 0 6px;
+    }
+
+    .update-banner-notes-body h1:first-child,
+    .update-banner-notes-body h2:first-child,
+    .update-banner-notes-body h3:first-child {
+      margin-top: 0;
+    }
+
+    .update-banner-notes-body p { margin: 0 0 8px; }
+    .update-banner-notes-body ul,
+    .update-banner-notes-body ol { margin: 0 0 8px; padding-left: 18px; }
+    .update-banner-notes-body li { margin-bottom: 3px; }
+    .update-banner-notes-body code {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      background: var(--surface-fill-strong);
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .update-banner-notes-body pre {
+      background: var(--surface-fill);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      overflow-x: auto;
+      margin: 0 0 8px;
+    }
+    .update-banner-notes-body pre code {
+      background: none;
+      padding: 0;
+    }
+    .update-banner-notes-body a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .update-banner-notes-body a:hover { text-decoration: underline; }
+
     /* Dev-only collapsible. The summary is a small pill so it doesn't dominate
        the banner. State-test buttons live behind this disclosure so the banner
        still feels like a banner, not a developer console, when an end user sees
@@ -3982,6 +4073,10 @@
           <div class="update-banner-progress-fill" id="update-banner-progress-fill"></div>
         </div>
         <div class="update-banner-error" id="update-banner-error"></div>
+        <details class="update-banner-notes" id="update-banner-notes">
+          <summary class="update-banner-notes-summary">Release notes</summary>
+          <div class="update-banner-notes-body" id="update-banner-notes-body"></div>
+        </details>
         <details class="update-banner-debug" id="update-banner-debug">
           <summary class="update-banner-debug-summary">Dev tools</summary>
           <div class="update-banner-debug-row">
@@ -5125,6 +5220,8 @@
     const updateBannerProgress = document.getElementById('update-banner-progress');
     const updateBannerProgressFill = document.getElementById('update-banner-progress-fill');
     const updateBannerError = document.getElementById('update-banner-error');
+    const updateBannerNotes = document.getElementById('update-banner-notes');
+    const updateBannerNotesBody = document.getElementById('update-banner-notes-body');
     const updateBannerDebug = document.getElementById('update-banner-debug');
     const startUpdateButton = document.getElementById('btn-start-update');
     const retryUpdateButton = document.getElementById('btn-retry-update');
@@ -9889,6 +9986,19 @@
         updateBannerError.textContent = updateState.phase === 'error' ? updateState.errorMessage || 'Update failed.' : '';
         updateBannerError.classList.toggle('active', updateState.phase === 'error');
       }
+      const showNotes = updateState.phase === 'available' && Boolean(updateState.body);
+      if (updateBannerNotes) updateBannerNotes.classList.toggle('active', showNotes);
+      if (showNotes && updateBannerNotesBody) {
+        renderMarkdownToElement(updateBannerNotesBody, updateState.body);
+        updateBannerNotesBody.querySelectorAll('a').forEach((a) => {
+          a.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.__TAURI__.shell.open(a.href);
+          });
+        });
+      } else if (updateBannerNotesBody) {
+        updateBannerNotesBody.textContent = '';
+      }
 
       setButtonVisibility(startUpdateButton, updateState.phase === 'available');
       setButtonVisibility(retryUpdateButton, updateState.phase === 'error' && updateState.recoverable);
@@ -9996,6 +10106,14 @@
       updateState.downloadedBytes = Number.isFinite(payload.downloadedBytes) ? payload.downloadedBytes : updateState.downloadedBytes;
       updateState.canCancel = !!payload.canCancel;
       if (payload.phase === 'ready') {
+        if (updateState.version && updateState.body) {
+          try {
+            localStorage.setItem('minutes-installed-update-notes', JSON.stringify({
+              version: updateState.version,
+              body: updateState.body,
+            }));
+          } catch (_) { }
+        }
         try { localStorage.removeItem('minutes-pending-update'); } catch (_) { }
       }
       renderUpdateBanner();
@@ -10066,10 +10184,40 @@
     let whatsNewCurrent = null;
     let whatsNewDismissMarksSeen = false;
 
+    function cachedInstalledUpdateNotes(version) {
+      try {
+        const stored = localStorage.getItem('minutes-installed-update-notes');
+        if (!stored) return '';
+        const parsed = JSON.parse(stored);
+        if (parsed?.version === version && parsed?.body) return parsed.body;
+        if (parsed?.version && parsed.version !== version) {
+          localStorage.removeItem('minutes-installed-update-notes');
+        }
+      } catch (_) { }
+      return '';
+    }
+
+    function clearCachedInstalledUpdateNotes(version) {
+      try {
+        const stored = localStorage.getItem('minutes-installed-update-notes');
+        if (!stored) return;
+        const parsed = JSON.parse(stored);
+        if (!version || parsed?.version === version) {
+          localStorage.removeItem('minutes-installed-update-notes');
+        }
+      } catch (_) { }
+    }
+
+    function withCachedReleaseNotes(result) {
+      if (result?.body || !result?.version) return result;
+      const cachedBody = cachedInstalledUpdateNotes(result.version);
+      return cachedBody ? { ...result, body: cachedBody } : result;
+    }
+
     function renderWhatsNewBody(result) {
       if (!whatsNewBodyEl) return;
       if (result.body && typeof marked !== 'undefined') {
-        whatsNewBodyEl.innerHTML = marked.parse(result.body);
+        renderMarkdownToElement(whatsNewBodyEl, result.body);
         whatsNewBodyEl.querySelectorAll('a').forEach((a) => {
           a.addEventListener('click', (e) => {
             e.preventDefault();
@@ -10101,13 +10249,14 @@
       whatsNewScrim.classList.remove('active');
       if (whatsNewDismissMarksSeen) {
         try { await invoke('cmd_dismiss_whats_new'); } catch (_) { }
+        clearCachedInstalledUpdateNotes(whatsNewCurrent?.version);
       }
       whatsNewDismissMarksSeen = false;
     }
 
     async function maybeShowWhatsNewAfterUpdate() {
       try {
-        const result = await invoke('cmd_check_whats_new');
+        const result = withCachedReleaseNotes(await invoke('cmd_check_whats_new'));
         if (!result.show) return;
         showWhatsNewModal(result, { markSeenOnDismiss: true });
       } catch (e) {
@@ -10117,7 +10266,7 @@
 
     async function openWhatsNewManually() {
       try {
-        const result = await invoke('cmd_get_whats_new');
+        const result = withCachedReleaseNotes(await invoke('cmd_get_whats_new'));
         showWhatsNewModal(result, { markSeenOnDismiss: false });
       } catch (e) {
         console.error('[whats-new/manual]', e);
