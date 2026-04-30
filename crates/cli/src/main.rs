@@ -7073,7 +7073,7 @@ fn cmd_demo_full(config: &Config) -> Result<()> {
 // minutes demo — deterministic pipeline demo with bundled audio
 // ──────────────────────────────────────────────────────────────
 
-/// Bundled 3-second demo WAV (generated silence with a beep).
+/// Bundled short speech WAV used by `minutes demo`.
 /// If this file doesn't exist at build time, compilation fails — intentionally.
 const DEMO_WAV: &[u8] = include_bytes!("../assets/demo.wav");
 
@@ -7122,7 +7122,10 @@ fn cmd_demo(config: &Config) -> Result<()> {
         }
         Err(e) => {
             eprintln!("\nDemo failed: {}", e);
-            eprintln!("Run `minutes setup` to download the speech model first.");
+            eprintln!("Run `minutes health` to check the speech model and audio pipeline.");
+            eprintln!(
+                "If the speech model is missing, run `minutes setup`; otherwise please report the demo failure."
+            );
             Err(e.into())
         }
     }
