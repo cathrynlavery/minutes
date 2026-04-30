@@ -103,6 +103,15 @@ scripts/release_notes.sh HEAD stable > notes.md
 
 Then expand each section by hand. The helper output is a starting point, not the final notes.
 
+**v0.16.1 patch-release note:** v0.16.0 was a major release, but the desktop
+post-update "What's New" screen could show without release notes because it
+depended on a live GitHub API fetch and did not fall back to updater metadata.
+The v0.16.1 notes must explicitly carry the v0.16.0 story forward: live events,
+fast local search, desktop reliability during calls, Templates Phase 1, and the
+design/packaging polish. Do not let the patch notes read like only a small
+updater bug fix; this is the make-good release note for the missed launch
+moment.
+
 ## Phase 6: Cut the release
 
 Per [`RELEASE-MACOS.md`](./RELEASE-MACOS.md), the convention is "create the GitHub Release first, let that create the tag", which then triggers the build workflows:
@@ -259,6 +268,11 @@ gh issue list --repo silverstein/minutes --search "v0.10.3 OR 0.10.3" --state al
 ## What to do if something breaks after the tag is published
 
 [`RELEASE-CHANNELS.md`](./RELEASE-CHANNELS.md) is explicit: do not retag, do not silently replace. Cut a new patch version with the fix and call out the regression in the next release notes.
+
+If the breakage affected release-note delivery itself, the patch release must
+repeat the missed major-release narrative, not just describe the mechanical fix.
+Users who already dismissed an empty "What's New" screen may not see the old
+version's modal again, so the next patch is the recovery surface.
 
 The tag is immutable. The release notes are not. You can edit the body of an existing release with `gh release edit vX.Y.Z --notes-file fixed.md` to correct typos, missing sections, or to add a "superseded by vX.Y.Z+1" note.
 
