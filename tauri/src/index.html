@@ -461,6 +461,39 @@
       padding-left: 5px;
     }
 
+    .recall-terminal .xterm .xterm-viewport {
+      background-color: transparent;
+      scrollbar-color: color-mix(in srgb, var(--text-tertiary) 18%, transparent) transparent;
+      scrollbar-width: thin;
+    }
+
+    .recall-terminal .xterm .xterm-viewport::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .recall-terminal .xterm .xterm-viewport::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .recall-terminal .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+      min-height: 36px;
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--text-tertiary) 14%, transparent);
+      background-clip: content-box;
+    }
+
+    .recall-terminal:hover .xterm .xterm-viewport,
+    .recall-terminal:focus-within .xterm .xterm-viewport {
+      scrollbar-color: color-mix(in srgb, var(--text-tertiary) 38%, transparent) transparent;
+    }
+
+    .recall-terminal:hover .xterm .xterm-viewport::-webkit-scrollbar-thumb,
+    .recall-terminal:focus-within .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--text-tertiary) 32%, transparent);
+      background-clip: content-box;
+    }
+
     .recall-terminal.hidden {
       display: none;
     }
