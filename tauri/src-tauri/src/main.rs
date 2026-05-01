@@ -241,18 +241,27 @@ fn show_main_window(app: &tauri::AppHandle) {
         win.set_focus().ok();
         return;
     }
-    if let Ok(win) = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        // Empty title hides the centered "Minutes" text in the macOS title bar.
-        // The in-app brand mark (italic m + recording dot) carries the identity now,
-        // so the title text was double-branding the same window.
+    let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        // Empty title hides the centered "Minutes" text in any native chrome.
+        // The in-app brand mark (italic m + recording dot) carries the identity.
         .title("")
         .inner_size(560.0, 700.0)
         .min_inner_size(460.0, 520.0)
         .transparent(true)
         .content_protected(Config::load().privacy.hide_from_screen_share)
-        .focused(true)
-        .build()
+        .focused(true);
+
+    #[cfg(target_os = "macos")]
     {
+        builder = builder
+            // Keep this as a normal app window, but let the in-app header own the
+            // visual chrome instead of stacking below a separate gray title bar.
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(16.0, 16.0));
+    }
+
+    if let Ok(win) = builder.build() {
         #[cfg(target_os = "macos")]
         {
             use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};

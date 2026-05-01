@@ -5,6 +5,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Minutes</title>
+  <script>
+    if (navigator.platform && navigator.platform.toLowerCase().includes('mac')) {
+      document.documentElement.dataset.platform = 'macos';
+    }
+  </script>
   <style>
     @font-face {
       font-family: 'Instrument Serif';
@@ -654,6 +659,11 @@
       position: relative;
       z-index: 10;
       border-bottom: 1px solid var(--border);
+    }
+
+    html[data-platform="macos"] .header {
+      min-height: 52px;
+      padding-left: 76px;
     }
 
     .brand {
