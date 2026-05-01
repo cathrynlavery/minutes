@@ -3,8 +3,10 @@
 use minutes_core::Config;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{
     menu::{Menu, MenuItem, SubmenuBuilder},
     tray::TrayIconBuilder,
@@ -29,6 +31,9 @@ const MINUTES_CHANGELOG_URL: &str = "https://github.com/silverstein/minutes/rele
 const MINUTES_DISCUSSIONS_URL: &str = "https://github.com/silverstein/minutes/discussions";
 
 static CLEAN_EXIT_STARTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+static MACOS_TERMINATE_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 fn cleanup_before_process_exit(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<commands::AppState>() {
@@ -75,6 +80,65 @@ fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
         });
     } else {
         finish_clean_exit(app.clone(), code);
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn objc_getClass(name: *const c_char) -> *mut c_void;
+    fn sel_registerName(name: *const c_char) -> *mut c_void;
+    fn class_addMethod(
+        cls: *mut c_void,
+        name: *mut c_void,
+        imp: *const c_void,
+        types: *const c_char,
+    ) -> libc::c_schar;
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn application_should_terminate(
+    _this: *mut c_void,
+    _cmd: *mut c_void,
+    _sender: *mut c_void,
+) -> isize {
+    const NS_TERMINATE_CANCEL: isize = 0;
+    const NS_TERMINATE_NOW: isize = 1;
+
+    if let Some(app) = MACOS_TERMINATE_APP_HANDLE.get() {
+        request_clean_exit(app, 0);
+        NS_TERMINATE_CANCEL
+    } else {
+        NS_TERMINATE_NOW
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_terminate_hook(app: &tauri::AppHandle) {
+    let _ = MACOS_TERMINATE_APP_HANDLE.set(app.clone());
+
+    unsafe {
+        let cls = objc_getClass(c"TaoAppDelegateParent".as_ptr());
+        if cls.is_null() {
+            eprintln!("[macos] unable to install quit hook: TaoAppDelegateParent not registered");
+            return;
+        }
+
+        let selector = sel_registerName(c"applicationShouldTerminate:".as_ptr());
+        if selector.is_null() {
+            eprintln!("[macos] unable to install quit hook: selector registration failed");
+            return;
+        }
+
+        let added = class_addMethod(
+            cls,
+            selector,
+            application_should_terminate as *const () as *const c_void,
+            c"q@:@".as_ptr(),
+        );
+
+        if added == 0 {
+            eprintln!("[macos] quit hook already installed or unavailable");
+        }
     }
 }
 
@@ -1162,6 +1226,9 @@ fn main() {
         .setup(move |app| {
             let initial_recording = minutes_core::pid::status().recording;
             let startup_config = minutes_core::config::Config::load();
+
+            #[cfg(target_os = "macos")]
+            install_macos_terminate_hook(app.handle());
 
             spawn_meetings_refresh_watcher(app.handle(), startup_config.output_dir.clone());
 
