@@ -356,6 +356,7 @@ impl IdentityConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DictationConfig {
+    pub backend: String,
     pub destination: String,
     pub accumulate: bool,
     pub daily_note_log: bool,
@@ -388,6 +389,7 @@ pub struct VaultConfig {
 impl Default for DictationConfig {
     fn default() -> Self {
         Self {
+            backend: "whisper".into(),
             destination: "clipboard".into(),
             accumulate: true,
             daily_note_log: true,
@@ -1218,6 +1220,7 @@ mod tests {
         assert_eq!(config.summarization.engine, "none");
         assert_eq!(config.search.engine, "builtin");
         assert!(!config.daily_notes.enabled);
+        assert_eq!(config.dictation.backend, "whisper");
         assert!(config.dictation.accumulate);
         assert!(config.call_detection.enabled);
         assert_eq!(config.watch.settle_delay_ms, 2000);
@@ -1466,6 +1469,24 @@ accumulate = false
 
         let config = Config::load_from(&config_path);
         assert!(!config.dictation.accumulate);
+    }
+
+    #[test]
+    fn dictation_backend_can_be_selected_from_toml() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[dictation]
+backend = "apple-speech"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert_eq!(config.dictation.backend, "apple-speech");
+        assert_eq!(config.transcription.engine, "whisper");
     }
 
     // ── Call detection: stop-when-call-ends opt-in ────────────

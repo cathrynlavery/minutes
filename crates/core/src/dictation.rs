@@ -3,7 +3,7 @@ use crate::error::{DictationError, MinutesError, TranscribeError};
 use crate::markdown::{ContentType, Frontmatter, OutputStatus};
 use crate::pid;
 use crate::streaming::AudioStream;
-use crate::streaming_whisper::StreamingWhisper;
+use crate::streaming_whisper::{StreamingResult, StreamingWhisper};
 use crate::vad::Vad;
 use chrono::Local;
 use std::path::PathBuf;
@@ -261,6 +261,9 @@ where
 
         let mut vad = Vad::new();
         let mut streaming = StreamingWhisper::new(config.transcription.language.clone());
+        let apple_speech_enabled = apple_speech_dictation_enabled(config);
+        #[cfg(target_os = "macos")]
+        let mut apple_utterance_samples: Vec<f32> = Vec::new();
         let mut accumulated_results: Vec<DictationResult> = Vec::new();
         let mut was_speaking = false;
         let mut has_spoken = false;
@@ -276,7 +279,14 @@ where
                 // Finalize any in-progress transcription before exiting
                 if utterance_samples > 0 {
                     on_event(DictationEvent::Processing);
-                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                    if let Some(sr) = finalize_dictation_transcription(
+                        config,
+                        apple_speech_enabled,
+                        #[cfg(target_os = "macos")]
+                        &apple_utterance_samples,
+                        &mut streaming,
+                        &whisper_ctx,
+                    ) {
                         handle_utterance(
                             &sr.text,
                             sr.duration_secs,
@@ -286,6 +296,8 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
+                    #[cfg(target_os = "macos")]
+                    apple_utterance_samples.clear();
                 }
                 flush_accumulated_results(config, &mut accumulated_results, on_event, on_result);
                 on_event(DictationEvent::Cancelled);
@@ -297,7 +309,14 @@ where
                 tracing::info!("recording started — yielding dictation");
                 if utterance_samples > 0 {
                     on_event(DictationEvent::Processing);
-                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                    if let Some(sr) = finalize_dictation_transcription(
+                        config,
+                        apple_speech_enabled,
+                        #[cfg(target_os = "macos")]
+                        &apple_utterance_samples,
+                        &mut streaming,
+                        &whisper_ctx,
+                    ) {
                         handle_utterance(
                             &sr.text,
                             sr.duration_secs,
@@ -307,6 +326,8 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
+                    #[cfg(target_os = "macos")]
+                    apple_utterance_samples.clear();
                 }
                 flush_accumulated_results(config, &mut accumulated_results, on_event, on_result);
                 on_event(DictationEvent::Yielded);
@@ -371,6 +392,10 @@ where
                 was_speaking = true;
                 has_spoken = true;
                 utterance_samples += chunk.samples.len();
+                #[cfg(target_os = "macos")]
+                if apple_speech_enabled {
+                    apple_utterance_samples.extend_from_slice(&chunk.samples);
+                }
 
                 // Feed to streaming whisper — may emit a partial result
                 if let Some(sr) = streaming.feed(&chunk.samples, &whisper_ctx) {
@@ -381,7 +406,14 @@ where
                 if utterance_samples >= max_utterance_samples {
                     tracing::info!("max utterance duration reached, force-processing");
                     on_event(DictationEvent::Processing);
-                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                    if let Some(sr) = finalize_dictation_transcription(
+                        config,
+                        apple_speech_enabled,
+                        #[cfg(target_os = "macos")]
+                        &apple_utterance_samples,
+                        &mut streaming,
+                        &whisper_ctx,
+                    ) {
                         handle_utterance(
                             &sr.text,
                             sr.duration_secs,
@@ -391,6 +423,8 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
+                    #[cfg(target_os = "macos")]
+                    apple_utterance_samples.clear();
                     streaming.reset();
                     utterance_samples = 0;
                     was_speaking = false;
@@ -401,7 +435,14 @@ where
                 if was_speaking && utterance_samples > 0 {
                     // Speech just ended — finalize the streaming transcription
                     on_event(DictationEvent::Processing);
-                    if let Some(sr) = streaming.finalize(&whisper_ctx) {
+                    if let Some(sr) = finalize_dictation_transcription(
+                        config,
+                        apple_speech_enabled,
+                        #[cfg(target_os = "macos")]
+                        &apple_utterance_samples,
+                        &mut streaming,
+                        &whisper_ctx,
+                    ) {
                         handle_utterance(
                             &sr.text,
                             sr.duration_secs,
@@ -411,6 +452,8 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
+                    #[cfg(target_os = "macos")]
+                    apple_utterance_samples.clear();
                     streaming.reset();
                     utterance_samples = 0;
                     was_speaking = false;
@@ -453,6 +496,116 @@ where
 
         Ok(())
     }
+}
+
+fn apple_speech_dictation_enabled(config: &Config) -> bool {
+    if !config
+        .dictation
+        .backend
+        .eq_ignore_ascii_case("apple-speech")
+    {
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        match crate::apple_speech::probe_capabilities() {
+            Ok(report) => {
+                let ready = report.runtime_supported
+                    && report.dictation_transcriber.asset_status != "unsupported";
+                if !ready {
+                    tracing::warn!(
+                        asset_status = %report.dictation_transcriber.asset_status,
+                        "apple-speech dictation requested but DictationTranscriber is not ready; using whisper fallback"
+                    );
+                }
+                ready
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "apple-speech dictation capability probe failed; using whisper fallback"
+                );
+                false
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        tracing::warn!(
+            "apple-speech dictation requested on a non-macOS build; using whisper fallback"
+        );
+        false
+    }
+}
+
+#[cfg(feature = "whisper")]
+fn finalize_dictation_transcription(
+    config: &Config,
+    apple_speech_enabled: bool,
+    #[cfg(target_os = "macos")] apple_utterance_samples: &[f32],
+    streaming: &mut StreamingWhisper,
+    whisper_ctx: &whisper_rs::WhisperContext,
+) -> Option<StreamingResult> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = apple_speech_enabled;
+
+    #[cfg(target_os = "macos")]
+    if apple_speech_enabled {
+        match transcribe_utterance_with_apple_speech(apple_utterance_samples, config) {
+            Ok(Some(result)) => return Some(result),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "apple-speech dictation failed; using whisper fallback for this utterance"
+                );
+            }
+        }
+    }
+
+    streaming.finalize(whisper_ctx)
+}
+
+#[cfg(target_os = "macos")]
+fn transcribe_utterance_with_apple_speech(
+    samples: &[f32],
+    config: &Config,
+) -> Result<Option<StreamingResult>, MinutesError> {
+    if samples.len() < 16000 {
+        return Ok(None);
+    }
+
+    let tmp_wav = tempfile::Builder::new()
+        .prefix("minutes-dictation-apple-speech-")
+        .suffix(".wav")
+        .tempfile()
+        .map_err(TranscribeError::Io)?;
+    crate::transcribe::write_wav_16k_mono(tmp_wav.path(), samples)?;
+
+    let locale = crate::apple_speech::live_locale_hint(config.transcription.language.as_deref());
+    let result = crate::apple_speech::transcribe_with_apple_speech(
+        tmp_wav.path(),
+        locale.as_deref(),
+        crate::apple_speech::AppleSpeechMode::Dictation,
+        true,
+    )?;
+
+    if let Some(error) = result.error {
+        return Err(MinutesError::Io(std::io::Error::other(error)));
+    }
+
+    let text = result.transcript.trim().to_string();
+    if text.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(StreamingResult {
+        text,
+        is_final: true,
+        duration_secs: samples.len() as f64 / 16000.0,
+    }))
 }
 
 fn handle_utterance<G>(

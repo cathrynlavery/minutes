@@ -6920,6 +6920,7 @@ pub fn cmd_get_settings() -> serde_json::Value {
             "call_end_stop_countdown_secs": config.call_detection.call_end_stop_countdown_secs,
         },
         "dictation": {
+            "backend": config.dictation.backend,
             "model": config.dictation.model,
             "destination": config.dictation.destination,
             "accumulate": config.dictation.accumulate,
@@ -7192,6 +7193,15 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
         }
 
         // Dictation
+        ("dictation", "backend") => {
+            if !["whisper", "apple-speech"].contains(&value.as_str()) {
+                return Err(format!(
+                    "unknown dictation backend '{}'. Valid: whisper, apple-speech",
+                    value
+                ));
+            }
+            config.dictation.backend = value.clone();
+        }
         ("dictation", "model") => {
             config.dictation.model = value.clone();
             // Re-preload the new model in background so next dictation is instant
@@ -7643,6 +7653,7 @@ mod tests {
         // future UI row.
         ("dictation", "accumulate"),
         ("dictation", "auto_paste"),
+        ("dictation", "backend"),
         ("dictation", "cleanup_engine"),
         ("dictation", "destination"),
         // dictation.shortcut_enabled is written directly by cmd_set_shortcut
@@ -8007,6 +8018,32 @@ mod tests {
                 .unwrap_err();
 
             assert!(error.contains("unknown live transcript backend"));
+        });
+    }
+
+    #[test]
+    fn desktop_settings_accept_dictation_backend_selection() {
+        with_temp_home(|_| {
+            cmd_set_setting(
+                "dictation".into(),
+                "backend".into(),
+                "apple-speech".into(),
+            )
+            .unwrap();
+
+            let config = Config::load();
+            assert_eq!(config.dictation.backend, "apple-speech");
+            assert_eq!(config.transcription.engine, "whisper");
+        });
+    }
+
+    #[test]
+    fn desktop_settings_reject_unknown_dictation_backend() {
+        with_temp_home(|_| {
+            let error =
+                cmd_set_setting("dictation".into(), "backend".into(), "laser".into()).unwrap_err();
+
+            assert!(error.contains("unknown dictation backend"));
         });
     }
 

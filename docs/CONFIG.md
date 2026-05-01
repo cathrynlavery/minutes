@@ -127,6 +127,7 @@ server compatibility.
 
 | key | default | meaning |
 |---|---|---|
+| `backend` | `"whisper"` | Final transcription backend: `"whisper"` or experimental `"apple-speech"` on macOS when DictationTranscriber is available |
 | `destination` | `"clipboard"` | `"clipboard"`, `"file"`, or `"command"` |
 | `destination_file` | unset | Target file when `destination = "file"` |
 | `destination_command` | unset | Shell command when `destination = "command"` |
