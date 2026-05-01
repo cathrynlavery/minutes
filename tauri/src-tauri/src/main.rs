@@ -959,6 +959,10 @@ fn main() {
     ));
     let hotkey_runtime = Arc::new(Mutex::new(commands::HotkeyRuntime::default()));
     let discard_short_hotkey_capture = Arc::new(AtomicBool::new(false));
+    let dictation_active = Arc::new(AtomicBool::new(false));
+    let dictation_stop_flag = Arc::new(AtomicBool::new(false));
+    let live_transcript_active = Arc::new(AtomicBool::new(false));
+    let live_transcript_stop_flag = Arc::new(AtomicBool::new(false));
     let screen_share_hidden = Arc::new(AtomicBool::new(
         startup_config_snapshot.privacy.hide_from_screen_share,
     ));
@@ -1189,10 +1193,10 @@ fn main() {
             hotkey_runtime: hotkey_runtime.clone(),
             discard_short_hotkey_capture: discard_short_hotkey_capture.clone(),
             pty_manager: Arc::new(Mutex::new(pty::PtyManager::default())),
-            dictation_active: Arc::new(AtomicBool::new(false)),
-            dictation_stop_flag: Arc::new(AtomicBool::new(false)),
-            live_transcript_active: Arc::new(AtomicBool::new(false)),
-            live_transcript_stop_flag: Arc::new(AtomicBool::new(false)),
+            dictation_active: dictation_active.clone(),
+            dictation_stop_flag: dictation_stop_flag.clone(),
+            live_transcript_active: live_transcript_active.clone(),
+            live_transcript_stop_flag: live_transcript_stop_flag.clone(),
             live_shortcut_enabled: {
                 let cfg = minutes_core::config::Config::load();
                 Arc::new(AtomicBool::new(cfg.live_transcript.shortcut_enabled))
@@ -1794,6 +1798,8 @@ fn main() {
                 detector.start(
                     app.handle().clone(),
                     recording_for_detector,
+                    dictation_active.clone(),
+                    live_transcript_active.clone(),
                     processing_clone,
                     call_detect::CallEndAutoStopHandles {
                         recording_started_by_call_detect: started_by_call_detect_for_detector,

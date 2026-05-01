@@ -277,6 +277,8 @@ impl CallDetector {
         self: Arc<Self>,
         app: tauri::AppHandle,
         recording: Arc<AtomicBool>,
+        dictation_active: Arc<AtomicBool>,
+        live_transcript_active: Arc<AtomicBool>,
         _processing: Arc<AtomicBool>,
         auto_stop: CallEndAutoStopHandles,
     ) {
@@ -324,15 +326,32 @@ impl CallDetector {
                 std::thread::sleep(interval);
 
                 let is_recording = recording.load(Ordering::Relaxed);
+                let minutes_audio_active = dictation_active.load(Ordering::Relaxed)
+                    || live_transcript_active.load(Ordering::Relaxed);
                 let started_by_call_detect = auto_stop
                     .recording_started_by_call_detect
                     .load(Ordering::Relaxed);
 
                 // Default behavior preserved: when something else is recording
-                // (manual `minutes record`, hotkey, live transcript), skip detection
-                // entirely. Only observe calls when the detector's own banner
+                // (manual `minutes record`, hotkey, dictation, live transcript), skip
+                // detection entirely. Only observe calls when the detector's own banner
                 // launched this recording AND the user opted into auto-stop.
-                if is_recording && !(started_by_call_detect && config.stop_when_call_ends) {
+                if (is_recording || minutes_audio_active)
+                    && !(started_by_call_detect && config.stop_when_call_ends)
+                {
+                    if minutes_audio_active {
+                        if let Some(previous) = self.clear_active_call() {
+                            log_call_detect_event(
+                                "info",
+                                "cleared",
+                                None,
+                                Some(&previous),
+                                serde_json::json!({
+                                    "reason": "minutes audio session active"
+                                }),
+                            );
+                        }
+                    }
                     continue;
                 }
 
