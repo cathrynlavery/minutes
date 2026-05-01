@@ -2031,6 +2031,10 @@ fn main() {
                     request_clean_exit(app, code.unwrap_or(0));
                 }
             }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                show_main_window(app);
+            }
             tauri::RunEvent::Exit => cleanup_before_process_exit(app),
             _ => {}
         });
