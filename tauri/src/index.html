@@ -655,21 +655,25 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 14px;
-      margin: 16px 16px 12px;
+      min-height: 40px;
+      padding: 0 16px;
+      margin: 14px 16px 12px;
       -webkit-app-region: drag;
       position: relative;
       z-index: 10;
-      border: 1px solid var(--border-mid);
-      border-radius: 12px;
-      background: var(--bg-elevated);
       box-sizing: border-box;
       flex-shrink: 0;
     }
 
     html[data-platform="macos"] .header {
-      min-height: 58px;
-      padding-left: 116px;
+      min-height: 40px;
+    }
+
+    html[data-platform="macos"] .header::before {
+      content: "";
+      flex: 0 0 76px;
+      height: 1px;
+      pointer-events: none;
     }
 
     .brand {
@@ -730,6 +734,7 @@
       align-items: center;
       gap: 8px;
       justify-content: flex-end;
+      margin-left: auto;
       min-width: 0;
       -webkit-app-region: no-drag;
     }
@@ -749,22 +754,21 @@
       cursor: pointer;
     }
 
+    .header .btn-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      flex: 0 0 auto;
+    }
+
     .header-chip.active {
       display: inline-flex;
     }
 
     .header-chip.readiness {
       display: none;
-    }
-
-    #btn-open-md {
-      background: var(--neutral-tint);
-      color: var(--text-secondary);
-    }
-
-    #btn-open-md:hover {
-      background: var(--surface-fill-strong);
-      color: var(--text);
     }
 
     .status-pill {
@@ -4085,7 +4089,6 @@
         </div>
       </div>
       <div class="header-actions">
-        <button class="header-chip active" id="btn-open-md" title="Open file (⌘O)">Open</button>
         <button class="btn btn-icon" id="btn-settings" title="Settings (⌘,)">⚙</button>
         <button class="header-chip readiness" id="btn-readiness">Readiness</button>
         <button class="header-chip" id="btn-jobs">Jobs <span id="jobs-count">0</span></button>
@@ -11340,7 +11343,6 @@
       }
     }
 
-    document.getElementById('btn-open-md').addEventListener('click', openMarkdownFile);
     document.getElementById('md-viewer-back').addEventListener('click', () => { hideMdViewer(); });
     mdViewerPreviewBtn.addEventListener('click', () => setMdViewerMode('preview'));
     mdViewerSourceBtn.addEventListener('click', () => setMdViewerMode('source'));
