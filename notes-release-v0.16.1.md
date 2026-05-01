@@ -8,6 +8,7 @@ The short version: if you missed the 0.16.0 notes in the app, this patch carries
 
 - **The 0.16.0 story is visible again.** 0.16.0 added Agent Event Bus v0, faster SQLite-backed search, safer desktop recording during calls, prompt-only templates, and broad lowercase-`m` design/packaging polish. This patch makes sure desktop users actually see that story after updating.
 - **Release notes are more reliable in the app.** The updater banner now renders updater-provided notes, caches them during install, and the post-update "What's New" modal falls back to `latest.json` if the GitHub release API returns an empty body or is unavailable.
+- **Quitting the desktop app is cleaner.** Minutes now asks the Tauri runtime to exit instead of forcing `std::process::exit` from menu quit paths, avoiding a macOS crash report that could appear while native AppKit/WebKit/audio destructors were still unwinding.
 - **macOS patch assets are safer to rebuild.** Manual `Release macOS` dispatches now check out and verify the requested tag before uploading assets to that tag's release.
 - **`minutes demo` feels like a real demo.** The bundled demo audio now contains short speech instead of a beep/silence fixture, and failures now point users to `minutes health` instead of assuming setup is missing.
 - **Recall gives terminal agents better context.** The assistant workspace now writes matching `CLAUDE.md` and `AGENTS.md` instructions, including a Minutes-native response contract that allows conversational, narrative, or report-style answers instead of forcing short bullets.
@@ -23,7 +24,7 @@ The short version: if you missed the 0.16.0 notes in the app, this patch carries
 
 - **CLI:** `minutes demo` now uses a real speech fixture and gives better diagnostic guidance on failure. No command syntax changed.
 - **MCP / agent integrations:** no MCP tool contract changes. Recall's local assistant instructions are now mirrored for `CLAUDE.md` and `AGENTS.md` conventions.
-- **Desktop:** update banners and "What's New" have a more reliable release-note fallback path. macOS release packaging is safer for patch asset rebuilds.
+- **Desktop:** update banners and "What's New" have a more reliable release-note fallback path, menu quit uses the app runtime's graceful exit flow, and macOS release packaging is safer for patch asset rebuilds.
 
 ## Breaking changes or migration notes
 

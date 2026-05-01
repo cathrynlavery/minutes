@@ -940,12 +940,13 @@ fn main() {
                     if commands::request_stop(&recording, &stop).is_err() {
                         return;
                     }
-                    std::thread::spawn(|| {
+                    let app_handle = app.clone();
+                    std::thread::spawn(move || {
                         commands::wait_for_recording_shutdown_forever();
-                        std::process::exit(0);
+                        app_handle.exit(0);
                     });
                 } else {
-                    std::process::exit(0);
+                    app.exit(0);
                 }
             }
             _ => {}
@@ -1652,12 +1653,13 @@ fn main() {
                                 if commands::request_stop(&recording, &stop).is_err() {
                                     return;
                                 }
-                                std::thread::spawn(|| {
+                                let app_handle = app.clone();
+                                std::thread::spawn(move || {
                                     commands::wait_for_recording_shutdown_forever();
-                                    std::process::exit(0);
+                                    app_handle.exit(0);
                                 });
                             } else {
-                                std::process::exit(0);
+                                app.exit(0);
                             }
                         }
                         // Calendar event items — start recording on click
