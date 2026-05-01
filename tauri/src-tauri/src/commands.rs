@@ -10,6 +10,7 @@ use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -119,6 +120,43 @@ struct PermissionRestartSnapshot {
     update_installing: bool,
     call_capture: bool,
     assistant_session: Option<String>,
+}
+
+fn dictation_focus_debug(
+    event: &str,
+    target_context: Option<&crate::text_insertion::ActiveTargetContext>,
+    main_window_hidden: Option<bool>,
+    note: Option<&str>,
+) {
+    let current_frontmost = crate::text_insertion::capture_active_target_context();
+    let payload = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "event": event,
+        "target": target_context.map(|context| serde_json::json!({
+            "appName": context.app_name.as_deref(),
+            "bundleId": context.bundle_id.as_deref(),
+            "platform": context.platform.as_str(),
+        })),
+        "currentFrontmost": current_frontmost.map(|context| serde_json::json!({
+            "appName": context.app_name.as_deref(),
+            "bundleId": context.bundle_id.as_deref(),
+            "platform": context.platform,
+        })),
+        "mainWindowHidden": main_window_hidden,
+        "note": note,
+    });
+
+    let path = Config::minutes_dir().join("dictation-focus-debug.jsonl");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{payload}");
+    }
 }
 
 fn permission_restart_safety_from_snapshot(
@@ -10115,16 +10153,29 @@ fn restore_dictation_target_focus(
     target_context: &Option<crate::text_insertion::ActiveTargetContext>,
 ) {
     let Some(context) = target_context else {
+        dictation_focus_debug(
+            "restore_target_focus_skipped",
+            None,
+            None,
+            Some("no captured target"),
+        );
         return;
     };
     if let Err(error) = crate::text_insertion::restore_target_focus(context) {
         tracing::debug!(error = %error, "could not restore focus to dictation target");
+        dictation_focus_debug(
+            "restore_target_focus_failed",
+            Some(context),
+            None,
+            Some(error.as_str()),
+        );
         return;
     }
 
     // Give the window server a beat before clipboard paste automation or overlay
     // dismissal; otherwise macOS can keep Minutes as the active app.
     std::thread::sleep(Duration::from_millis(120));
+    dictation_focus_debug("restore_target_focus_ok", Some(context), None, None);
 }
 
 fn hide_main_window_for_external_dictation(
@@ -10149,18 +10200,48 @@ fn hide_main_window_for_external_dictation(
     }
 
     match window.hide() {
-        Ok(()) => true,
+        Ok(()) => {
+            dictation_focus_debug(
+                "main_window_hidden",
+                target_context.as_ref(),
+                Some(true),
+                None,
+            );
+            true
+        }
         Err(error) => {
             tracing::debug!(error = %error, "could not hide main window during dictation");
+            dictation_focus_debug(
+                "main_window_hide_failed",
+                target_context.as_ref(),
+                Some(false),
+                Some(error.to_string().as_str()),
+            );
             false
         }
     }
 }
 
 fn finish_dictation_overlay_lifecycle(app: &tauri::AppHandle, guard: Option<DictationFocusGuard>) {
+    dictation_focus_debug(
+        "finish_overlay_lifecycle_start",
+        guard
+            .as_ref()
+            .and_then(|guard| guard.target_context.as_ref()),
+        guard.as_ref().map(|guard| guard.main_window_hidden),
+        None,
+    );
     if let Some(window) = app.get_webview_window("dictation-overlay") {
         if let Err(error) = window.close() {
             tracing::debug!(error = %error, "could not close dictation overlay");
+            dictation_focus_debug(
+                "overlay_close_failed",
+                guard
+                    .as_ref()
+                    .and_then(|guard| guard.target_context.as_ref()),
+                guard.as_ref().map(|guard| guard.main_window_hidden),
+                Some(error.to_string().as_str()),
+            );
         }
     }
 
@@ -10171,14 +10252,21 @@ fn finish_dictation_overlay_lifecycle(app: &tauri::AppHandle, guard: Option<Dict
     };
 
     if guard.main_window_hidden {
-        if let Some(window) = app.get_webview_window("main") {
-            if let Err(error) = window.show() {
-                tracing::debug!(error = %error, "could not restore hidden main window after dictation");
-            }
-        }
+        dictation_focus_debug(
+            "main_window_restore_deferred",
+            guard.target_context.as_ref(),
+            Some(true),
+            Some("left hidden to avoid activating Minutes after external dictation"),
+        );
     }
 
     restore_dictation_target_focus(&guard.target_context);
+    dictation_focus_debug(
+        "finish_overlay_lifecycle_done",
+        guard.target_context.as_ref(),
+        Some(guard.main_window_hidden),
+        None,
+    );
 }
 
 #[tauri::command]
@@ -10217,6 +10305,12 @@ fn start_dictation_session(
     }
 
     let dictation_target_context = crate::text_insertion::capture_active_target_context();
+    dictation_focus_debug(
+        "session_start_target_captured",
+        dictation_target_context.as_ref(),
+        None,
+        None,
+    );
     let main_window_hidden =
         hide_main_window_for_external_dictation(app, &dictation_target_context);
     let focus_guard = DictationFocusGuard {
@@ -10228,6 +10322,12 @@ fn start_dictation_session(
         Err(poisoned) => *poisoned.into_inner() = Some(focus_guard.clone()),
     }
     show_dictation_overlay(app);
+    dictation_focus_debug(
+        "overlay_shown",
+        dictation_target_context.as_ref(),
+        Some(main_window_hidden),
+        None,
+    );
     restore_dictation_target_focus(&dictation_target_context);
     app.emit("dictation:state", "loading").ok();
 
@@ -10312,6 +10412,12 @@ fn start_dictation_session(
                 app_for_results.emit("dictation:result", &result.text).ok();
                 if config_for_results.dictation.auto_paste {
                     app_for_results.emit("dictation:state", "inserting").ok();
+                    dictation_focus_debug(
+                        "before_insert_restore",
+                        dictation_target_context_for_results.as_ref(),
+                        None,
+                        None,
+                    );
                     restore_dictation_target_focus(&dictation_target_context_for_results);
                     let insertion = crate::text_insertion::insert_text(
                         crate::text_insertion::TextInsertionRequest {
@@ -10327,6 +10433,12 @@ fn start_dictation_session(
                         .ok();
                     record_dictation_memory(&config_for_results, &result, &insertion);
                 } else {
+                    dictation_focus_debug(
+                        "before_copy_restore",
+                        dictation_target_context_for_results.as_ref(),
+                        None,
+                        None,
+                    );
                     restore_dictation_target_focus(&dictation_target_context_for_results);
                     let insertion = crate::text_insertion::insert_text(
                         crate::text_insertion::TextInsertionRequest {
@@ -10360,6 +10472,13 @@ fn start_dictation_session(
                         .unwrap_or_else(|poisoned| poisoned.into_inner().take());
                     if guard.is_some() {
                         finish_dictation_overlay_lifecycle(&app_clone, guard);
+                    } else {
+                        dictation_focus_debug(
+                            "cancel_cleanup_already_consumed",
+                            None,
+                            None,
+                            Some("overlay dismiss command already handled cleanup"),
+                        );
                     }
                 }
             }
