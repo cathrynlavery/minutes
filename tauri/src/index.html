@@ -7798,13 +7798,6 @@
           document.getElementById('settings-dictation-model').value = s.dictation.model || 'base';
           setSettingsToggle('settings-dictation-daily-note', s.dictation.daily_note_log !== false);
           document.getElementById('settings-dictation-silence').value = String(s.dictation.silence_timeout_ms || 2000);
-          // Restore saved hotkey keycode
-          const savedKeycode = s.dictation.hotkey_keycode || 57;
-          dictationKeycode = savedKeycode;
-          const keyName = dictationHotkeyLabel(savedKeycode);
-          if (hotkeyRecordBtn) {
-            hotkeyRecordBtn.textContent = keyName;
-          }
         }
       } catch (e) { console.error('loadSettings:', e); }
       // Always load these, even if other settings fail
@@ -9034,7 +9027,7 @@
 
     // ── End Unified Shortcut Recorder ──────────────────────────
 
-    // Dictation hotkey — "press to record" key capture (legacy, kept for old UI paths)
+    // macOS keycode names and browser-event mappings used by the unified recorder.
     const KEYCODE_NAMES = {
       0: 'A', 1: 'S', 2: 'D', 3: 'F', 4: 'H', 5: 'G', 6: 'Z', 7: 'X', 8: 'C', 9: 'V',
       11: 'B', 12: 'Q', 13: 'W', 14: 'E', 15: 'R', 16: 'Y', 17: 'T',
@@ -9080,231 +9073,6 @@
       120: 101, 121: 109, 122: 103, 123: 111,
       144: 63,
     };
-    let dictationKeycode = 57; // default: Caps Lock
-    let dictationHotkeyEnabled = false;
-    let dictationHotkeyPending = false;
-    let dictationHotkeyStartupTimer = null;
-
-    const hotkeyRecordBtn = document.getElementById('settings-dictation-hotkey-record');
-    let isRecordingHotkey = false;
-
-    function dictationHotkeyLabel(keycode) {
-      return KEYCODE_NAMES[keycode] || `Key ${keycode}`;
-    }
-
-    function eventToMacKeycode(e) {
-      if (typeof BROWSER_CODE_TO_MAC[e.code] === 'number') {
-        return BROWSER_CODE_TO_MAC[e.code];
-      }
-      if (typeof BROWSER_KEY_TO_MAC[e.key] === 'number') {
-        return BROWSER_KEY_TO_MAC[e.key];
-      }
-      const legacy = e.keyCode ?? e.which;
-      if (typeof LEGACY_KEYCODE_TO_MAC[legacy] === 'number') {
-        return LEGACY_KEYCODE_TO_MAC[legacy];
-      }
-      return null;
-    }
-
-    function clearDictationHotkeyStartupTimer() {
-      if (dictationHotkeyStartupTimer) {
-        clearTimeout(dictationHotkeyStartupTimer);
-        dictationHotkeyStartupTimer = null;
-      }
-    }
-
-    function scheduleDictationHotkeyStartupTimer() {
-      clearDictationHotkeyStartupTimer();
-      dictationHotkeyStartupTimer = setTimeout(() => {
-        if (!dictationHotkeyPending) return;
-        applyDictationHotkeyStatus({
-          state: 'failed',
-          enabled: false,
-          pending: false,
-          keycode: dictationKeycode,
-          message: 'Minutes is still waiting for macOS to start the native hotkey. Confirm Minutes is enabled in System Settings > Privacy & Security > Input Monitoring, then try again.',
-        });
-      }, 4000);
-    }
-
-    function applyDictationHotkeyStatus(status) {
-      if (!status) return;
-      clearDictationHotkeyStartupTimer();
-
-      if (typeof status.keycode === 'number') {
-        dictationKeycode = status.keycode;
-      }
-
-      dictationHotkeyEnabled = Boolean(status.enabled);
-      dictationHotkeyPending = Boolean(status.pending);
-
-      const toggleBtn = document.getElementById('settings-dictation-hotkey');
-      const statusEl = document.getElementById('settings-dictation-hotkey-status');
-      if (!toggleBtn || !statusEl) return;
-
-      if (hotkeyRecordBtn) {
-        hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);
-        hotkeyRecordBtn.style.borderColor = '';
-        hotkeyRecordBtn.style.color = '';
-      }
-
-      if (dictationHotkeyPending) {
-        toggleBtn.disabled = false;
-        if (hotkeyRecordBtn) {
-          hotkeyRecordBtn.disabled = false;
-          hotkeyRecordBtn.style.opacity = '';
-        }
-        toggleBtn.textContent = 'Starting...';
-        toggleBtn.style.opacity = '0.85';
-        statusEl.style.color = '';
-        statusEl.textContent = `Starting ${dictationHotkeyLabel(dictationKeycode)}. If this stalls, re-check Input Monitoring and try again.`;
-        scheduleDictationHotkeyStartupTimer();
-        return;
-      }
-
-      toggleBtn.style.opacity = '';
-      setSettingsToggle('settings-dictation-hotkey', dictationHotkeyEnabled);
-
-      if (status.state === 'failed') {
-        toggleBtn.disabled = false;
-        if (hotkeyRecordBtn) {
-          hotkeyRecordBtn.disabled = false;
-          hotkeyRecordBtn.style.opacity = '';
-        }
-        statusEl.style.color = 'var(--red)';
-        statusEl.textContent = status.message || 'Could not start the native dictation hotkey.';
-      } else if (status.state === 'active') {
-        toggleBtn.disabled = false;
-        if (hotkeyRecordBtn) {
-          hotkeyRecordBtn.disabled = false;
-          hotkeyRecordBtn.style.opacity = '';
-        }
-        statusEl.style.color = '';
-        statusEl.textContent = `Active - hold ${dictationHotkeyLabel(dictationKeycode)} to dictate, or tap it to lock and tap again to stop`;
-      } else if (status.state === 'unsupported') {
-        toggleBtn.disabled = true;
-        toggleBtn.textContent = 'N/A';
-        toggleBtn.style.opacity = '0.5';
-        if (hotkeyRecordBtn) {
-          hotkeyRecordBtn.disabled = true;
-          hotkeyRecordBtn.style.opacity = '0.5';
-        }
-        statusEl.style.color = 'var(--text-secondary)';
-        statusEl.textContent = status.message || 'Native dictation hotkey is currently available on macOS only.';
-      } else {
-        toggleBtn.disabled = false;
-        if (hotkeyRecordBtn) {
-          hotkeyRecordBtn.disabled = false;
-          hotkeyRecordBtn.style.opacity = '';
-        }
-        statusEl.style.color = '';
-        statusEl.textContent = 'Hold the selected key to dictate, or tap to lock and tap again to stop. Requires Input Monitoring permission.';
-      }
-    }
-
-    if (hotkeyRecordBtn) hotkeyRecordBtn.addEventListener('click', () => {
-      if (isRecordingHotkey) return;
-      isRecordingHotkey = true;
-      hotkeyRecordBtn.textContent = 'Press any key...';
-      hotkeyRecordBtn.style.borderColor = 'var(--accent)';
-      hotkeyRecordBtn.style.color = 'var(--accent)';
-
-      async function persistDictationHotkeySelection(macKeycode) {
-        await invoke('cmd_set_setting', {
-          section: 'dictation',
-          key: 'hotkey_keycode',
-          value: String(macKeycode),
-        });
-      }
-
-      function cleanupCaptureListeners() {
-        document.removeEventListener('keydown', captureKey, true);
-        document.removeEventListener('keyup', captureKey, true);
-      }
-
-      async function captureKey(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        cleanupCaptureListeners();
-        isRecordingHotkey = false;
-
-        const macKeycode = eventToMacKeycode(e);
-        if (typeof macKeycode !== 'number') {
-          hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);
-          hotkeyRecordBtn.style.borderColor = '';
-          hotkeyRecordBtn.style.color = '';
-          const status = document.getElementById('settings-dictation-hotkey-status');
-          status.style.color = 'var(--red)';
-          status.textContent = `Minutes cannot bind ${e.key || e.code} yet. Try a letter, number, function key, arrow key, Tab, Escape, Return, Space, or Delete.`;
-          return;
-        }
-
-        dictationKeycode = macKeycode;
-
-        const name = dictationHotkeyLabel(macKeycode);
-        hotkeyRecordBtn.textContent = name;
-        hotkeyRecordBtn.style.borderColor = '';
-        hotkeyRecordBtn.style.color = '';
-
-        try {
-          await persistDictationHotkeySelection(macKeycode);
-        } catch (error) {
-          console.error('Save dictation hotkey:', error);
-          const status = document.getElementById('settings-dictation-hotkey-status');
-          status.style.color = 'var(--red)';
-          status.textContent = `Minutes couldn't save ${name} as the dictation hotkey.`;
-          return;
-        }
-
-        // If hotkey is enabled, restart with new key
-        if (dictationHotkeyEnabled || dictationHotkeyPending) {
-          invoke('cmd_enable_dictation_hotkey', { enabled: true, keycode: macKeycode })
-            .then((status) => applyDictationHotkeyStatus(status))
-            .catch((error) => {
-              applyDictationHotkeyStatus({
-                state: 'failed',
-                enabled: false,
-                pending: false,
-                keycode: macKeycode,
-                message: String(error),
-              });
-            });
-        } else {
-          const status = document.getElementById('settings-dictation-hotkey-status');
-          status.style.color = '';
-          status.textContent = `${name} saved. Toggle the dictation hotkey on when you're ready to use it.`;
-        }
-      }
-
-      document.addEventListener('keydown', captureKey, true);
-      document.addEventListener('keyup', captureKey, true);
-    });
-
-    if (document.getElementById('settings-dictation-hotkey')) document.getElementById('settings-dictation-hotkey').addEventListener('click', async () => {
-      const next = !(dictationHotkeyEnabled || dictationHotkeyPending);
-      try {
-        const status = await invoke('cmd_enable_dictation_hotkey', { enabled: next, keycode: dictationKeycode });
-        await invoke('cmd_set_setting', {
-          section: 'dictation',
-          key: 'hotkey_enabled',
-          value: String(status.enabled || status.pending),
-        });
-        applyDictationHotkeyStatus(status);
-      } catch (e) {
-        await invoke('cmd_set_setting', {
-          section: 'dictation',
-          key: 'hotkey_enabled',
-          value: 'false',
-        }).catch(() => { });
-        applyDictationHotkeyStatus({
-          state: 'failed',
-          enabled: false,
-          pending: false,
-          keycode: dictationKeycode,
-          message: String(e),
-        });
-      }
-    });
 
     document.getElementById('settings-screen-share').addEventListener('click', async () => {
       const btn = document.getElementById('settings-screen-share');
@@ -9875,10 +9643,6 @@
       } catch (e) {
         console.error('stop now:', e);
       }
-    });
-
-    currentWindow.listen('dictation-hotkey:status', (event) => {
-      applyDictationHotkeyStatus(event.payload);
     });
 
     // ── Auto-update banner ──
