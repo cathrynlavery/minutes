@@ -654,6 +654,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
       padding: 10px 14px;
       margin: 16px 16px 12px;
       -webkit-app-region: drag;
@@ -662,12 +663,13 @@
       border: 1px solid var(--border-mid);
       border-radius: 12px;
       background: var(--bg-elevated);
+      box-sizing: border-box;
       flex-shrink: 0;
     }
 
     html[data-platform="macos"] .header {
       min-height: 58px;
-      padding-left: 108px;
+      padding-left: 116px;
     }
 
     .brand {
@@ -727,9 +729,8 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      flex-wrap: wrap;
-      row-gap: 6px;
       justify-content: flex-end;
+      min-width: 0;
       -webkit-app-region: no-drag;
     }
 
@@ -744,6 +745,7 @@
       font-size: 10px;
       font-weight: 600;
       letter-spacing: 0.2px;
+      white-space: nowrap;
       cursor: pointer;
     }
 
@@ -811,6 +813,16 @@
       opacity: 1;
       background: var(--green-tint);
       color: var(--live);
+    }
+
+    html[data-platform="macos"] .header .status-pill.recording,
+    html[data-platform="macos"] .header .status-pill.processing,
+    html[data-platform="macos"] .header .status-pill.live {
+      font-size: 0;
+      padding: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
     }
 
     /* ── Live transcript bar ── */
