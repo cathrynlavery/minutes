@@ -83,6 +83,140 @@ pub struct AppState {
     pub call_end_countdown_terminal_state: Arc<AtomicU8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionRestartStatus {
+    Allowed,
+    Blocked,
+    ConfirmationRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRestartSafety {
+    pub status: PermissionRestartStatus,
+    pub can_restart: bool,
+    pub requires_confirmation: bool,
+    pub blockers: Vec<String>,
+    pub confirmations: Vec<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PermissionRestartSnapshot {
+    recording: bool,
+    recording_starting: bool,
+    processing: bool,
+    live_transcript: bool,
+    dictation: bool,
+    update_installing: bool,
+    call_capture: bool,
+    assistant_session: Option<String>,
+}
+
+fn permission_restart_safety_from_snapshot(
+    snapshot: PermissionRestartSnapshot,
+) -> PermissionRestartSafety {
+    let mut blockers = Vec::new();
+    let mut confirmations = Vec::new();
+
+    if snapshot.call_capture {
+        blockers
+            .push("Native call capture is recording. Stop the capture before restarting.".into());
+    } else if snapshot.recording {
+        blockers.push("A recording is active. Stop it before restarting.".into());
+    }
+    if snapshot.recording_starting {
+        blockers.push("A recording is starting. Wait for it to settle before restarting.".into());
+    }
+    if snapshot.processing {
+        blockers.push(
+            "A recording is processing. Wait until processing finishes before restarting.".into(),
+        );
+    }
+    if snapshot.live_transcript {
+        blockers.push("Live transcript is active. Stop it before restarting.".into());
+    }
+    if snapshot.dictation {
+        blockers.push("Dictation is active. Stop dictation before restarting.".into());
+    }
+    if snapshot.update_installing {
+        blockers.push("An update install is running. Let it finish before restarting.".into());
+    }
+    if let Some(session_id) = snapshot.assistant_session {
+        confirmations.push(format!(
+            "Recall/assistant session '{}' will close when Minutes restarts.",
+            session_id
+        ));
+    }
+
+    if !blockers.is_empty() {
+        PermissionRestartSafety {
+            status: PermissionRestartStatus::Blocked,
+            can_restart: false,
+            requires_confirmation: false,
+            detail: blockers.join(" "),
+            blockers,
+            confirmations,
+        }
+    } else if !confirmations.is_empty() {
+        PermissionRestartSafety {
+            status: PermissionRestartStatus::ConfirmationRequired,
+            can_restart: true,
+            requires_confirmation: true,
+            detail: confirmations.join(" "),
+            blockers,
+            confirmations,
+        }
+    } else {
+        PermissionRestartSafety {
+            status: PermissionRestartStatus::Allowed,
+            can_restart: true,
+            requires_confirmation: false,
+            blockers,
+            confirmations,
+            detail: "Minutes is idle and can restart now.".into(),
+        }
+    }
+}
+
+fn permission_restart_snapshot(state: &AppState) -> PermissionRestartSnapshot {
+    let shared_processing = minutes_core::pid::read_processing_status();
+    let active_jobs = minutes_core::jobs::active_jobs();
+    let pid_status = minutes_core::pid::status();
+    let processing = state.processing.load(Ordering::Relaxed)
+        || shared_processing.processing
+        || !active_jobs.is_empty();
+    let recording =
+        state.recording.load(Ordering::Relaxed) || (pid_status.recording && !processing);
+    let call_capture = recording
+        && (state
+            .recording_started_by_call_detect
+            .load(Ordering::Relaxed)
+            || state
+                .call_capture_health
+                .lock()
+                .ok()
+                .and_then(|health| health.clone())
+                .is_some());
+    let assistant_session = state
+        .pty_manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.assistant_session_id());
+
+    PermissionRestartSnapshot {
+        recording,
+        recording_starting: state.starting.load(Ordering::Relaxed),
+        processing,
+        live_transcript: state.live_transcript_active.load(Ordering::Relaxed),
+        dictation: state.dictation_active.load(Ordering::Relaxed),
+        update_installing: state.update_install_running.load(Ordering::SeqCst),
+        call_capture,
+        assistant_session,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CallEndCountdownTerminalState {
@@ -5491,6 +5625,31 @@ pub fn cmd_macos_permission_rows() -> serde_json::Value {
 }
 
 #[tauri::command]
+pub fn cmd_permission_restart_safety(state: tauri::State<AppState>) -> PermissionRestartSafety {
+    permission_restart_safety_from_snapshot(permission_restart_snapshot(&state))
+}
+
+#[tauri::command]
+pub fn cmd_restart_for_permission(
+    app: tauri::AppHandle,
+    confirm_assistant: Option<bool>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let safety = permission_restart_safety_from_snapshot(permission_restart_snapshot(&state));
+    if !safety.blockers.is_empty() {
+        return Err(safety.detail);
+    }
+    if safety.requires_confirmation && confirm_assistant != Some(true) {
+        return Err(
+            "Restart requires confirmation because an assistant session will close.".into(),
+        );
+    }
+    app.restart();
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
+#[tauri::command]
 pub fn cmd_desktop_capabilities() -> DesktopCapabilities {
     DesktopCapabilities {
         platform: current_platform().into(),
@@ -6992,6 +7151,63 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         result
+    }
+
+    #[test]
+    fn permission_restart_safety_allows_idle_restart() {
+        let safety = permission_restart_safety_from_snapshot(PermissionRestartSnapshot::default());
+
+        assert_eq!(safety.status, PermissionRestartStatus::Allowed);
+        assert!(safety.can_restart);
+        assert!(!safety.requires_confirmation);
+        assert!(safety.blockers.is_empty());
+    }
+
+    #[test]
+    fn permission_restart_safety_blocks_active_work() {
+        let safety = permission_restart_safety_from_snapshot(PermissionRestartSnapshot {
+            recording: true,
+            processing: true,
+            live_transcript: true,
+            dictation: true,
+            update_installing: true,
+            ..PermissionRestartSnapshot::default()
+        });
+
+        assert_eq!(safety.status, PermissionRestartStatus::Blocked);
+        assert!(!safety.can_restart);
+        assert!(!safety.requires_confirmation);
+        assert!(safety
+            .blockers
+            .iter()
+            .any(|item| item.contains("recording")));
+        assert!(safety
+            .blockers
+            .iter()
+            .any(|item| item.contains("processing")));
+        assert!(safety
+            .blockers
+            .iter()
+            .any(|item| item.contains("Live transcript")));
+        assert!(safety
+            .blockers
+            .iter()
+            .any(|item| item.contains("Dictation")));
+        assert!(safety.blockers.iter().any(|item| item.contains("update")));
+    }
+
+    #[test]
+    fn permission_restart_safety_requires_assistant_confirmation_only_when_idle() {
+        let safety = permission_restart_safety_from_snapshot(PermissionRestartSnapshot {
+            assistant_session: Some("assistant".into()),
+            ..PermissionRestartSnapshot::default()
+        });
+
+        assert_eq!(safety.status, PermissionRestartStatus::ConfirmationRequired);
+        assert!(safety.can_restart);
+        assert!(safety.requires_confirmation);
+        assert!(safety.blockers.is_empty());
+        assert_eq!(safety.confirmations.len(), 1);
     }
 
     #[test]

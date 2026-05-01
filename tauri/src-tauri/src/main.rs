@@ -1852,6 +1852,8 @@ fn main() {
             commands::cmd_desktop_capabilities,
             commands::cmd_permission_center,
             commands::cmd_macos_permission_rows,
+            commands::cmd_permission_restart_safety,
+            commands::cmd_restart_for_permission,
             commands::cmd_recovery_items,
             commands::cmd_retry_recovery,
             commands::cmd_retry_processing_job,

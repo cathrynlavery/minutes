@@ -2820,6 +2820,17 @@
       margin-top: 10px;
     }
 
+    .readiness-action-status {
+      width: 100%;
+      font-size: 11px;
+      color: var(--text-tertiary);
+      line-height: 1.45;
+    }
+
+    .readiness-action-status.error {
+      color: var(--orange);
+    }
+
     /* ── Recovery view ── */
     .recovery-overlay {
       position: fixed;
@@ -6248,20 +6259,74 @@
       return parts.join(' ');
     }
 
-    function permissionRowToReadinessItem(row) {
+    function permissionRestartStatusText(safety) {
+      if (!safety) return '';
+      if (Array.isArray(safety.blockers) && safety.blockers.length) {
+        return safety.blockers.join(' ');
+      }
+      if (Array.isArray(safety.confirmations) && safety.confirmations.length) {
+        return safety.confirmations.join(' ');
+      }
+      return safety.detail || '';
+    }
+
+    async function restartForPermission(statusEl, button) {
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Checking...';
+      statusEl.textContent = '';
+      statusEl.classList.remove('error');
+
+      try {
+        const safety = await invoke('cmd_permission_restart_safety');
+        const message = permissionRestartStatusText(safety);
+        if (Array.isArray(safety.blockers) && safety.blockers.length) {
+          statusEl.textContent = message;
+          statusEl.classList.add('error');
+          button.textContent = originalText;
+          button.disabled = false;
+          return;
+        }
+
+        let confirmAssistant = false;
+        if (safety.requiresConfirmation) {
+          const confirmed = window.confirm(`${message}\n\nRestart Minutes now?`);
+          if (!confirmed) {
+            statusEl.textContent = 'Restart cancelled.';
+            button.textContent = originalText;
+            button.disabled = false;
+            return;
+          }
+          confirmAssistant = true;
+        }
+
+        button.textContent = 'Restarting...';
+        await invoke('cmd_restart_for_permission', { confirmAssistant });
+      } catch (e) {
+        statusEl.textContent = String(e);
+        statusEl.classList.add('error');
+        button.textContent = originalText;
+        button.disabled = false;
+      }
+    }
+
+    function permissionRowToReadinessItem(row, restartSafety) {
       return {
         label: `${row.label} permission`,
         state: permissionReadinessState(row),
         detail: permissionReadinessDetail(row),
         optional: !!row.optional,
-        settingsUrl: row.settingsUrl || null
+        settingsUrl: row.settingsUrl || null,
+        restartRecommended: !!row.restartRecommended,
+        restartSafety
       };
     }
 
     async function loadReadinessItems() {
-      const [itemsResult, permissionRowsResult] = await Promise.allSettled([
+      const [itemsResult, permissionRowsResult, restartSafetyResult] = await Promise.allSettled([
         invoke('cmd_permission_center'),
-        invoke('cmd_macos_permission_rows')
+        invoke('cmd_macos_permission_rows'),
+        invoke('cmd_permission_restart_safety')
       ]);
 
       let items = [];
@@ -6271,9 +6336,16 @@
         console.error('Readiness items:', itemsResult.reason);
       }
 
+      let restartSafety = null;
+      if (restartSafetyResult.status === 'fulfilled') {
+        restartSafety = restartSafetyResult.value;
+      } else if (restartSafetyResult.status === 'rejected') {
+        console.error('permission restart safety:', restartSafetyResult.reason);
+      }
+
       let permissionItems = [];
       if (permissionRowsResult.status === 'fulfilled' && Array.isArray(permissionRowsResult.value)) {
-        permissionItems = permissionRowsResult.value.map(permissionRowToReadinessItem);
+        permissionItems = permissionRowsResult.value.map(row => permissionRowToReadinessItem(row, restartSafety));
       } else if (permissionRowsResult.status === 'rejected') {
         console.error('macOS permission rows:', permissionRowsResult.reason);
       }
@@ -6316,18 +6388,40 @@
           card.appendChild(optional);
         }
 
-        if (item.settingsUrl) {
+        if (item.settingsUrl || item.restartRecommended) {
           const actions = document.createElement('div');
           actions.className = 'readiness-actions';
-          const openSettings = document.createElement('button');
-          openSettings.type = 'button';
-          openSettings.className = 'btn btn-secondary btn-sm';
-          openSettings.textContent = 'System Settings';
-          openSettings.addEventListener('click', (event) => {
-            event.stopPropagation();
-            window.__TAURI__.shell.open(item.settingsUrl);
-          });
-          actions.appendChild(openSettings);
+          if (item.settingsUrl) {
+            const openSettings = document.createElement('button');
+            openSettings.type = 'button';
+            openSettings.className = 'btn btn-secondary btn-sm';
+            openSettings.textContent = 'System Settings';
+            openSettings.addEventListener('click', (event) => {
+              event.stopPropagation();
+              window.__TAURI__.shell.open(item.settingsUrl);
+            });
+            actions.appendChild(openSettings);
+          }
+          if (item.restartRecommended) {
+            const statusLine = document.createElement('div');
+            statusLine.className = 'readiness-action-status';
+            const initialStatus = permissionRestartStatusText(item.restartSafety);
+            if (initialStatus && item.restartSafety && item.restartSafety.status !== 'allowed') {
+              statusLine.textContent = initialStatus;
+              if (item.restartSafety.status === 'blocked') statusLine.classList.add('error');
+            }
+
+            const restartButton = document.createElement('button');
+            restartButton.type = 'button';
+            restartButton.className = 'btn btn-secondary btn-sm';
+            restartButton.textContent = 'Restart Minutes';
+            restartButton.addEventListener('click', (event) => {
+              event.stopPropagation();
+              restartForPermission(statusLine, restartButton);
+            });
+            actions.appendChild(restartButton);
+            actions.appendChild(statusLine);
+          }
           card.appendChild(actions);
         }
 
