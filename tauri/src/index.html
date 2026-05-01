@@ -751,11 +751,6 @@
       color: var(--text);
     }
 
-    .header-chip.dictation-shortcut {
-      background: var(--accent-soft);
-      color: var(--accent);
-    }
-
     .status-pill {
       font-size: 0;
       font-weight: 600;
@@ -4026,7 +4021,6 @@
       <div class="header-actions">
         <button class="header-chip active" id="btn-open-md" title="Open file (⌘O)">Open</button>
         <button class="btn btn-icon" id="btn-settings" title="Settings (⌘,)">⚙</button>
-        <button class="header-chip dictation-shortcut" id="dictation-shortcut-chip">Dictate</button>
         <button class="header-chip readiness" id="btn-readiness">Readiness</button>
         <button class="header-chip" id="btn-jobs">Jobs <span id="jobs-count">0</span></button>
         <button class="header-chip" id="btn-recovery">Recovery <span id="recovery-count">0</span></button>
@@ -5300,7 +5294,6 @@
     const jobsCount = document.getElementById('jobs-count');
     const jobsOverlay = document.getElementById('jobs-overlay');
     const jobsScroll = document.getElementById('jobs-scroll');
-    const dictationShortcutChip = document.getElementById('dictation-shortcut-chip');
     const recoveryOverlay = document.getElementById('recovery-overlay');
     const recoveryButton = document.getElementById('btn-recovery');
     const recoveryCount = document.getElementById('recovery-count');
@@ -5350,8 +5343,6 @@
     let stopRequested = false;
     let hotkeyEnabled = false;
     let hotkeyShortcut = 'CmdOrCtrl+Shift+M';
-    let dictationShortcutActive = false;
-    let dictationShortcutLabel = 'Dictate';
     let lastOutputKey = null;
     let pollInterval = null;
     let processingStartTime = null;
@@ -5387,16 +5378,6 @@
       complete: new Audio('audio/cue-complete.wav'),
       error: new Audio('audio/cue-error.wav'),
     };
-
-    function renderDictationShortcutChip() {
-      if (!dictationShortcutChip) return;
-      if (dictationShortcutActive) {
-        dictationShortcutChip.classList.add('active');
-        dictationShortcutChip.textContent = dictationShortcutLabel;
-      } else {
-        dictationShortcutChip.classList.remove('active');
-      }
-    }
 
     // Create visualizer bars
     for (let i = 0; i < NUM_BARS; i++) {
@@ -8741,9 +8722,6 @@
           shortcut: select.value,
         });
         setSettingsToggle('settings-dictation-shortcut', settings.enabled);
-        dictationShortcutActive = Boolean(settings.enabled);
-        dictationShortcutLabel = settings.enabled ? `Dictate ${settings.shortcut}` : 'Dictate';
-        renderDictationShortcutChip();
         document.getElementById('settings-dictation-shortcut-status').textContent =
           settings.enabled
             ? `Active - ${settings.shortcut}`
@@ -8766,9 +8744,6 @@
           shortcut: e.target.value,
         });
         setSettingsToggle('settings-dictation-shortcut', settings.enabled);
-        dictationShortcutActive = Boolean(settings.enabled);
-        dictationShortcutLabel = settings.enabled ? `Dictate ${settings.shortcut}` : 'Dictate';
-        renderDictationShortcutChip();
         document.getElementById('settings-dictation-shortcut-status').textContent = `Active - ${settings.shortcut}`;
       } catch (e2) {
         document.getElementById('settings-dictation-shortcut-status').textContent = String(e2);
@@ -8910,14 +8885,6 @@
         localStorage.setItem('minutes.globalHotkeyEnabled', status.enabled ? 'true' : 'false');
         if (status.shortcut) localStorage.setItem('minutes.globalHotkeyShortcut', status.shortcut);
       }
-      if (slot === 'dictation') {
-        dictationShortcutActive = Boolean(status.enabled);
-        dictationShortcutLabel = status.enabled
-          ? 'Dictate ' + shortcutDisplayLabel(status.shortcut, status.keycode)
-          : 'Dictate';
-        renderDictationShortcutChip();
-      }
-
       const recorder = document.getElementById('shortcut-recorder-' + slot);
       const statusEl = document.getElementById('shortcut-status-' + slot);
       const toggle = document.getElementById('shortcut-toggle-' + slot);
