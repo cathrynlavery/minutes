@@ -802,6 +802,9 @@ fn handle_native_event_callback(
 
     match event {
         minutes_core::hotkey_macos::HotkeyEvent::Press => {
+            if slot == ShortcutSlot::Dictation {
+                crate::commands::capture_pending_dictation_target(app);
+            }
             let hold_info = {
                 let mut mgr = match mgr_state.lock() {
                     Ok(mgr) => mgr,

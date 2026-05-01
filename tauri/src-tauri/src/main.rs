@@ -1197,6 +1197,7 @@ fn main() {
             dictation_active: dictation_active.clone(),
             dictation_stop_flag: dictation_stop_flag.clone(),
             dictation_focus_guard: Arc::new(Mutex::new(None)),
+            pending_dictation_target: Arc::new(Mutex::new(None)),
             live_transcript_active: live_transcript_active.clone(),
             live_transcript_stop_flag: live_transcript_stop_flag.clone(),
             live_shortcut_enabled: {

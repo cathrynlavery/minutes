@@ -40,6 +40,7 @@ pub struct AppState {
     pub dictation_active: Arc<AtomicBool>,
     pub dictation_stop_flag: Arc<AtomicBool>,
     pub dictation_focus_guard: Arc<Mutex<Option<DictationFocusGuard>>>,
+    pub pending_dictation_target: Arc<Mutex<Option<PendingDictationTarget>>>,
     pub dictation_shortcut_enabled: Arc<AtomicBool>,
     pub dictation_shortcut: Arc<Mutex<String>>,
     pub live_transcript_active: Arc<AtomicBool>,
@@ -89,6 +90,12 @@ pub struct AppState {
 pub struct DictationFocusGuard {
     target_context: Option<crate::text_insertion::ActiveTargetContext>,
     main_window_hidden: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingDictationTarget {
+    captured_at: Instant,
+    target_context: Option<crate::text_insertion::ActiveTargetContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -4708,6 +4715,7 @@ pub fn handle_dictation_shortcut_event(
     if shortcut_state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
         return;
     }
+    capture_pending_dictation_target(app);
 
     let shortcut = state
         .dictation_shortcut
@@ -10100,6 +10108,57 @@ fn dictation_record_engine_descriptor(config: &Config) -> Option<String> {
     }
 }
 
+pub fn capture_pending_dictation_target(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let target_context = crate::text_insertion::capture_active_target_context();
+    dictation_focus_debug(
+        "pending_target_captured",
+        target_context.as_ref(),
+        None,
+        None,
+    );
+    let pending = PendingDictationTarget {
+        captured_at: Instant::now(),
+        target_context,
+    };
+    let store_result = state.pending_dictation_target.lock();
+    match store_result {
+        Ok(mut guard) => *guard = Some(pending),
+        Err(poisoned) => *poisoned.into_inner() = Some(pending),
+    }
+}
+
+fn take_pending_dictation_target(
+    state: &AppState,
+) -> Option<crate::text_insertion::ActiveTargetContext> {
+    const PENDING_TARGET_MAX_AGE: Duration = Duration::from_secs(5);
+    let pending = match state.pending_dictation_target.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    }?;
+
+    let age = pending.captured_at.elapsed();
+    if age <= PENDING_TARGET_MAX_AGE {
+        dictation_focus_debug(
+            "pending_target_used",
+            pending.target_context.as_ref(),
+            None,
+            Some(format!("age_ms={}", age.as_millis()).as_str()),
+        );
+        return pending.target_context;
+    }
+
+    dictation_focus_debug(
+        "pending_target_expired",
+        pending.target_context.as_ref(),
+        None,
+        Some(format!("age_ms={}", age.as_millis()).as_str()),
+    );
+    None
+}
+
 fn dictation_insertion_memory(
     insertion: &crate::text_insertion::TextInsertionResult,
 ) -> minutes_core::dictation_memory::DictationInsertionMemory {
@@ -10304,7 +10363,8 @@ fn start_dictation_session(
         return Err("Dictation is already in progress.".into());
     }
 
-    let dictation_target_context = crate::text_insertion::capture_active_target_context();
+    let dictation_target_context = take_pending_dictation_target(&state)
+        .or_else(crate::text_insertion::capture_active_target_context);
     dictation_focus_debug(
         "session_start_target_captured",
         dictation_target_context.as_ref(),
