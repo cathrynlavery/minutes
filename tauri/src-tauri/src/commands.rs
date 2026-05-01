@@ -10241,8 +10241,6 @@ fn start_dictation_session(
     let dictation_active = Arc::clone(&state.dictation_active);
     let final_output_emitted = Arc::new(AtomicBool::new(false));
     let dictation_target_context_for_thread = dictation_target_context.clone();
-    let focus_guard_for_thread = focus_guard.clone();
-
     std::thread::spawn(move || {
         let mut config = Config::load();
         // Re-validate the pinned input device for mid-session
@@ -10359,9 +10357,10 @@ fn start_dictation_session(
                         .dictation_focus_guard
                         .lock()
                         .map(|mut guard| guard.take())
-                        .unwrap_or_else(|poisoned| poisoned.into_inner().take())
-                        .or_else(|| Some(focus_guard_for_thread.clone()));
-                    finish_dictation_overlay_lifecycle(&app_clone, guard);
+                        .unwrap_or_else(|poisoned| poisoned.into_inner().take());
+                    if guard.is_some() {
+                        finish_dictation_overlay_lifecycle(&app_clone, guard);
+                    }
                 }
             }
             Err(e) => {
