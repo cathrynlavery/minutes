@@ -934,7 +934,64 @@ fn write_to_clipboard(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn write_to_clipboard(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let candidates = linux_clipboard_write_candidates();
+    let mut errors = Vec::new();
+
+    for (program, args) in candidates {
+        if which::which(program).is_err() {
+            continue;
+        }
+
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn {program}: {error}"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(text.as_bytes()) {
+                let _ = child.wait();
+                errors.push(format!("failed to write to {program}: {error}"));
+                continue;
+            }
+        }
+
+        match child.wait() {
+            Ok(status) if status.success() => {
+                tracing::debug!(len = text.len(), program, "text written to clipboard");
+                return Ok(());
+            }
+            Ok(_) => errors.push(format!("{program} failed to update the clipboard")),
+            Err(error) => errors.push(format!("failed to finish {program}: {error}")),
+        }
+    }
+
+    if errors.is_empty() {
+        Err("clipboard write requires wl-clipboard on Wayland or xclip/xsel on X11".into())
+    } else {
+        Err(format!("clipboard write failed: {}", errors.join("; ")))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_write_candidates() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut candidates = Vec::new();
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        candidates.push(("wl-copy", Vec::new()));
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        candidates.push(("xclip", vec!["-selection", "clipboard"]));
+        candidates.push(("xsel", vec!["--clipboard", "--input"]));
+    }
+    candidates
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn write_to_clipboard(_text: &str) -> Result<(), String> {
     Err("clipboard write not implemented on this platform".into())
 }

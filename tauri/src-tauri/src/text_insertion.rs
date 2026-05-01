@@ -75,9 +75,14 @@ pub fn read_clipboard() -> Result<String, String> {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
-        Err("Clipboard snapshot is currently available on macOS only.".into())
+        linux_read_clipboard()
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        Err("Clipboard snapshot is not implemented on this platform.".into())
     }
 }
 
@@ -173,7 +178,66 @@ fn best_effort_verified(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn best_effort_verified(
+    request: TextInsertionRequest,
+    target_context: Option<ActiveTargetContext>,
+) -> TextInsertionResult {
+    match write_clipboard(&request.text) {
+        Ok(()) => {
+            if linux_x11_paste_available() {
+                match paste_via_xdotool() {
+                    Ok(()) => {
+                        let restored = restore_clipboard_if_requested(
+                            request.restore_clipboard,
+                            request.clipboard_snapshot.as_deref(),
+                        );
+                        return TextInsertionResult {
+                            outcome: InsertOutcome::Pasted,
+                            method: InsertMethod::ClipboardPaste,
+                            verified: false,
+                            clipboard_restored: restored,
+                            target_context,
+                            message: "Pasted dictation into the active X11 app.".into(),
+                        };
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "linux dictation paste automation failed");
+                        return TextInsertionResult {
+                            outcome: InsertOutcome::Copied,
+                            method: InsertMethod::ClipboardOnly,
+                            verified: true,
+                            clipboard_restored: false,
+                            target_context,
+                            message:
+                                "Could not paste into the focused X11 app. Copied dictation instead."
+                                    .into(),
+                        };
+                    }
+                }
+            }
+
+            TextInsertionResult {
+                outcome: InsertOutcome::Copied,
+                method: InsertMethod::ClipboardOnly,
+                verified: true,
+                clipboard_restored: false,
+                target_context,
+                message: linux_copy_fallback_message(),
+            }
+        }
+        Err(error) => TextInsertionResult {
+            outcome: InsertOutcome::Failed,
+            method: InsertMethod::ClipboardOnly,
+            verified: false,
+            clipboard_restored: false,
+            target_context,
+            message: error,
+        },
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn best_effort_verified(
     request: TextInsertionRequest,
     target_context: Option<ActiveTargetContext>,
@@ -244,7 +308,12 @@ fn write_clipboard(text: &str) -> Result<(), String> {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_write_clipboard(text)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = text;
         Err("Clipboard insertion is not implemented on this platform.".into())
@@ -270,6 +339,171 @@ fn paste_via_clipboard(text: &str) -> Result<(), String> {
             format!("Paste automation failed: {}", stderr.trim())
         })
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_read_clipboard() -> Result<String, String> {
+    let candidates = linux_clipboard_read_candidates();
+    let mut errors = Vec::new();
+
+    for (program, args) in candidates {
+        if !linux_command_available(program) {
+            continue;
+        }
+
+        let output = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .map_err(|error| format!("Could not start {program}: {error}"))?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        errors.push(format!(
+            "{program} failed{}",
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        ));
+    }
+
+    if errors.is_empty() {
+        Err(linux_clipboard_tools_message("read"))
+    } else {
+        Err(format!("Could not read clipboard: {}", errors.join("; ")))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_write_clipboard(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let candidates = linux_clipboard_write_candidates();
+    let mut errors = Vec::new();
+
+    for (program, args) in candidates {
+        if !linux_command_available(program) {
+            continue;
+        }
+
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("Could not start {program}: {error}"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(text.as_bytes()) {
+                let _ = child.wait();
+                errors.push(format!("could not write to {program}: {error}"));
+                continue;
+            }
+        }
+
+        match child.wait() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(_) => errors.push(format!("{program} failed to update the clipboard")),
+            Err(error) => errors.push(format!("could not finish {program}: {error}")),
+        }
+    }
+
+    if errors.is_empty() {
+        Err(linux_clipboard_tools_message("update"))
+    } else {
+        Err(format!("Could not update clipboard: {}", errors.join("; ")))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_read_candidates() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut candidates = Vec::new();
+    if linux_wayland_session() {
+        candidates.push(("wl-paste", vec!["--no-newline"]));
+    }
+    if linux_x11_session() {
+        candidates.push(("xclip", vec!["-selection", "clipboard", "-out"]));
+        candidates.push(("xsel", vec!["--clipboard", "--output"]));
+    }
+    candidates
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_write_candidates() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut candidates = Vec::new();
+    if linux_wayland_session() {
+        candidates.push(("wl-copy", Vec::new()));
+    }
+    if linux_x11_session() {
+        candidates.push(("xclip", vec!["-selection", "clipboard"]));
+        candidates.push(("xsel", vec!["--clipboard", "--input"]));
+    }
+    candidates
+}
+
+#[cfg(target_os = "linux")]
+fn linux_x11_paste_available() -> bool {
+    linux_pure_x11_session() && linux_command_available("xdotool")
+}
+
+#[cfg(target_os = "linux")]
+fn paste_via_xdotool() -> Result<(), String> {
+    let output = std::process::Command::new("xdotool")
+        .args(["key", "--clearmodifiers", "ctrl+v"])
+        .output()
+        .map_err(|error| format!("Could not start xdotool: {error}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(if stderr.trim().is_empty() {
+            "xdotool paste automation failed.".into()
+        } else {
+            format!("xdotool paste automation failed: {}", stderr.trim())
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_copy_fallback_message() -> String {
+    if linux_wayland_session() {
+        "Copied dictation to the clipboard. Wayland does not expose one universal paste automation path; paste manually.".into()
+    } else if linux_x11_session() {
+        "Copied dictation to the clipboard. Install xdotool to let Minutes paste into the focused X11 app.".into()
+    } else {
+        "Copied dictation to the clipboard. No supported Linux paste automation target was detected.".into()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_tools_message(action: &str) -> String {
+    format!(
+        "Could not {action} clipboard. Install wl-clipboard for Wayland or xclip/xsel for X11, then run Minutes inside that desktop session."
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_x11_session() -> bool {
+    std::env::var_os("DISPLAY").is_some()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_pure_x11_session() -> bool {
+    linux_x11_session() && !linux_wayland_session()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_command_available(program: &str) -> bool {
+    which::which(program).is_ok()
 }
 
 fn capture_target_context() -> Option<ActiveTargetContext> {

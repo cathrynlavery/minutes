@@ -133,11 +133,17 @@ server compatibility.
 | `destination_command` | unset | Shell command when `destination = "command"` |
 | `accumulate` | `true` | Append successive utterances rather than replacing |
 | `daily_note_log` | `true` | Append every dictation to the daily note |
-| `auto_paste` | `false` | Paste the result immediately after dictation ends |
+| `auto_paste` | `false` | Paste the result immediately after dictation ends when the platform can do that honestly |
 | `silence_timeout_ms` | `2000` | Silence threshold that ends a dictation session |
 | `max_utterance_secs` | `120` | Force-finalize an utterance at this length |
 | `model` | `"base"` | Whisper model for dictation |
 | `cleanup_engine` | unset | Optional LLM to clean up filler words |
+
+Dictation clipboard behavior is platform-specific:
+
+- macOS uses `pbcopy` / `pbpaste`; desktop auto-paste requires Accessibility permission and reports whether Minutes verified typing or only pasted.
+- Linux clipboard output uses `wl-copy` / `wl-paste` from `wl-clipboard` on Wayland, or `xclip` / `xsel` on X11. Desktop auto-paste copies first, then tries `xdotool` only in an X11 session; Wayland remains copy-only because compositors do not expose one universal paste-injection path.
+- Windows CLI clipboard output uses `clip.exe`; desktop active-app insertion is not claimed yet.
 
 ### `[watch]` — folder watcher
 

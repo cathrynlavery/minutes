@@ -182,8 +182,8 @@ Platform contract:
 | Platform | V1 behavior | Verified typing gate |
 | --- | --- | --- |
 | macOS | copy always, then direct AX or clipboard paste when capability allows | accessibility permission plus before/after proof where possible |
-| Linux/X11 | copy always, optional paste/type with known toolchain | xdotool/wtype-equivalent installed and probe passes |
-| Linux/Wayland | copy always | compositor-specific proof only; no universal claim |
+| Linux/X11 | copy always, optional clipboard paste with known toolchain | `xclip` or `xsel` for clipboard; `xdotool` installed before paste automation is attempted |
+| Linux/Wayland | copy always | `wl-clipboard` for clipboard; compositor-specific proof only; no universal paste claim |
 | Windows | copy always | later SendInput/UI Automation implementation |
 | CLI/headless | copy/file/stdout only | no active-app typing claim |
 
