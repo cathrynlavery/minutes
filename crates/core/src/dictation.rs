@@ -6,9 +6,11 @@ use crate::streaming::AudioStream;
 use crate::streaming_whisper::{StreamingResult, StreamingWhisper};
 use crate::vad::Vad;
 use chrono::Local;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 // ── Model preload cache ──────────────────────────────────────
 //
@@ -30,18 +32,47 @@ struct CachedModel {
 static MODEL_CACHE: std::sync::LazyLock<std::sync::Mutex<Option<CachedModel>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
+fn startup_debug(event: &str, model: Option<&str>, elapsed_ms: Option<u128>, note: Option<&str>) {
+    let payload = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "event": event,
+        "model": model,
+        "elapsedMs": elapsed_ms,
+        "note": note,
+    });
+    let path = Config::minutes_dir().join("dictation-startup-debug.jsonl");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{payload}");
+    }
+}
+
 /// Preload the whisper model for dictation in the background.
 /// Call this on app startup. Safe to call multiple times — skips if
 /// the same model is already cached.
 #[cfg(feature = "whisper")]
 pub fn preload_model(config: &Config) -> Result<(), MinutesError> {
     let model_name = config.dictation.model.clone();
+    let preload_start = Instant::now();
+    startup_debug("preload_start", Some(&model_name), None, None);
 
     // Check if already cached with the same model
     if let Ok(cache) = MODEL_CACHE.lock() {
         if let Some(ref cached) = *cache {
             if cached.model_name == model_name {
                 tracing::info!(model = %model_name, "dictation model already preloaded");
+                startup_debug(
+                    "preload_cache_hit",
+                    Some(&model_name),
+                    Some(preload_start.elapsed().as_millis()),
+                    None,
+                );
                 return Ok(());
             }
         }
@@ -66,6 +97,12 @@ pub fn preload_model(config: &Config) -> Result<(), MinutesError> {
     }
 
     tracing::info!(model = %model_name, "dictation model preloaded successfully");
+    startup_debug(
+        "preload_done",
+        Some(&model_name),
+        Some(preload_start.elapsed().as_millis()),
+        None,
+    );
     Ok(())
 }
 
@@ -228,14 +265,30 @@ where
     F: FnMut(DictationEvent),
     G: FnMut(DictationResult),
 {
+    let run_start = Instant::now();
+    startup_debug("run_inner_start", Some(&config.dictation.model), None, None);
+
     // Try to use preloaded model, fall back to loading on demand
     #[cfg(feature = "whisper")]
     let model_name = config.dictation.model.clone();
     #[cfg(feature = "whisper")]
     let whisper_ctx = if let Some(ctx) = take_cached_model(&model_name) {
         tracing::info!(model = %model_name, "using preloaded whisper model");
+        startup_debug(
+            "model_cache_hit",
+            Some(&model_name),
+            Some(run_start.elapsed().as_millis()),
+            None,
+        );
         ctx
     } else {
+        let load_start = Instant::now();
+        startup_debug(
+            "model_cache_miss_load_start",
+            Some(&model_name),
+            Some(run_start.elapsed().as_millis()),
+            None,
+        );
         let model_path = crate::transcribe::resolve_model_path_for_dictation(config)?;
         tracing::info!(model = %model_path.display(), "loading whisper model on demand");
         let ctx = whisper_rs::WhisperContext::new_with_params(
@@ -246,6 +299,12 @@ where
         )
         .map_err(|e| TranscribeError::ModelLoadError(format!("{}", e)))?;
         tracing::info!("whisper model loaded for dictation session");
+        startup_debug(
+            "model_load_done",
+            Some(&model_name),
+            Some(load_start.elapsed().as_millis()),
+            None,
+        );
         ctx
     };
 
@@ -258,7 +317,20 @@ where
     #[cfg(feature = "whisper")]
     {
         let device_override = config.recording.device.as_deref();
+        let audio_start = Instant::now();
+        startup_debug(
+            "audio_stream_start",
+            Some(&model_name),
+            Some(run_start.elapsed().as_millis()),
+            device_override,
+        );
         let mut stream = AudioStream::start(device_override)?;
+        startup_debug(
+            "audio_stream_done",
+            Some(&model_name),
+            Some(audio_start.elapsed().as_millis()),
+            Some(&stream.device_name),
+        );
         tracing::info!(device = %stream.device_name, "dictation audio stream started");
         crate::events::append_event(crate::events::recording_started_event(
             None,
@@ -286,6 +358,12 @@ where
         let max_utterance_samples = config.dictation.max_utterance_secs as usize * 16000;
 
         on_event(DictationEvent::Listening);
+        startup_debug(
+            "listening_emitted",
+            Some(&model_name),
+            Some(run_start.elapsed().as_millis()),
+            Some(&stream.device_name),
+        );
 
         loop {
             // Check stop flag (Esc / Ctrl-C / MCP stop)
