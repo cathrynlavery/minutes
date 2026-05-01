@@ -28,6 +28,56 @@ const MINUTES_WEBSITE_URL: &str = "https://useminutes.app";
 const MINUTES_CHANGELOG_URL: &str = "https://github.com/silverstein/minutes/releases";
 const MINUTES_DISCUSSIONS_URL: &str = "https://github.com/silverstein/minutes/discussions";
 
+static CLEAN_EXIT_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn cleanup_before_process_exit(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<commands::AppState>() {
+        if let Ok(mut mgr) = state.pty_manager.lock() {
+            mgr.kill_all();
+        }
+    }
+    minutes_core::parakeet_sidecar::shutdown_global_parakeet_sidecar();
+}
+
+fn exit_process_without_destructors(code: i32) -> ! {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        libc::_exit(code);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::process::exit(code);
+    }
+}
+
+fn finish_clean_exit(app: tauri::AppHandle, code: i32) -> ! {
+    cleanup_before_process_exit(&app);
+    exit_process_without_destructors(code);
+}
+
+fn request_clean_exit(app: &tauri::AppHandle, code: i32) {
+    if CLEAN_EXIT_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let state = app.state::<commands::AppState>();
+    if commands::recording_active(&state.recording) {
+        if commands::request_stop(&state.recording, &state.stop_flag).is_err() {
+            CLEAN_EXIT_STARTED.store(false, Ordering::SeqCst);
+            return;
+        }
+
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            commands::wait_for_recording_shutdown_forever();
+            finish_clean_exit(app_handle, code);
+        });
+    } else {
+        finish_clean_exit(app.clone(), code);
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn maybe_run_hotkey_diagnostic() -> Option<i32> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -930,24 +980,7 @@ fn main() {
                 }
             }
             "app-quit" => {
-                if let Ok(mut mgr) = app.state::<commands::AppState>().pty_manager.lock() {
-                    mgr.kill_all();
-                }
-                let state = app.state::<commands::AppState>();
-                let recording = state.recording.clone();
-                let stop = state.stop_flag.clone();
-                if commands::recording_active(&recording) {
-                    if commands::request_stop(&recording, &stop).is_err() {
-                        return;
-                    }
-                    let app_handle = app.clone();
-                    std::thread::spawn(move || {
-                        commands::wait_for_recording_shutdown_forever();
-                        app_handle.exit(0);
-                    });
-                } else {
-                    app.exit(0);
-                }
+                request_clean_exit(app, 0);
             }
             _ => {}
         })
@@ -1644,24 +1677,7 @@ fn main() {
                             });
                         }
                         "quit" => {
-                            // Kill all PTY sessions before exiting
-                            if let Ok(mut mgr) =
-                                app.state::<commands::AppState>().pty_manager.lock()
-                            {
-                                mgr.kill_all();
-                            }
-                            if commands::recording_active(&recording) {
-                                if commands::request_stop(&recording, &stop).is_err() {
-                                    return;
-                                }
-                                let app_handle = app.clone();
-                                std::thread::spawn(move || {
-                                    commands::wait_for_recording_shutdown_forever();
-                                    app_handle.exit(0);
-                                });
-                            } else {
-                                app.exit(0);
-                            }
+                            request_clean_exit(app, 0);
                         }
                         // Calendar event items — start recording on click
                         "cal-0" | "cal-1" | "cal-2" => {
@@ -1916,9 +1932,16 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building minutes app")
-        .run(|_, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                minutes_core::parakeet_sidecar::shutdown_global_parakeet_sidecar();
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                if code == Some(tauri::RESTART_EXIT_CODE) {
+                    cleanup_before_process_exit(app);
+                } else {
+                    api.prevent_exit();
+                    request_clean_exit(app, code.unwrap_or(0));
+                }
             }
+            tauri::RunEvent::Exit => cleanup_before_process_exit(app),
+            _ => {}
         });
 }
