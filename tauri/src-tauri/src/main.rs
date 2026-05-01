@@ -25,6 +25,7 @@ mod palette_dispatch;
 mod pty;
 mod secret_store;
 mod shortcut_manager;
+mod text_insertion;
 
 const MINUTES_WEBSITE_URL: &str = "https://useminutes.app";
 const MINUTES_CHANGELOG_URL: &str = "https://github.com/silverstein/minutes/releases";

@@ -9988,6 +9988,7 @@ fn start_dictation_session(
     let app_clone = app.clone();
     let stop_flag = Arc::clone(&state.dictation_stop_flag);
     let dictation_active = Arc::clone(&state.dictation_active);
+    let final_output_emitted = Arc::new(AtomicBool::new(false));
 
     std::thread::spawn(move || {
         let mut config = Config::load();
@@ -9995,8 +9996,16 @@ fn start_dictation_session(
         // disconnects (#189). In-memory only; startup-side persistence
         // is in main.rs.
         minutes_core::capture::auto_heal_missing_recording_device(&mut config);
+        let clipboard_snapshot =
+            if config.dictation.auto_paste && config.dictation.auto_paste_restore {
+                crate::text_insertion::read_clipboard().ok()
+            } else {
+                None
+            };
         let app_for_events = app_clone.clone();
         let app_for_results = app_clone.clone();
+        let config_for_results = config.clone();
+        let final_output_for_results = Arc::clone(&final_output_emitted);
 
         let result = minutes_core::dictation::run(
             stop_flag,
@@ -10047,7 +10056,43 @@ fn start_dictation_session(
                 }
             },
             move |result| {
+                final_output_for_results.store(true, Ordering::Relaxed);
                 app_for_results.emit("dictation:result", &result.text).ok();
+                if config_for_results.dictation.auto_paste {
+                    app_for_results.emit("dictation:state", "inserting").ok();
+                    let insertion = crate::text_insertion::insert_text(
+                        crate::text_insertion::TextInsertionRequest {
+                            text: result.text.clone(),
+                            mode: crate::text_insertion::TextInsertionMode::BestEffortVerified,
+                            restore_clipboard: config_for_results.dictation.auto_paste_restore,
+                            clipboard_snapshot: clipboard_snapshot.clone(),
+                        },
+                    );
+                    app_for_results.emit("dictation:insertion", &insertion).ok();
+                    app_for_results
+                        .emit("dictation:state", insertion.overlay_state())
+                        .ok();
+                } else {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let insertion = crate::text_insertion::insert_text(
+                            crate::text_insertion::TextInsertionRequest {
+                                text: result.text.clone(),
+                                mode: crate::text_insertion::TextInsertionMode::CopyOnly,
+                                restore_clipboard: false,
+                                clipboard_snapshot: None,
+                            },
+                        );
+                        app_for_results.emit("dictation:insertion", &insertion).ok();
+                        app_for_results
+                            .emit("dictation:state", insertion.overlay_state())
+                            .ok();
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        app_for_results.emit("dictation:state", "copied").ok();
+                    }
+                }
             },
         );
 
@@ -10056,7 +10101,9 @@ fn start_dictation_session(
             Ok(()) => {
                 // Session ended normally (silence timeout or yield).
                 // Dismiss overlay if it wasn't already dismissed by a terminal event.
-                app_clone.emit("dictation:state", "cancelled").ok();
+                if !final_output_emitted.load(Ordering::Relaxed) {
+                    app_clone.emit("dictation:state", "cancelled").ok();
+                }
             }
             Err(e) => {
                 eprintln!("[dictation] error: {}", e);
