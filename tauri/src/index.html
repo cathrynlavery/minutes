@@ -654,16 +654,20 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 14px 16px 12px;
+      padding: 10px 14px;
+      margin: 16px 16px 12px;
       -webkit-app-region: drag;
       position: relative;
       z-index: 10;
-      border-bottom: 1px solid var(--border);
+      border: 1px solid var(--border-mid);
+      border-radius: 12px;
+      background: var(--bg-elevated);
+      flex-shrink: 0;
     }
 
     html[data-platform="macos"] .header {
-      min-height: 52px;
-      padding-left: 76px;
+      min-height: 58px;
+      padding-left: 108px;
     }
 
     .brand {
