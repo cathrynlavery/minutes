@@ -1196,6 +1196,7 @@ fn main() {
             pty_manager: Arc::new(Mutex::new(pty::PtyManager::default())),
             dictation_active: dictation_active.clone(),
             dictation_stop_flag: dictation_stop_flag.clone(),
+            dictation_focus_guard: Arc::new(Mutex::new(None)),
             live_transcript_active: live_transcript_active.clone(),
             live_transcript_stop_flag: live_transcript_stop_flag.clone(),
             live_shortcut_enabled: {
@@ -1983,6 +1984,7 @@ fn main() {
             commands::cmd_get_meeting_prompt,
             commands::cmd_start_dictation,
             commands::cmd_stop_dictation,
+            commands::cmd_dismiss_dictation_overlay,
             commands::cmd_recent_dictations,
             commands::cmd_copy_dictation,
             commands::cmd_repaste_dictation,

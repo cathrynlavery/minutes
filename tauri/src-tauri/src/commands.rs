@@ -38,6 +38,7 @@ pub struct AppState {
     pub pty_manager: Arc<Mutex<crate::pty::PtyManager>>,
     pub dictation_active: Arc<AtomicBool>,
     pub dictation_stop_flag: Arc<AtomicBool>,
+    pub dictation_focus_guard: Arc<Mutex<Option<DictationFocusGuard>>>,
     pub dictation_shortcut_enabled: Arc<AtomicBool>,
     pub dictation_shortcut: Arc<Mutex<String>>,
     pub live_transcript_active: Arc<AtomicBool>,
@@ -81,6 +82,12 @@ pub struct AppState {
     /// from the cancel bit so the detector can tell an explicit user cancel
     /// from an internal reset or teardown path.
     pub call_end_countdown_terminal_state: Arc<AtomicU8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DictationFocusGuard {
+    target_context: Option<crate::text_insertion::ActiveTargetContext>,
+    main_window_hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -10120,6 +10127,73 @@ fn restore_dictation_target_focus(
     std::thread::sleep(Duration::from_millis(120));
 }
 
+fn hide_main_window_for_external_dictation(
+    app: &tauri::AppHandle,
+    target_context: &Option<crate::text_insertion::ActiveTargetContext>,
+) -> bool {
+    let target_bundle_id = target_context
+        .as_ref()
+        .and_then(|context| context.bundle_id.as_deref());
+    if target_bundle_id == Some(app.config().identifier.as_str()) {
+        return false;
+    }
+
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    if !window.is_visible().ok().unwrap_or(false) {
+        return false;
+    }
+    if window.is_focused().ok().unwrap_or(false) {
+        return false;
+    }
+
+    match window.hide() {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(error = %error, "could not hide main window during dictation");
+            false
+        }
+    }
+}
+
+fn finish_dictation_overlay_lifecycle(app: &tauri::AppHandle, guard: Option<DictationFocusGuard>) {
+    if let Some(window) = app.get_webview_window("dictation-overlay") {
+        if let Err(error) = window.close() {
+            tracing::debug!(error = %error, "could not close dictation overlay");
+        }
+    }
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    let Some(guard) = guard else {
+        return;
+    };
+
+    if guard.main_window_hidden {
+        if let Some(window) = app.get_webview_window("main") {
+            if let Err(error) = window.show() {
+                tracing::debug!(error = %error, "could not restore hidden main window after dictation");
+            }
+        }
+    }
+
+    restore_dictation_target_focus(&guard.target_context);
+}
+
+#[tauri::command]
+pub fn cmd_dismiss_dictation_overlay(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let guard = match state.dictation_focus_guard.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+    finish_dictation_overlay_lifecycle(&app, guard);
+    Ok(())
+}
+
 /// Public entry point for the shortcut manager to start a dictation session.
 pub fn start_dictation_session_public(
     app: &tauri::AppHandle,
@@ -10143,6 +10217,16 @@ fn start_dictation_session(
     }
 
     let dictation_target_context = crate::text_insertion::capture_active_target_context();
+    let main_window_hidden =
+        hide_main_window_for_external_dictation(app, &dictation_target_context);
+    let focus_guard = DictationFocusGuard {
+        target_context: dictation_target_context.clone(),
+        main_window_hidden,
+    };
+    match state.dictation_focus_guard.lock() {
+        Ok(mut guard) => *guard = Some(focus_guard.clone()),
+        Err(poisoned) => *poisoned.into_inner() = Some(focus_guard.clone()),
+    }
     show_dictation_overlay(app);
     restore_dictation_target_focus(&dictation_target_context);
     app.emit("dictation:state", "loading").ok();
@@ -10157,6 +10241,7 @@ fn start_dictation_session(
     let dictation_active = Arc::clone(&state.dictation_active);
     let final_output_emitted = Arc::new(AtomicBool::new(false));
     let dictation_target_context_for_thread = dictation_target_context.clone();
+    let focus_guard_for_thread = focus_guard.clone();
 
     std::thread::spawn(move || {
         let mut config = Config::load();
@@ -10269,6 +10354,14 @@ fn start_dictation_session(
                 // Dismiss overlay if it wasn't already dismissed by a terminal event.
                 if !final_output_emitted.load(Ordering::Relaxed) {
                     app_clone.emit("dictation:state", "cancelled").ok();
+                    let guard = app_clone
+                        .state::<AppState>()
+                        .dictation_focus_guard
+                        .lock()
+                        .map(|mut guard| guard.take())
+                        .unwrap_or_else(|poisoned| poisoned.into_inner().take())
+                        .or_else(|| Some(focus_guard_for_thread.clone()));
+                    finish_dictation_overlay_lifecycle(&app_clone, guard);
                 }
             }
             Err(e) => {

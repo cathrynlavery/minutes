@@ -657,7 +657,8 @@
     function dismiss() {
       pill.classList.add('dismissing');
       setTimeout(() => {
-        window.__TAURI__.window.getCurrentWindow().close();
+        window.__TAURI__.core.invoke('cmd_dismiss_dictation_overlay')
+          .catch(() => window.__TAURI__.window.getCurrentWindow().close());
       }, 150);
     }
 
