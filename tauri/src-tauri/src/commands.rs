@@ -1402,7 +1402,7 @@ fn load_recall_workspace_state_from(path: &Path) -> RecallWorkspaceState {
         .unwrap_or_else(|| RecallWorkspaceState {
             recall_expanded: false,
             recall_phase: "recall".into(),
-            recall_ratio: 0.5,
+            recall_ratio: 0.42,
             current_meeting_path: None,
             open_artifact_path: None,
         })
@@ -5596,7 +5596,7 @@ pub fn cmd_set_recall_workspace_state(
         };
     }
     if let Some(value) = recall_ratio {
-        state.recall_ratio = value.clamp(0.25, 0.75);
+        state.recall_ratio = value.clamp(0.34, 0.62);
     }
     if let Some(value) = current_meeting_path {
         state.current_meeting_path = if value.trim().is_empty() {

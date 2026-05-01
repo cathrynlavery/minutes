@@ -3028,12 +3028,14 @@
 
     .footer-action-secondary {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.55fr) minmax(0, 1fr);
       gap: 4px;
     }
 
     .footer-actions .btn {
       width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
       border-radius: var(--radius);
       font-size: 12px;
       white-space: nowrap;
@@ -3065,7 +3067,7 @@
       }
 
       .footer-action-secondary {
-        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.55fr) minmax(0, 1fr);
       }
     }
 
@@ -9377,6 +9379,9 @@
 
     const COLLAPSED_WIDTH = 520;
     const EXPANDED_WIDTH = 960;
+    const DEFAULT_RECALL_RATIO = 0.42;
+    const MIN_RECALL_WIDTH = 320;
+    const MIN_LEFT_WIDTH_WITH_RECALL = 540;
     const SESSION_ID = 'assistant';
 
     let recallExpanded = false;
@@ -9391,12 +9396,20 @@
     let expandAnimating = false;
 
     // ── Draggable split handle ──
+    function clampRecallRatio(ratio) {
+      const bodyW = document.body.clientWidth || EXPANDED_WIDTH;
+      const minRatio = Math.min(0.5, MIN_RECALL_WIDTH / bodyW);
+      const maxRatioForLeft = (bodyW - MIN_LEFT_WIDTH_WITH_RECALL) / bodyW;
+      const maxRatio = Math.max(minRatio, Math.min(0.62, maxRatioForLeft));
+      return Math.min(maxRatio, Math.max(minRatio, ratio));
+    }
+
     function getStoredRecallRatio() {
       const v = parseFloat(localStorage.getItem('minutes.recallRatio'));
-      return (v > 0 && v < 1) ? v : 0.5;
+      return clampRecallRatio((v > 0 && v < 1) ? v : DEFAULT_RECALL_RATIO);
     }
     function applyRecallRatio(ratio) {
-      recallPanel.style.setProperty('--recall-width', (ratio * 100) + '%');
+      recallPanel.style.setProperty('--recall-width', (clampRecallRatio(ratio) * 100) + '%');
     }
 
     splitHandle.addEventListener('mousedown', (e) => {
@@ -9409,7 +9422,7 @@
       const onMove = (ev) => {
         const bodyW = document.body.clientWidth;
         const rightPx = bodyW - ev.clientX;
-        const ratio = Math.min(0.75, Math.max(0.25, rightPx / bodyW));
+        const ratio = clampRecallRatio(rightPx / bodyW);
         applyRecallRatio(ratio);
         if (recallFitAddon) recallFitAddon.fit();
       };
@@ -9421,7 +9434,7 @@
         document.removeEventListener('mouseup', onUp);
         const bodyW = document.body.clientWidth;
         const panelW = recallPanel.offsetWidth;
-        const ratio = panelW / bodyW;
+        const ratio = clampRecallRatio(panelW / bodyW);
         localStorage.setItem('minutes.recallRatio', ratio.toFixed(3));
         persistRecallWorkspaceState({ recallRatio: ratio });
         if (recallFitAddon) recallFitAddon.fit();
@@ -9431,9 +9444,10 @@
     });
 
     splitHandle.addEventListener('dblclick', () => {
-      localStorage.setItem('minutes.recallRatio', '0.500');
-      applyRecallRatio(0.5);
-      persistRecallWorkspaceState({ recallRatio: 0.5 });
+      const ratio = clampRecallRatio(DEFAULT_RECALL_RATIO);
+      localStorage.setItem('minutes.recallRatio', ratio.toFixed(3));
+      applyRecallRatio(ratio);
+      persistRecallWorkspaceState({ recallRatio: ratio });
       if (recallFitAddon) recallFitAddon.fit();
     });
 
@@ -11242,7 +11256,11 @@
       }
 
       if (typeof recallWorkspaceState.recallRatio === 'number') {
-        localStorage.setItem('minutes.recallRatio', Number(recallWorkspaceState.recallRatio).toFixed(3));
+        const restoredRatio = clampRecallRatio(Number(recallWorkspaceState.recallRatio));
+        localStorage.setItem('minutes.recallRatio', restoredRatio.toFixed(3));
+        if (Math.abs(restoredRatio - Number(recallWorkspaceState.recallRatio)) > 0.001) {
+          persistRecallWorkspaceState({ recallRatio: restoredRatio });
+        }
       }
 
       if (recallWorkspaceState.recallExpanded) {
