@@ -6750,10 +6750,6 @@
     readinessOverlay.addEventListener('click', (e) => {
       if (e.target === readinessOverlay) closeReadiness();
     });
-    currentWindow.listen('permissions:changed', () => {
-      loadReadinessItems();
-    });
-
     jobsButton.addEventListener('click', () => {
       loadProcessingJobsCenter();
       jobsOverlay.classList.add('active');
@@ -9272,6 +9268,10 @@
     currentWindow.listen('minutes://show-settings', () => {
       closeAbout();
       openSettings();
+    });
+
+    currentWindow.listen('permissions:changed', () => {
+      loadReadinessItems();
     });
 
     const recallPanel = document.getElementById('recall-panel');
