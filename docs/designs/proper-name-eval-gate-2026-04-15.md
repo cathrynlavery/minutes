@@ -47,6 +47,8 @@ Each entry can specify:
 
 - `id`
 - `audio_path`
+- `audio_start_secs`
+- `audio_duration_secs`
 - `content_type`
 - `engine`
 - `reference_text` or `reference_path`
@@ -55,6 +57,7 @@ Each entry can specify:
 - `pre_context`
 - `extra_priority_hints`
 - `extra_context_hints`
+- `vocabulary_entries`
 - `attendees`
 - `identity_name`
 - `identity_aliases`
@@ -82,6 +85,10 @@ For each case it computes:
 
 If any case exceeds `max_wer_regression`, misses a required hinted term, or
 contains a forbidden hinted term in the hinted output, the test fails.
+
+The artifact bundle writes the normalized baseline and candidate transcript
+text into the JSON sidecars. Keep those fields: a WER failure without the
+actual text is too easy to over- or under-interpret.
 
 ## Recommended corpus shape
 

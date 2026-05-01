@@ -849,6 +849,7 @@ pub fn transcribe_to_artifact(
         context.pre_context.as_deref(),
         &attendees,
         Some(&config.identity),
+        load_vocabulary_for_decode_hints().as_ref(),
     );
 
     let step_start = std::time::Instant::now();
@@ -1461,6 +1462,7 @@ where
         pre_context.as_deref(),
         &calendar_attendees,
         Some(&config.identity),
+        load_vocabulary_for_decode_hints().as_ref(),
     );
 
     // Step 1: Transcribe (always)
@@ -2430,6 +2432,7 @@ pub(crate) fn build_decode_hints(
     pre_context: Option<&str>,
     attendees: &[String],
     identity: Option<&IdentityConfig>,
+    vocabulary: Option<&crate::vocabulary::VocabularyStore>,
 ) -> crate::transcribe::DecodeHints {
     let mut priority = Vec::new();
     let mut contextual = Vec::new();
@@ -2473,6 +2476,10 @@ pub(crate) fn build_decode_hints(
         }
     }
 
+    if let Some(vocabulary) = vocabulary {
+        priority.extend(vocabulary.decode_phrases(8));
+    }
+
     for candidate in title
         .into_iter()
         .chain(calendar_event_title)
@@ -2482,6 +2489,17 @@ pub(crate) fn build_decode_hints(
     }
 
     crate::transcribe::DecodeHints::from_candidates(&priority, &contextual)
+}
+
+fn load_vocabulary_for_decode_hints() -> Option<crate::vocabulary::VocabularyStore> {
+    match crate::vocabulary::load() {
+        Ok(store) if !store.entries.is_empty() => Some(store),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::debug!(error = %error, "could not load vocabulary for decode hints");
+            None
+        }
+    }
 }
 
 fn collect_user_participant_variants(
@@ -4825,6 +4843,7 @@ mod tests {
                 "Casey / Casey Winters".into(),
             ],
             Some(&identity),
+            None,
         );
 
         assert_eq!(
@@ -4853,6 +4872,7 @@ mod tests {
                 "Casey / Casey Winters".into(),
             ],
             Some(&identity),
+            None,
         );
 
         let prompt = hints.whisper_initial_prompt().expect("prompt");
@@ -4861,6 +4881,44 @@ mod tests {
         assert!(!prompt.contains("Mat,"));
         assert!(prompt.contains("Alex Chen"));
         assert!(prompt.contains("Casey"));
+    }
+
+    #[test]
+    fn build_decode_hints_includes_bounded_vocabulary_terms() {
+        let vocabulary = crate::vocabulary::VocabularyStore {
+            entries: vec![
+                crate::vocabulary::VocabularyEntry {
+                    kind: crate::vocabulary::VocabularyKind::Organization,
+                    canonical: "Automattic".into(),
+                    aliases: vec!["Automatic".into()],
+                    priority: crate::vocabulary::VocabularyPriority::High,
+                    ..crate::vocabulary::VocabularyEntry::default()
+                },
+                crate::vocabulary::VocabularyEntry {
+                    kind: crate::vocabulary::VocabularyKind::Project,
+                    canonical: "Harper".into(),
+                    priority: crate::vocabulary::VocabularyPriority::Normal,
+                    ..crate::vocabulary::VocabularyEntry::default()
+                },
+            ],
+        }
+        .normalized()
+        .unwrap();
+
+        let hints = build_decode_hints(
+            Some("Writing tools"),
+            None,
+            None,
+            &["Elijah Potter".into()],
+            None,
+            Some(&vocabulary),
+        );
+
+        let prompt = hints.whisper_initial_prompt().expect("prompt");
+        assert!(prompt.contains("Elijah Potter"));
+        assert!(prompt.contains("Automattic"));
+        assert!(prompt.contains("Automatic"));
+        assert!(prompt.contains("Harper"));
     }
 
     #[test]

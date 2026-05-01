@@ -37,6 +37,7 @@ pub mod template;
 pub mod transcribe;
 pub mod transcription_coordinator;
 pub mod vault;
+pub mod vocabulary;
 pub mod voice;
 pub mod watch;
 

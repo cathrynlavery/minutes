@@ -1162,6 +1162,15 @@ pub struct SpeakerAttributionView {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyRememberView {
+    pub entry_id: String,
+    pub canonical: String,
+    pub already_exists: bool,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ActionItemView {
     pub assignee: String,
     pub task: String,
@@ -6209,6 +6218,104 @@ pub async fn cmd_confirm_speaker(
 }
 
 #[tauri::command]
+pub fn cmd_remember_vocabulary_person(name: String) -> Result<VocabularyRememberView, String> {
+    let canonical = name.trim();
+    if !looks_like_rememberable_person_name(canonical) {
+        return Err("Choose a specific person name before saving vocabulary.".into());
+    }
+
+    let path = minutes_core::vocabulary::default_path();
+    let mut store = minutes_core::vocabulary::load().map_err(|e| e.to_string())?;
+    let canonical_key = vocabulary_person_key(canonical);
+
+    if let Some(existing) = store.entries.iter().find(|entry| {
+        entry.kind == minutes_core::vocabulary::VocabularyKind::Person
+            && entry
+                .surface_forms()
+                .iter()
+                .any(|form| vocabulary_person_key(form) == canonical_key)
+    }) {
+        return Ok(VocabularyRememberView {
+            entry_id: existing.id.clone(),
+            canonical: existing.canonical.clone(),
+            already_exists: true,
+            note: format!(
+                "{} is already in vocabulary. Future transcripts, search, and graph rebuilds can use it; existing raw transcripts stay unchanged.",
+                existing.canonical
+            ),
+        });
+    }
+
+    let mut entry = minutes_core::vocabulary::VocabularyEntry::new(
+        minutes_core::vocabulary::VocabularyKind::Person,
+        canonical,
+    );
+    entry.priority = minutes_core::vocabulary::VocabularyPriority::High;
+    entry.source = minutes_core::vocabulary::VocabularySource::SpeakerConfirmation;
+    store.entries.push(entry);
+    let normalized = store.normalized().map_err(|e| e.to_string())?;
+    let saved_entry = normalized
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == minutes_core::vocabulary::VocabularyKind::Person
+                && vocabulary_person_key(&entry.canonical) == canonical_key
+        })
+        .cloned()
+        .ok_or_else(|| {
+            "Saved vocabulary entry could not be found after normalization.".to_string()
+        })?;
+
+    minutes_core::vocabulary::save_at(&path, &normalized).map_err(|e| e.to_string())?;
+
+    #[cfg(not(test))]
+    {
+        tauri::async_runtime::spawn_blocking(|| {
+            let config = Config::load();
+            if let Err(e) = minutes_core::graph::rebuild_index(&config) {
+                eprintln!(
+                    "[remember_vocabulary_person] vocabulary saved, but graph rebuild failed: {}",
+                    e
+                );
+            }
+        });
+    }
+
+    Ok(VocabularyRememberView {
+        entry_id: saved_entry.id,
+        canonical: saved_entry.canonical.clone(),
+        already_exists: false,
+        note: format!(
+            "Saved {} to vocabulary. Future transcripts, search, and graph rebuilds can use it; existing raw transcripts stay unchanged.",
+            saved_entry.canonical
+        ),
+    })
+}
+
+fn looks_like_rememberable_person_name(name: &str) -> bool {
+    let key = vocabulary_person_key(name);
+    if key.is_empty() {
+        return false;
+    }
+    if key == "unknown" || key == "unknown speaker" {
+        return false;
+    }
+    if key.starts_with("speaker ") || key.starts_with("speaker_") || key.starts_with("speaker-") {
+        return false;
+    }
+    true
+}
+
+fn vocabulary_person_key(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+#[tauri::command]
 pub async fn cmd_upcoming_meetings() -> serde_json::Value {
     tauri::async_runtime::spawn_blocking(|| {
         let events = minutes_core::calendar::upcoming_events(120); // 2 hour lookahead
@@ -9116,6 +9223,46 @@ mod tests {
                 hash_before, hash_after,
                 "overlay write must not mutate the raw meeting markdown"
             );
+        });
+    }
+
+    #[test]
+    fn rememberable_person_name_rejects_generic_speaker_labels() {
+        assert!(looks_like_rememberable_person_name("Alex Kim"));
+        assert!(!looks_like_rememberable_person_name(""));
+        assert!(!looks_like_rememberable_person_name("Unknown Speaker"));
+        assert!(!looks_like_rememberable_person_name("SPEAKER_0"));
+        assert!(!looks_like_rememberable_person_name("speaker-0"));
+        assert!(!looks_like_rememberable_person_name("Speaker 1"));
+    }
+
+    #[test]
+    fn remember_vocabulary_person_writes_user_vocabulary_without_duplicates() {
+        with_temp_home(|home| {
+            let saved = cmd_remember_vocabulary_person("Alex Kim".into()).unwrap();
+            assert_eq!(saved.canonical, "Alex Kim");
+            assert!(!saved.already_exists);
+            assert!(saved
+                .note
+                .contains("existing raw transcripts stay unchanged"));
+
+            let vocabulary_path = home.join(".minutes").join("vocabulary.toml");
+            let store = minutes_core::vocabulary::load_at(&vocabulary_path).unwrap();
+            assert_eq!(store.entries.len(), 1);
+            assert_eq!(store.entries[0].canonical, "Alex Kim");
+            assert_eq!(
+                store.entries[0].kind,
+                minutes_core::vocabulary::VocabularyKind::Person
+            );
+            assert_eq!(
+                store.entries[0].source,
+                minutes_core::vocabulary::VocabularySource::SpeakerConfirmation
+            );
+
+            let duplicate = cmd_remember_vocabulary_person(" Alex Kim ".into()).unwrap();
+            assert!(duplicate.already_exists);
+            let store = minutes_core::vocabulary::load_at(&vocabulary_path).unwrap();
+            assert_eq!(store.entries.len(), 1);
         });
     }
 

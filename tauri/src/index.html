@@ -2410,6 +2410,42 @@
       transform: none;
     }
 
+    .speaker-row-spacer {
+      flex: 1;
+      min-width: 8px;
+    }
+
+    .speaker-remember-btn {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface-fill);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .speaker-remember-btn:hover {
+      background: var(--green-tint);
+      color: var(--live);
+      border-color: rgba(48, 209, 88, 0.35);
+    }
+
+    .speaker-remember-btn[disabled] {
+      opacity: 0.65;
+      cursor: wait;
+      transform: none;
+    }
+
+    .speaker-remember-btn.saved {
+      opacity: 1;
+      background: var(--green-tint);
+      color: var(--live);
+      border-color: rgba(48, 209, 88, 0.28);
+      cursor: default;
+    }
+
     .detail-feedback {
       margin: 0 20px 14px;
       padding: 10px 12px;
@@ -6905,6 +6941,12 @@
       element.replaceChildren(buildHighlightedFragment(text || '', query));
     }
 
+    function isRememberableSpeakerName(name) {
+      const key = String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      if (!key || key === 'unknown' || key === 'unknown speaker') return false;
+      return !key.startsWith('speaker ') && !key.startsWith('speaker_') && !key.startsWith('speaker-');
+    }
+
     function closeDetailView() {
       detailOverlay.classList.remove('active');
       currentMeetingPath = null;
@@ -7011,6 +7053,39 @@
           badge.className = `speaker-badge ${attr.confidence}`;
           badge.textContent = attr.confidence;
           row.appendChild(badge);
+
+          const spacer = document.createElement('span');
+          spacer.className = 'speaker-row-spacer';
+          row.appendChild(spacer);
+
+          if (attr.confidence === 'high' && isRememberableSpeakerName(attr.name)) {
+            const rememberBtn = document.createElement('button');
+            rememberBtn.className = 'speaker-remember-btn';
+            rememberBtn.textContent = 'Remember';
+            rememberBtn.title = 'Save this person for future transcripts and search. Existing raw transcripts stay unchanged.';
+            rememberBtn.onclick = async () => {
+              rememberBtn.disabled = true;
+              const previousLabel = rememberBtn.textContent;
+              rememberBtn.textContent = 'Saving...';
+              try {
+                const result = await invoke('cmd_remember_vocabulary_person', {
+                  name: attr.name,
+                });
+                rememberBtn.textContent = 'Saved';
+                rememberBtn.classList.add('saved');
+                showDetailFeedback(
+                  result?.note || `${attr.name} saved to vocabulary. Existing raw transcripts stay unchanged.`,
+                  'success'
+                );
+              } catch (e) {
+                console.error('Remember speaker failed:', e);
+                rememberBtn.disabled = false;
+                rememberBtn.textContent = previousLabel;
+                showDetailFeedback(`Could not save vocabulary: ${e}`, 'error');
+              }
+            };
+            row.appendChild(rememberBtn);
+          }
 
           // Show confirm button for non-high confidence
           if (attr.confidence !== 'high') {

@@ -1954,6 +1954,7 @@ fn main() {
             commands::cmd_get_meeting_detail,
             commands::cmd_list_voices,
             commands::cmd_confirm_speaker,
+            commands::cmd_remember_vocabulary_person,
             commands::cmd_needs_setup,
             commands::cmd_download_model,
             commands::cmd_mark_activation_nudge_shown,

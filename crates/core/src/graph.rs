@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::diarize::SpeakerAttribution;
-use crate::markdown::{split_frontmatter, ContentType, Frontmatter};
+use crate::markdown::{split_frontmatter, ContentType, EntityRef, Frontmatter};
 use crate::overlays;
 use crate::person_identity::PersonCanonicalizer;
 use chrono::Local;
@@ -340,6 +340,14 @@ pub fn rebuild_index(config: &Config) -> Result<GraphStats, GraphError> {
 
 /// Rebuild the graph index at a specific database path (for testing).
 pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, GraphError> {
+    rebuild_index_at_with_vocabulary_entities(config, path, load_vocabulary_person_entities())
+}
+
+fn rebuild_index_at_with_vocabulary_entities(
+    config: &Config,
+    path: &Path,
+    vocabulary_people: Vec<EntityRef>,
+) -> Result<GraphStats, GraphError> {
     let start = std::time::Instant::now();
     let dir = &config.output_dir;
     if !dir.exists() {
@@ -463,7 +471,9 @@ pub fn rebuild_index_at(config: &Config, path: &Path) -> Result<GraphStats, Grap
                     .filter_map(|intent| intent.who.as_deref()),
             )
             .collect();
-        let canonicalizer = PersonCanonicalizer::new(&frontmatter.entities.people, context_names);
+        let mut canonical_people = frontmatter.entities.people.clone();
+        canonical_people.extend(vocabulary_people.iter().cloned());
+        let canonicalizer = PersonCanonicalizer::new(&canonical_people, context_names);
 
         // Extract people from multiple sources
         let mut file_people: Vec<(String, String, Vec<String>, &'static str)> = Vec::new(); // (slug, name, aliases, role)
@@ -1031,6 +1041,37 @@ fn fix_frontmatter(fm_str: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn load_vocabulary_person_entities() -> Vec<EntityRef> {
+    let store = match crate::vocabulary::load() {
+        Ok(store) => store,
+        Err(error) => {
+            tracing::debug!(error = %error, "could not load vocabulary for graph canonicalization");
+            return Vec::new();
+        }
+    };
+
+    store
+        .entries
+        .into_iter()
+        .filter(|entry| entry.kind == crate::vocabulary::VocabularyKind::Person)
+        .filter_map(|entry| {
+            let label = entry.canonical.trim();
+            if label.is_empty() {
+                return None;
+            }
+            let slug = slugify(label);
+            if slug.is_empty() {
+                return None;
+            }
+            Some(EntityRef {
+                slug,
+                label: label.to_string(),
+                aliases: entry.aliases,
+            })
+        })
+        .collect()
 }
 
 /// Try parsing frontmatter with fixes applied for real-world format issues.
@@ -1864,6 +1905,115 @@ intents:
         assert!(
             commitment_owner_count >= 2,
             "action items and intents should resolve to canonical person"
+        );
+    }
+
+    #[test]
+    fn test_vocabulary_person_aliases_canonicalize_graph_people() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let meeting = r#"---
+title: Vocabulary Dan
+type: meeting
+date: 2026-03-20T14:00:00-07:00
+duration: 10m
+attendees: [Dan]
+action_items:
+  - assignee: Dan
+    task: Review vocabulary plan
+    status: open
+---
+
+## Transcript
+[DAN 0:00] Happy to help
+"#;
+        write_meeting(&meetings, "vocabulary-dan.md", meeting);
+        let config = test_config(&meetings);
+        let db = tmp.path().join("graph.db");
+        let vocabulary_people = vec![EntityRef {
+            slug: "dan-benamoz".into(),
+            label: "Dan Benamoz".into(),
+            aliases: vec!["Dan".into()],
+        }];
+
+        rebuild_index_at_with_vocabulary_entities(&config, &db, vocabulary_people).unwrap();
+        let conn = open_db(&db).unwrap();
+
+        let canonical_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM people WHERE slug = 'dan-benamoz'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let alias_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM people WHERE slug = 'dan'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let commitment_owner_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM commitments c
+                 JOIN people p ON c.person_id = p.id
+                 WHERE p.slug = 'dan-benamoz'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(canonical_count, 1);
+        assert_eq!(alias_count, 0);
+        assert_eq!(commitment_owner_count, 1);
+    }
+
+    #[test]
+    fn test_vocabulary_does_not_merge_different_full_name_by_first_name() {
+        let tmp = TempDir::new().unwrap();
+        let meetings = tmp.path().join("meetings");
+        fs::create_dir_all(&meetings).unwrap();
+        let meeting = r#"---
+title: Sarah Miller Call
+type: meeting
+date: 2026-03-20T14:00:00-07:00
+duration: 10m
+attendees: [Sarah Miller]
+---
+
+## Transcript
+[SARAH MILLER 0:00] Hello
+"#;
+        write_meeting(&meetings, "sarah-miller.md", meeting);
+        let config = test_config(&meetings);
+        let db = tmp.path().join("graph.db");
+        let vocabulary_people = vec![EntityRef {
+            slug: "sarah-chen".into(),
+            label: "Sarah Chen".into(),
+            aliases: vec!["SC".into()],
+        }];
+
+        rebuild_index_at_with_vocabulary_entities(&config, &db, vocabulary_people).unwrap();
+        let conn = open_db(&db).unwrap();
+
+        let sarah_miller_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM people WHERE slug = 'sarah-miller'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let sarah_chen_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM people WHERE slug = 'sarah-chen'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(sarah_miller_count, 1);
+        assert_eq!(
+            sarah_chen_count, 0,
+            "unused vocabulary entities must not be inserted into every meeting"
         );
     }
 

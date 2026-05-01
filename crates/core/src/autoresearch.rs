@@ -10,11 +10,16 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DecodeHintEvalCase {
     pub id: String,
     pub audio_path: PathBuf,
+    #[serde(default)]
+    pub audio_start_secs: Option<f64>,
+    #[serde(default)]
+    pub audio_duration_secs: Option<f64>,
     #[serde(default = "default_eval_content_type")]
     pub content_type: ContentType,
     #[serde(default)]
@@ -31,6 +36,8 @@ pub struct DecodeHintEvalCase {
     pub extra_priority_hints: Vec<String>,
     #[serde(default)]
     pub extra_context_hints: Vec<String>,
+    #[serde(default)]
+    pub vocabulary_entries: Vec<crate::vocabulary::VocabularyEntry>,
     #[serde(default)]
     pub attendees: Vec<String>,
     #[serde(default)]
@@ -78,6 +85,8 @@ pub struct DecodeHintEvalTranscriptMetrics {
     pub wer: f64,
     pub focus_hits: Vec<String>,
     pub forbidden_hits: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -177,6 +186,8 @@ struct DecodeHintEvalSidecarCase {
     wer: f64,
     focus_hits: Vec<String>,
     forbidden_hits: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    text: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -316,7 +327,7 @@ pub fn run_decode_hint_eval_corpus(
         config.identity.aliases = case.identity_aliases.clone();
 
         let reference = eval_text_for_compare(&load_reference_text(&case)?);
-        let hints = build_eval_case_hints(&case, &config);
+        let hints = build_eval_case_hints(&case, &config)?;
         let hint_debug = DecodeHintEvalHintDebug {
             priority_phrases: hints.debug_priority_phrases(),
             contextual_phrases: hints.debug_contextual_phrases(),
@@ -406,11 +417,13 @@ pub fn run_decode_hint_eval_corpus(
                 wer: baseline_wer,
                 focus_hits: baseline_focus_hits,
                 forbidden_hits: baseline_forbidden_hits,
+                text: baseline_text,
             },
             candidate: DecodeHintEvalTranscriptMetrics {
                 wer: candidate_wer,
                 focus_hits: candidate_focus_hits,
                 forbidden_hits: candidate_forbidden_hits,
+                text: candidate_text,
             },
             delta_wer,
             max_wer_regression: case.max_wer_regression,
@@ -483,6 +496,7 @@ pub fn write_decode_hint_eval_artifacts(
                 wer: case.baseline.wer,
                 focus_hits: case.baseline.focus_hits.clone(),
                 forbidden_hits: case.baseline.forbidden_hits.clone(),
+                text: case.baseline.text.clone(),
             })
             .collect(),
     };
@@ -503,6 +517,7 @@ pub fn write_decode_hint_eval_artifacts(
                 wer: case.candidate.wer,
                 focus_hits: case.candidate.focus_hits.clone(),
                 forbidden_hits: case.candidate.forbidden_hits.clone(),
+                text: case.candidate.text.clone(),
             })
             .collect(),
     };
@@ -988,7 +1003,7 @@ fn invalid_data_error(error: impl std::fmt::Display) -> MinutesError {
     ))
 }
 
-fn build_eval_case_hints(case: &DecodeHintEvalCase, config: &Config) -> DecodeHints {
+fn build_eval_case_hints(case: &DecodeHintEvalCase, config: &Config) -> Result<DecodeHints> {
     let identity = &config.identity;
     let identity_for_hints = (!case.disable_identity_hints).then_some(identity);
     let attendees = if case.disable_attendee_hints {
@@ -1018,14 +1033,29 @@ fn build_eval_case_hints(case: &DecodeHintEvalCase, config: &Config) -> DecodeHi
         case.extra_context_hints.as_slice()
     };
 
-    build_decode_hints(
+    let vocabulary_store = if case.vocabulary_entries.is_empty() {
+        None
+    } else {
+        Some(
+            crate::vocabulary::VocabularyStore {
+                entries: case.vocabulary_entries.clone(),
+            }
+            .normalized()
+            .map_err(|error| {
+                invalid_input(&format!("{} invalid vocabulary entries: {error}", case.id))
+            })?,
+        )
+    };
+
+    Ok(build_decode_hints(
         title,
         calendar_event_title,
         pre_context,
         attendees,
         identity_for_hints,
+        vocabulary_store.as_ref(),
     )
-    .with_additional_candidates(extra_priority_hints, extra_context_hints)
+    .with_additional_candidates(extra_priority_hints, extra_context_hints))
 }
 
 fn transcribe_case(
@@ -1033,12 +1063,13 @@ fn transcribe_case(
     config: &Config,
     hints: &DecodeHints,
 ) -> Result<transcribe::TranscribeResult> {
+    let (_clip_dir, audio_path) = materialize_eval_audio_path(case)?;
     let mut result = match case.content_type {
         ContentType::Meeting => {
-            transcribe::transcribe_meeting_with_hints(&case.audio_path, config, hints)
+            transcribe::transcribe_meeting_with_hints(&audio_path, config, hints)
                 .map_err(MinutesError::from)
         }
-        _ => transcribe::transcribe_with_hints(&case.audio_path, config, hints)
+        _ => transcribe::transcribe_with_hints(&audio_path, config, hints)
             .map_err(MinutesError::from),
     }?;
 
@@ -1051,6 +1082,69 @@ fn transcribe_case(
     }
 
     Ok(result)
+}
+
+fn materialize_eval_audio_path(
+    case: &DecodeHintEvalCase,
+) -> Result<(Option<tempfile::TempDir>, PathBuf)> {
+    if case.audio_start_secs.is_none() && case.audio_duration_secs.is_none() {
+        return Ok((None, case.audio_path.clone()));
+    }
+
+    let start_secs = case.audio_start_secs.unwrap_or(0.0);
+    if !start_secs.is_finite() || start_secs < 0.0 {
+        return Err(invalid_input(&format!(
+            "{} audio_start_secs must be finite and non-negative",
+            case.id
+        )));
+    }
+    let Some(duration_secs) = case.audio_duration_secs else {
+        return Err(invalid_input(&format!(
+            "{} audio_duration_secs is required when clipping eval audio",
+            case.id
+        )));
+    };
+    if !duration_secs.is_finite() || duration_secs <= 0.0 {
+        return Err(invalid_input(&format!(
+            "{} audio_duration_secs must be finite and positive",
+            case.id
+        )));
+    }
+
+    let dir = tempfile::Builder::new()
+        .prefix("minutes-decode-hint-eval-")
+        .tempdir()?;
+    let output = dir.path().join("clip.wav");
+    let ffmpeg = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-ss")
+        .arg(format!("{start_secs:.3}"))
+        .arg("-t")
+        .arg(format!("{duration_secs:.3}"))
+        .arg("-i")
+        .arg(&case.audio_path)
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg(&output)
+        .output();
+
+    match ffmpeg {
+        Ok(result) if result.status.success() => Ok((Some(dir), output)),
+        Ok(result) => Err(MinutesError::Io(std::io::Error::other(format!(
+            "{} ffmpeg clip extraction failed: {}",
+            case.id,
+            String::from_utf8_lossy(&result.stderr).trim()
+        )))),
+        Err(error) => Err(MinutesError::Io(std::io::Error::new(
+            error.kind(),
+            format!("{} could not run ffmpeg for eval clip: {}", case.id, error),
+        ))),
+    }
 }
 
 fn eval_text_for_compare(text: &str) -> String {
@@ -1161,11 +1255,13 @@ mod tests {
                     wer: 0.12,
                     focus_hits: vec!["alex chen".into()],
                     forbidden_hits: vec![],
+                    text: "alex chen baseline".into(),
                 },
                 candidate: DecodeHintEvalTranscriptMetrics {
                     wer: 0.151,
                     focus_hits: vec!["alex chen".into()],
                     forbidden_hits: vec!["matt mullenweg".into()],
+                    text: "alex chen matt mullenweg candidate".into(),
                 },
                 delta_wer: 0.031,
                 max_wer_regression: Some(0.02),
@@ -1208,11 +1304,13 @@ mod tests {
                     wer: 0.12,
                     focus_hits: vec![],
                     forbidden_hits: vec![],
+                    text: "baseline".into(),
                 },
                 candidate: DecodeHintEvalTranscriptMetrics {
                     wer: 0.12,
                     focus_hits: vec!["pdf toolkit".into()],
                     forbidden_hits: vec![],
+                    text: "pdf toolkit candidate".into(),
                 },
                 delta_wer: 0.0,
                 max_wer_regression: Some(0.02),
@@ -1231,6 +1329,8 @@ mod tests {
         DecodeHintEvalCase {
             id: "case-1".into(),
             audio_path: PathBuf::from("/tmp/audio.wav"),
+            audio_start_secs: None,
+            audio_duration_secs: None,
             content_type: ContentType::Meeting,
             reference_text: "reference".into(),
             reference_path: None,
@@ -1239,6 +1339,7 @@ mod tests {
             pre_context: Some("Asana migration with Box".into()),
             extra_priority_hints: vec!["Casey Rowan".into()],
             extra_context_hints: vec!["Northstar Studio".into()],
+            vocabulary_entries: vec![],
             attendees: vec!["mat@example.com".into(), "alex.chen@example.com".into()],
             identity_name: Some("Mat".into()),
             identity_aliases: vec!["Mathieu".into(), "Matthew".into()],
@@ -1281,7 +1382,7 @@ mod tests {
         whisper_config.identity.name = Some("Mat".into());
         whisper_config.identity.aliases = vec!["Mathieu".into(), "Matthew".into()];
 
-        let full = build_eval_case_hints(&sample_eval_case(), &whisper_config);
+        let full = build_eval_case_hints(&sample_eval_case(), &whisper_config).unwrap();
         assert!(full.debug_priority_phrases().iter().any(|v| v == "Mat"));
         assert!(full
             .debug_priority_phrases()
@@ -1306,13 +1407,14 @@ mod tests {
         ablated.disable_context_hints = true;
         ablated.disable_extra_priority_hints = true;
         ablated.disable_extra_context_hints = true;
-        let suppressed = build_eval_case_hints(&ablated, &whisper_config);
+        let suppressed = build_eval_case_hints(&ablated, &whisper_config).unwrap();
         assert!(suppressed.debug_priority_phrases().is_empty());
         assert!(suppressed.debug_contextual_phrases().is_empty());
 
         let mut parakeet_config = whisper_config.clone();
         parakeet_config.transcription.engine = "parakeet".into();
-        let parakeet_default = build_eval_case_hints(&sample_eval_case(), &parakeet_config);
+        let parakeet_default =
+            build_eval_case_hints(&sample_eval_case(), &parakeet_config).unwrap();
         assert!(!parakeet_default
             .debug_priority_phrases()
             .iter()
@@ -1324,11 +1426,27 @@ mod tests {
 
         let mut forced = sample_eval_case();
         forced.force_extra_context_hints_for_decode = true;
-        let forced_hints = build_eval_case_hints(&forced, &parakeet_config);
+        let forced_hints = build_eval_case_hints(&forced, &parakeet_config).unwrap();
         assert!(forced_hints
             .debug_contextual_phrases()
             .iter()
             .any(|v| v == "Northstar Studio"));
+
+        let mut vocabulary_case = sample_eval_case();
+        vocabulary_case
+            .vocabulary_entries
+            .push(crate::vocabulary::VocabularyEntry {
+                kind: crate::vocabulary::VocabularyKind::Organization,
+                canonical: "Automattic".into(),
+                aliases: vec!["Automatic".into()],
+                priority: crate::vocabulary::VocabularyPriority::High,
+                ..crate::vocabulary::VocabularyEntry::default()
+            });
+        let vocabulary_hints = build_eval_case_hints(&vocabulary_case, &whisper_config).unwrap();
+        assert!(vocabulary_hints
+            .debug_priority_phrases()
+            .iter()
+            .any(|v| v == "Automattic"));
     }
 
     #[test]

@@ -450,6 +450,7 @@ fn search_list(
                 date: r.get(2)?,
                 content_type: r.get(3)?,
                 snippet: String::new(),
+                matched_via_alias: None,
             })
         })?
         .filter_map(|r| r.ok())
@@ -515,6 +516,7 @@ fn search_match(
                 date: r.get(2)?,
                 content_type: r.get(3)?,
                 snippet: snip,
+                matched_via_alias: None,
             })
         })?
         .filter_map(|r| r.ok())

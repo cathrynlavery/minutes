@@ -471,6 +471,12 @@ enum Commands {
         limit: usize,
     },
 
+    /// Manage local names and terms used for future transcripts, search, and graph canonicalization
+    Vocabulary {
+        #[command(subcommand)]
+        action: VocabularyAction,
+    },
+
     /// List open and stale commitments from the conversation graph
     Commitments {
         /// Filter by person name or slug
@@ -954,6 +960,57 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum VocabularyAction {
+    /// List local vocabulary entries
+    List {
+        /// Output raw JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add a local vocabulary entry or alias
+    Add {
+        /// Entry kind
+        #[arg(long, default_value = "term", value_parser = ["person", "organization", "project", "term", "acronym"])]
+        kind: String,
+
+        /// Canonical spelling to prefer
+        canonical: String,
+
+        /// Alias or common misrecognition. Repeat for multiple aliases.
+        #[arg(long = "alias")]
+        aliases: Vec<String>,
+
+        /// Output raw JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a vocabulary entry by id
+    Remove {
+        /// Entry id from `minutes vocabulary list`
+        id: String,
+
+        /// Output raw JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Suggest vocabulary entries from a meeting file
+    Suggest {
+        /// Meeting markdown file to inspect
+        meeting: PathBuf,
+
+        /// Output raw JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rebuild derived indexes that use vocabulary
+    Rebuild {
+        /// Output raw JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum VaultAction {
     /// Detect vaults and set up sync
     Setup {
@@ -1353,6 +1410,7 @@ fn main() -> Result<()> {
             json,
             limit,
         } => cmd_people(rebuild, json, limit, &config),
+        Commands::Vocabulary { action } => cmd_vocabulary(action, &config),
         Commands::Commitments { person, json } => cmd_commitments(person.as_deref(), json, &config),
         Commands::Research {
             query,
@@ -2897,6 +2955,412 @@ fn cmd_people(rebuild: bool, json: bool, limit: usize, config: &Config) -> Resul
     // Print JSON to stdout for programmatic consumption
     println!("{}", serde_json::to_string_pretty(&people)?);
     Ok(())
+}
+
+#[derive(Serialize)]
+struct VocabularyMutationOutput {
+    path: String,
+    entries: Vec<minutes_core::vocabulary::VocabularyEntry>,
+    note: String,
+}
+
+#[derive(Serialize)]
+struct VocabularyRemoveOutput {
+    path: String,
+    removed: bool,
+    entries: Vec<minutes_core::vocabulary::VocabularyEntry>,
+}
+
+#[derive(Serialize)]
+struct VocabularySuggestion {
+    canonical: String,
+    kind: String,
+    aliases: Vec<String>,
+    reason: String,
+    count: usize,
+}
+
+fn cmd_vocabulary(action: VocabularyAction, config: &Config) -> Result<()> {
+    match action {
+        VocabularyAction::List { json } => cmd_vocabulary_list(json),
+        VocabularyAction::Add {
+            kind,
+            canonical,
+            aliases,
+            json,
+        } => cmd_vocabulary_add(&kind, &canonical, aliases, json),
+        VocabularyAction::Remove { id, json } => cmd_vocabulary_remove(&id, json),
+        VocabularyAction::Suggest { meeting, json } => cmd_vocabulary_suggest(&meeting, json),
+        VocabularyAction::Rebuild { json } => cmd_vocabulary_rebuild(json, config),
+    }
+}
+
+fn cmd_vocabulary_list(json: bool) -> Result<()> {
+    let path = minutes_core::vocabulary::default_path();
+    let store = minutes_core::vocabulary::load().map_err(|e| anyhow::anyhow!("{}", e))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&store)?);
+        return Ok(());
+    }
+
+    if store.entries.is_empty() {
+        eprintln!("No vocabulary entries yet.");
+        eprintln!(
+            "Add one with: minutes vocabulary add --kind person \"Elijah Potter\" --alias Elijah"
+        );
+        eprintln!("Vocabulary file: {}", path.display());
+        return Ok(());
+    }
+
+    eprintln!("Vocabulary entries ({}):", store.entries.len());
+    for entry in &store.entries {
+        let aliases = if entry.aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" aliases: {}", entry.aliases.join(", "))
+        };
+        eprintln!(
+            "  {} [{}] {}{}",
+            entry.id,
+            vocabulary_kind_label(entry.kind),
+            entry.canonical,
+            aliases
+        );
+    }
+    eprintln!("Vocabulary file: {}", path.display());
+    Ok(())
+}
+
+fn cmd_vocabulary_add(kind: &str, canonical: &str, aliases: Vec<String>, json: bool) -> Result<()> {
+    let path = minutes_core::vocabulary::default_path();
+    let mut store = minutes_core::vocabulary::load().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let now = Local::now().to_rfc3339();
+    store
+        .entries
+        .push(minutes_core::vocabulary::VocabularyEntry {
+            kind: parse_vocabulary_kind(kind)?,
+            canonical: canonical.to_string(),
+            aliases,
+            priority: minutes_core::vocabulary::VocabularyPriority::Normal,
+            source: minutes_core::vocabulary::VocabularySource::Manual,
+            created_at: Some(now.clone()),
+            updated_at: Some(now),
+            ..minutes_core::vocabulary::VocabularyEntry::default()
+        });
+    let store = store.normalized().map_err(|e| anyhow::anyhow!("{}", e))?;
+    minutes_core::vocabulary::save_at(&path, &store).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let output = VocabularyMutationOutput {
+        path: path.display().to_string(),
+        entries: store.entries,
+        note: "Saved. Future transcripts, search, and graph rebuilds can use this vocabulary; existing raw transcripts stay unchanged.".into(),
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        eprintln!("Saved vocabulary entry for \"{}\".", canonical.trim());
+        eprintln!("Future transcripts/search/graph rebuilds can use it.");
+        eprintln!("Existing raw transcripts stay unchanged.");
+    }
+    Ok(())
+}
+
+fn cmd_vocabulary_remove(id: &str, json: bool) -> Result<()> {
+    let path = minutes_core::vocabulary::default_path();
+    let mut store = minutes_core::vocabulary::load().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let before = store.entries.len();
+    store.entries.retain(|entry| entry.id != id);
+    let removed = store.entries.len() != before;
+    let store = store.normalized().map_err(|e| anyhow::anyhow!("{}", e))?;
+    minutes_core::vocabulary::save_at(&path, &store).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let output = VocabularyRemoveOutput {
+        path: path.display().to_string(),
+        removed,
+        entries: store.entries,
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if removed {
+        eprintln!("Removed vocabulary entry: {}", id);
+        eprintln!("Existing raw transcripts stay unchanged.");
+    } else {
+        eprintln!("No vocabulary entry found with id: {}", id);
+    }
+    Ok(())
+}
+
+fn cmd_vocabulary_suggest(meeting: &Path, json: bool) -> Result<()> {
+    let content = std::fs::read_to_string(meeting)
+        .map_err(|e| anyhow::anyhow!("could not read {}: {}", meeting.display(), e))?;
+    let (frontmatter, body) = minutes_core::markdown::split_frontmatter(&content);
+    let store = minutes_core::vocabulary::load().unwrap_or_default();
+    let suggestions = vocabulary_suggestions_from_meeting(frontmatter, body, &store);
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&suggestions)?);
+        return Ok(());
+    }
+
+    if suggestions.is_empty() {
+        eprintln!("No vocabulary suggestions found for {}.", meeting.display());
+        return Ok(());
+    }
+
+    eprintln!("Vocabulary suggestions for {}:", meeting.display());
+    for suggestion in &suggestions {
+        eprintln!(
+            "  {} [{}] — {} (count: {})",
+            suggestion.canonical, suggestion.kind, suggestion.reason, suggestion.count
+        );
+    }
+    eprintln!("Suggestions are not applied automatically. Add one with:");
+    eprintln!("  minutes vocabulary add --kind person \"Name\" --alias Alias");
+    Ok(())
+}
+
+fn cmd_vocabulary_rebuild(json: bool, config: &Config) -> Result<()> {
+    let stats = minutes_core::graph::rebuild_index(config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&stats)?);
+    } else {
+        eprintln!(
+            "Rebuilt graph with vocabulary context: {} people, {} meetings, {} commitments in {}ms",
+            stats.people_count, stats.meeting_count, stats.commitment_count, stats.rebuild_ms
+        );
+        eprintln!("Existing raw transcripts stay unchanged.");
+    }
+    Ok(())
+}
+
+fn vocabulary_suggestions_from_meeting(
+    frontmatter: &str,
+    body: &str,
+    store: &minutes_core::vocabulary::VocabularyStore,
+) -> Vec<VocabularySuggestion> {
+    let mut known = std::collections::HashSet::new();
+    for entry in &store.entries {
+        for form in entry.surface_forms() {
+            known.insert(vocabulary_key(&form));
+        }
+    }
+
+    let mut suggestions = Vec::new();
+    if let Ok(frontmatter) =
+        serde_yaml::from_str::<minutes_core::markdown::Frontmatter>(frontmatter)
+    {
+        for attendee in frontmatter.normalized_attendees() {
+            let canonical = clean_vocabulary_attendee_suggestion(&attendee);
+            if canonical.is_empty() || !known.insert(vocabulary_key(&canonical)) {
+                continue;
+            }
+            suggestions.push(VocabularySuggestion {
+                canonical: canonical.clone(),
+                kind: "person".into(),
+                aliases: vec![],
+                reason: "attendee not in vocabulary".into(),
+                count: 1,
+            });
+            for token in canonical.split_whitespace() {
+                known.insert(vocabulary_key(token));
+            }
+        }
+    }
+
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for phrase in proper_noun_phrases(body) {
+        if known.contains(&vocabulary_key(&phrase)) {
+            continue;
+        }
+        *counts.entry(phrase).or_default() += 1;
+    }
+
+    let mut repeated = counts
+        .into_iter()
+        .filter(|(phrase, count)| *count >= 2 && phrase.len() >= 4)
+        .collect::<Vec<_>>();
+    repeated.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    for (phrase, count) in repeated.into_iter().take(10) {
+        suggestions.push(VocabularySuggestion {
+            canonical: phrase,
+            kind: "term".into(),
+            aliases: vec![],
+            reason: "repeated capitalized phrase in transcript".into(),
+            count,
+        });
+    }
+
+    suggestions.truncate(20);
+    suggestions
+}
+
+fn proper_noun_phrases(body: &str) -> Vec<String> {
+    let mut phrases = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+        {
+            continue;
+        }
+
+        for sentence in trimmed.split(['.', '!', '?', ';', ':']) {
+            let mut current = Vec::new();
+            for (index, token) in sentence.split_whitespace().enumerate() {
+                let cleaned = token.trim_matches(|c: char| !c.is_alphanumeric());
+                let looks_like_nameish = cleaned.len() >= 2
+                    && cleaned.chars().next().is_some_and(|ch| ch.is_uppercase())
+                    && !cleaned.chars().all(|ch| ch.is_uppercase())
+                    && !is_vocabulary_noise_token(cleaned)
+                    && !is_vocabulary_sentence_starter(cleaned, index);
+
+                if looks_like_nameish {
+                    current.push(cleaned.to_string());
+                    continue;
+                }
+
+                if !current.is_empty() {
+                    phrases.push(current.join(" "));
+                    current.clear();
+                }
+            }
+            if !current.is_empty() {
+                phrases.push(current.join(" "));
+            }
+        }
+    }
+    phrases
+}
+
+fn clean_vocabulary_attendee_suggestion(value: &str) -> String {
+    let without_parenthetical = value
+        .split_once(" (")
+        .map(|(name, _)| name)
+        .unwrap_or(value)
+        .trim();
+    without_parenthetical
+        .trim_matches(|c: char| c == '-' || c == ',' || c == ';')
+        .trim()
+        .to_string()
+}
+
+fn is_vocabulary_noise_token(token: &str) -> bool {
+    token.starts_with("SPEAKER_")
+        || matches!(
+            token,
+            "Actually"
+                | "Absolutely"
+                | "Awesome"
+                | "Basically"
+                | "Because"
+                | "Cool"
+                | "Does"
+                | "Exactly"
+                | "Friday"
+                | "Good"
+                | "Great"
+                | "Have"
+                | "Hello"
+                | "He's"
+                | "Hey"
+                | "I"
+                | "I'll"
+                | "I'm"
+                | "I've"
+                | "It's"
+                | "Let's"
+                | "Like"
+                | "Make"
+                | "Monday"
+                | "No"
+                | "Okay"
+                | "Right"
+                | "Saturday"
+                | "She's"
+                | "Sunday"
+                | "Sure"
+                | "They"
+                | "Thanks"
+                | "Thank"
+                | "That"
+                | "That's"
+                | "There"
+                | "There's"
+                | "Then"
+                | "Thursday"
+                | "Tuesday"
+                | "This"
+                | "Totally"
+                | "Wednesday"
+                | "Well"
+                | "We're"
+                | "What"
+                | "Why"
+                | "Your"
+                | "Yeah"
+                | "Yep"
+                | "You're"
+        )
+}
+
+fn is_vocabulary_sentence_starter(token: &str, index: usize) -> bool {
+    index == 0
+        && matches!(
+            token,
+            "A" | "An"
+                | "And"
+                | "But"
+                | "I"
+                | "It"
+                | "Later"
+                | "Meeting"
+                | "Next"
+                | "So"
+                | "That"
+                | "The"
+                | "Then"
+                | "These"
+                | "This"
+                | "Today"
+                | "Tomorrow"
+                | "Transcript"
+                | "We"
+                | "Yesterday"
+        )
+}
+
+fn parse_vocabulary_kind(kind: &str) -> Result<minutes_core::vocabulary::VocabularyKind> {
+    match kind {
+        "person" => Ok(minutes_core::vocabulary::VocabularyKind::Person),
+        "organization" => Ok(minutes_core::vocabulary::VocabularyKind::Organization),
+        "project" => Ok(minutes_core::vocabulary::VocabularyKind::Project),
+        "term" => Ok(minutes_core::vocabulary::VocabularyKind::Term),
+        "acronym" => Ok(minutes_core::vocabulary::VocabularyKind::Acronym),
+        other => Err(anyhow::anyhow!("unknown vocabulary kind: {}", other)),
+    }
+}
+
+fn vocabulary_kind_label(kind: minutes_core::vocabulary::VocabularyKind) -> &'static str {
+    match kind {
+        minutes_core::vocabulary::VocabularyKind::Person => "person",
+        minutes_core::vocabulary::VocabularyKind::Organization => "organization",
+        minutes_core::vocabulary::VocabularyKind::Project => "project",
+        minutes_core::vocabulary::VocabularyKind::Term => "term",
+        minutes_core::vocabulary::VocabularyKind::Acronym => "acronym",
+    }
+}
+
+fn vocabulary_key(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase()
 }
 
 fn cmd_commitments(person: Option<&str>, json: bool, config: &Config) -> Result<()> {

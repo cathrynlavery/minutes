@@ -2,6 +2,8 @@
   {
     "id": "self-intro-parakeet",
     "audio_path": "/absolute/path/to/self-intro-parakeet.wav",
+    "audio_start_secs": 0,
+    "audio_duration_secs": 30,
     "content_type": "meeting",
     "engine": "parakeet",
     "parakeet_boost_score_override": 4.0,
@@ -14,6 +16,16 @@
     ],
     "extra_context_hints": [
       "X1 Planning"
+    ],
+    "vocabulary_entries": [
+      {
+        "kind": "project",
+        "canonical": "X1 Planning",
+        "aliases": [
+          "X One Planning"
+        ],
+        "priority": "high"
+      }
     ],
     "attendees": [
       "mat@example.com",

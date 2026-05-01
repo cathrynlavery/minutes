@@ -46,6 +46,8 @@ pub struct SearchResult {
     pub date: String,
     pub content_type: String,
     pub snippet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_via_alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -542,6 +544,16 @@ pub fn search_with_mode(
     filters: &SearchFilters,
     mode: crate::search_index::SyncMode,
 ) -> Result<Vec<SearchResult>, SearchError> {
+    search_with_mode_and_vocabulary(query, config, filters, mode, None)
+}
+
+fn search_with_mode_and_vocabulary(
+    query: &str,
+    config: &Config,
+    filters: &SearchFilters,
+    mode: crate::search_index::SyncMode,
+    vocabulary_override: Option<&crate::vocabulary::VocabularyStore>,
+) -> Result<Vec<SearchResult>, SearchError> {
     let dir = &config.output_dir;
     if !dir.exists() {
         return Err(SearchError::DirNotFound(dir.display().to_string()));
@@ -558,7 +570,86 @@ pub fn search_with_mode(
             "search index sync"
         );
     }
-    Ok(index.search(query, filters, None)?)
+
+    let expansions = vocabulary_search_expansions(query, vocabulary_override);
+    if expansions.len() <= 1 {
+        return Ok(index.search(query, filters, None)?);
+    }
+
+    let original_key = search_expansion_key(query);
+    let mut merged = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    for expansion in expansions {
+        let expansion_key = search_expansion_key(&expansion);
+        for mut result in index.search(&expansion, filters, None)? {
+            if !seen_paths.insert(result.path.clone()) {
+                continue;
+            }
+            if expansion_key != original_key {
+                result.matched_via_alias = Some(expansion.clone());
+            }
+            merged.push(result);
+        }
+    }
+
+    Ok(merged)
+}
+
+fn vocabulary_search_expansions(
+    query: &str,
+    vocabulary_override: Option<&crate::vocabulary::VocabularyStore>,
+) -> Vec<String> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut expansions = vocabulary_override
+        .map(|store| store.search_expansions(query))
+        .unwrap_or_else(|| {
+            crate::vocabulary::load()
+                .map(|store| store.search_expansions(query))
+                .unwrap_or_else(|error| {
+                    tracing::debug!(error = %error, "could not load vocabulary for search expansion");
+                    Vec::new()
+                })
+        });
+
+    if expansions.is_empty() {
+        expansions.push(query.trim().to_string());
+    } else if !expansions
+        .iter()
+        .any(|candidate| search_expansion_key(candidate) == search_expansion_key(query))
+    {
+        expansions.insert(0, query.trim().to_string());
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    expansions
+        .into_iter()
+        .filter_map(|candidate| {
+            let trimmed = candidate.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let key = search_expansion_key(trimmed);
+            if seen.insert(key) {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        })
+        .take(8)
+        .collect()
+}
+
+fn search_expansion_key(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_ascii_lowercase()
 }
 
 /// Search structured intents across all markdown files in the meetings directory.
@@ -1012,6 +1103,7 @@ fn process_file(
             date,
             content_type,
             snippet,
+            matched_via_alias: None,
         }))
     } else {
         Ok(None)
@@ -1363,6 +1455,51 @@ mod tests {
 
         let results = search("pricing", &config, &filters).unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_expands_vocabulary_aliases_with_provenance() {
+        let _guard = crate::test_home_env_lock();
+        let home = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var("USERPROFILE", home.path());
+        }
+
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            dir.path(),
+            "test.md",
+            "---\ntitle: Writing Tools\ndate: 2026-05-01\ntype: meeting\n---\n\nWe discussed Automatic and Harper.",
+        );
+
+        let config = Config {
+            output_dir: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let filters = SearchFilters::default();
+        let vocabulary = crate::vocabulary::VocabularyStore {
+            entries: vec![crate::vocabulary::VocabularyEntry {
+                kind: crate::vocabulary::VocabularyKind::Organization,
+                canonical: "Automattic".into(),
+                aliases: vec!["Automatic".into()],
+                ..crate::vocabulary::VocabularyEntry::default()
+            }],
+        }
+        .normalized()
+        .unwrap();
+
+        let results = search_with_mode_and_vocabulary(
+            "Automattic",
+            &config,
+            &filters,
+            crate::search_index::SyncMode::Force,
+            Some(&vocabulary),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].matched_via_alias.as_deref(), Some("Automatic"));
     }
 
     #[test]
