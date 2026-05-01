@@ -8000,7 +8000,7 @@
     function assistantAgentPlaceholder(agent) {
       if (agent === 'claude') return 'e.g. --model sonnet';
       if (agent === 'codex') return 'e.g. --model gpt-5-codex';
-      if (agent === 'opencode') return 'e.g. --model openai/gpt-5.4';
+      if (agent === 'opencode') return 'e.g. --model openai/gpt-5.5';
       if (agent === 'pi') return 'optional; leave blank to use Pi /model';
       if (agent === 'gemini') return 'e.g. --model gemini-2.5-pro';
       return 'e.g. --model <provider/model>';
@@ -8042,7 +8042,7 @@
       if (removedUnsupportedBypass) {
         argsHelp.textContent = 'Removed an approval-bypass flag that does not match the selected agent.';
       } else if (agent === 'opencode') {
-        argsHelp.textContent = 'OpenCode works best with provider/model flags like --model openai/gpt-5.4.';
+        argsHelp.textContent = 'OpenCode works best with provider/model flags like --model openai/gpt-5.5.';
       } else if (agent === 'pi') {
         argsHelp.textContent = 'Pi uses its own /login and /model settings. If GitHub Copilot reports that personal access tokens are unsupported, refresh Pi auth with /login instead of adding a PAT here.';
       } else if (agent === 'codex') {
