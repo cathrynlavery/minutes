@@ -247,18 +247,20 @@
       flex-direction: column;
       overflow: hidden;
       background: var(--bg);
-      border-right: 1px solid var(--surface-stroke-subtle);
+      border-right: none;
     }
 
     /* ── Drag handle between panes ── */
     .split-handle {
       display: none;
-      width: 9px;
+      width: 1px;
+      padding: 0 6px;
+      margin: 0 -6px;
       cursor: col-resize;
       background: transparent;
       flex-shrink: 0;
       position: relative;
-      z-index: 10;
+      z-index: 20;
     }
 
     .split-handle::after {
@@ -272,14 +274,14 @@
       height: auto;
       border-radius: 0;
       background: var(--surface-stroke-subtle);
-      opacity: 0.45;
-      transition: background 150ms ease, height 150ms ease;
+      opacity: 0.12;
+      transition: background 150ms ease, opacity 150ms ease;
     }
 
     .split-handle:hover::after,
     .split-handle.dragging::after {
       background: var(--text-tertiary);
-      opacity: 0.65;
+      opacity: 0.5;
     }
 
     .split-handle.visible {
