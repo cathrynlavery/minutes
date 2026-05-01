@@ -111,6 +111,10 @@ pub struct AppleSpeechBenchmarkCase {
     pub reference_text: String,
     #[serde(default)]
     pub reference_path: Option<PathBuf>,
+    #[serde(default)]
+    pub required_terms: Vec<String>,
+    #[serde(default)]
+    pub forbidden_terms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +132,10 @@ pub struct AppleSpeechBackendBenchmark {
     pub has_timestamps: bool,
     pub wer: Option<f64>,
     pub wer_punct_insensitive: Option<f64>,
+    pub punctuation_wer_delta: Option<f64>,
+    pub required_terms_present: Vec<String>,
+    pub required_terms_missing: Vec<String>,
+    pub forbidden_terms_found: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -525,7 +533,7 @@ pub fn render_benchmark_summary(report: &AppleSpeechBenchmarkReport) -> String {
             case.locale
         ));
         lines.push(format!(
-            "  speech: {} / {} ms / WER {} / WER no-punct {}",
+            "  speech: {} / {} ms / WER {} / WER no-punct {}{}",
             case.speech_transcriber.status,
             case.speech_transcriber
                 .total_elapsed_ms
@@ -537,9 +545,10 @@ pub fn render_benchmark_summary(report: &AppleSpeechBenchmarkReport) -> String {
                     .wer_punct_insensitive
                     .map(|value| value * 100.0)
             ),
+            term_quality_suffix(&case.speech_transcriber),
         ));
         lines.push(format!(
-            "  dictation: {} / {} ms / WER {} / WER no-punct {}",
+            "  dictation: {} / {} ms / WER {} / WER no-punct {}{}",
             case.dictation_transcriber.status,
             case.dictation_transcriber
                 .total_elapsed_ms
@@ -551,9 +560,10 @@ pub fn render_benchmark_summary(report: &AppleSpeechBenchmarkReport) -> String {
                     .wer_punct_insensitive
                     .map(|value| value * 100.0)
             ),
+            term_quality_suffix(&case.dictation_transcriber),
         ));
         lines.push(format!(
-            "  whisper: {} / {} ms / WER {} / WER no-punct {}",
+            "  whisper: {} / {} ms / WER {} / WER no-punct {}{}",
             case.whisper.status,
             case.whisper
                 .total_elapsed_ms
@@ -565,9 +575,10 @@ pub fn render_benchmark_summary(report: &AppleSpeechBenchmarkReport) -> String {
                     .wer_punct_insensitive
                     .map(|value| value * 100.0)
             ),
+            term_quality_suffix(&case.whisper),
         ));
         lines.push(format!(
-            "  parakeet: {} / {} ms / WER {} / WER no-punct {}",
+            "  parakeet: {} / {} ms / WER {} / WER no-punct {}{}",
             case.parakeet.status,
             case.parakeet
                 .total_elapsed_ms
@@ -579,6 +590,7 @@ pub fn render_benchmark_summary(report: &AppleSpeechBenchmarkReport) -> String {
                     .wer_punct_insensitive
                     .map(|value| value * 100.0)
             ),
+            term_quality_suffix(&case.parakeet),
         ));
     }
     lines.push(String::new());
@@ -592,6 +604,27 @@ pub fn render_benchmark_summary(report: &AppleSpeechBenchmarkReport) -> String {
 
 fn default_eval_content_type() -> ContentType {
     ContentType::Meeting
+}
+
+fn term_quality_suffix(result: &AppleSpeechBackendBenchmark) -> String {
+    let mut parts = Vec::new();
+    if !result.required_terms_missing.is_empty() {
+        parts.push(format!(
+            "missing required: {}",
+            result.required_terms_missing.join(", ")
+        ));
+    }
+    if !result.forbidden_terms_found.is_empty() {
+        parts.push(format!(
+            "forbidden: {}",
+            result.forbidden_terms_found.join(", ")
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", parts.join("; "))
+    }
 }
 
 fn aggregate_metrics(
@@ -734,6 +767,10 @@ fn benchmark_apple_mode(
         wer: reference_text.map(|reference| word_error_rate(reference, &selected.transcript)),
         wer_punct_insensitive: reference_text
             .map(|reference| word_error_rate_punct_insensitive(reference, &selected.transcript)),
+        punctuation_wer_delta: punctuation_wer_delta(reference_text, &selected.transcript),
+        required_terms_present: present_terms(&selected.transcript, &case.required_terms),
+        required_terms_missing: missing_terms(&selected.transcript, &case.required_terms),
+        forbidden_terms_found: present_terms(&selected.transcript, &case.forbidden_terms),
         error: selected.error.clone(),
     })
 }
@@ -770,6 +807,10 @@ fn benchmark_minutes_backend(
             wer: reference_text.map(|reference| word_error_rate(reference, &result.text)),
             wer_punct_insensitive: reference_text
                 .map(|reference| word_error_rate_punct_insensitive(reference, &result.text)),
+            punctuation_wer_delta: punctuation_wer_delta(reference_text, &result.text),
+            required_terms_present: present_terms(&result.text, &case.required_terms),
+            required_terms_missing: missing_terms(&result.text, &case.required_terms),
+            forbidden_terms_found: present_terms(&result.text, &case.forbidden_terms),
             error: None,
         },
         Err(error) => {
@@ -795,6 +836,10 @@ fn benchmark_minutes_backend(
                 has_timestamps: false,
                 wer: None,
                 wer_punct_insensitive: None,
+                punctuation_wer_delta: None,
+                required_terms_present: vec![],
+                required_terms_missing: case.required_terms.clone(),
+                forbidden_terms_found: vec![],
                 error: Some(error.to_string()),
             }
         }
@@ -906,6 +951,31 @@ fn word_error_rate_punct_insensitive(reference: &str, hypothesis: &str) -> f64 {
     }
 
     dp[reference_words.len()][hypothesis_words.len()] as f64 / reference_words.len() as f64
+}
+
+fn punctuation_wer_delta(reference_text: Option<&str>, hypothesis: &str) -> Option<f64> {
+    reference_text.map(|reference| {
+        word_error_rate(reference, hypothesis)
+            - word_error_rate_punct_insensitive(reference, hypothesis)
+    })
+}
+
+fn present_terms(text: &str, terms: &[String]) -> Vec<String> {
+    let lower = text.to_lowercase();
+    terms
+        .iter()
+        .filter(|term| lower.contains(&term.to_lowercase()))
+        .cloned()
+        .collect()
+}
+
+fn missing_terms(text: &str, terms: &[String]) -> Vec<String> {
+    let lower = text.to_lowercase();
+    terms
+        .iter()
+        .filter(|term| !lower.contains(&term.to_lowercase()))
+        .cloned()
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -1127,7 +1197,9 @@ mod tests {
                 {
                     "id": "case-2",
                     "audioPath": absolute_audio,
-                    "contentType": "dictation"
+                    "contentType": "dictation",
+                    "requiredTerms": ["Minutes"],
+                    "forbiddenTerms": ["Matt Mullenweg"]
                 }
             ])
             .to_string(),
@@ -1145,6 +1217,8 @@ mod tests {
             Some(corpus_dir.join(Path::new("refs").join("sample.txt")))
         );
         assert_eq!(cases[1].audio_path, absolute_audio);
+        assert_eq!(cases[1].required_terms, vec!["Minutes"]);
+        assert_eq!(cases[1].forbidden_terms, vec!["Matt Mullenweg"]);
     }
 
     #[test]
@@ -1156,5 +1230,16 @@ mod tests {
         let punct_insensitive = word_error_rate_punct_insensitive(reference, hypothesis);
         assert!(punct_sensitive > punct_insensitive);
         assert_eq!(punct_insensitive, 0.0);
+    }
+
+    #[test]
+    fn term_quality_helpers_find_missing_and_forbidden_terms() {
+        let text = "Minutes benchmark dictation check mentions Harper.";
+        let required = vec!["Minutes".into(), "Apple Speech".into()];
+        let forbidden = vec!["Matt Mullenweg".into(), "Harper".into()];
+
+        assert_eq!(present_terms(text, &required), vec!["Minutes"]);
+        assert_eq!(missing_terms(text, &required), vec!["Apple Speech"]);
+        assert_eq!(present_terms(text, &forbidden), vec!["Harper"]);
     }
 }
