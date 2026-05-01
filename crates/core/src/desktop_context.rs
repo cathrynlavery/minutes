@@ -769,7 +769,7 @@ mod platform {
                     | ATSPI_ROLE_WINDOW
                     | ATSPI_ROLE_DOCUMENT_FRAME
             );
-            let is_active = states.iter().any(|state| *state == ATSPI_STATE_ACTIVE);
+            let is_active = states.contains(&ATSPI_STATE_ACTIVE);
 
             if is_top_level_window && is_active {
                 let window_title = proxy

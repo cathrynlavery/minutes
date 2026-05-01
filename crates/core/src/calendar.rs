@@ -158,7 +158,7 @@ pub fn upcoming_events(lookahead_minutes: u32) -> Vec<CalendarEvent> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = lookahead_minutes;
-        return Vec::new();
+        Vec::new()
     }
     #[cfg(target_os = "macos")]
     {
@@ -210,7 +210,7 @@ pub fn events_overlapping(at: DateTime<Local>) -> Vec<CalendarEvent> {
 pub fn events_overlapping_now() -> Vec<CalendarEvent> {
     #[cfg(not(target_os = "macos"))]
     {
-        return Vec::new();
+        Vec::new()
     }
     #[cfg(target_os = "macos")]
     {
