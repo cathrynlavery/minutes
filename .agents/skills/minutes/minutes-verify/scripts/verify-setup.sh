@@ -86,9 +86,9 @@ fi
 # 6. Audio input (macOS only)
 if [ "$(uname)" = "Darwin" ]; then
   if system_profiler SPAudioDataType 2>/dev/null | grep -q "Input Source"; then
-    check "Audio input" "$PASS" "input device available"
+    check "Audio input" "$PASS" "CLI context sees an input device"
   else
-    check "Audio input" "$WARN" "no input source detected — check System Settings > Sound"
+    check "Audio input" "$WARN" "CLI context sees no input source; if the desktop Readiness Center is ready, trust the signed app"
   fi
 else
   check "Audio input" "$WARN" "skipped (non-macOS)"

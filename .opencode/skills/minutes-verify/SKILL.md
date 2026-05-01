@@ -36,7 +36,7 @@ The script checks each component and outputs a pass/fail status for each. Read t
 | Meetings dir | `~/meetings/` directory exists |
 | Memos dir | `~/meetings/memos/` directory exists |
 | PID state | No stale PID file in `~/.minutes/recording.pid` |
-| Audio input | At least one audio input device available (macOS only) |
+| Audio input | CLI-context audio input visibility (macOS only; desktop readiness is authoritative for the signed app) |
 | Config | `~/.config/minutes/config.toml` exists (optional — defaults work fine) |
 
 ## After verification
@@ -47,11 +47,11 @@ If any checks fail, tell the user exactly what to do:
 - **No model** → `minutes setup --model small` (recommended) or `--model tiny` (faster, lower quality)
 - **No meetings dir** → `mkdir -p ~/meetings/memos` — will also be created on first recording
 - **Stale PID** → `rm ~/.minutes/recording.pid` — previous recording crashed without cleanup
-- **No audio input** → Check System Settings > Sound > Input, ensure a microphone is selected
+- **Audio input warning** → Treat as CLI-context-only. If the signed desktop app's Readiness Center shows Audio input/Microphone as ready, trust the desktop app identity.
 
 ## Gotchas
 
-- **The script is macOS-specific** for the audio input check (uses `system_profiler`). On Linux, that check will be skipped.
+- **The script is macOS-specific** for the audio input check (uses `system_profiler`). On Linux, that check will be skipped. On macOS, shell-context checks can disagree with the signed desktop app; use the desktop Readiness Center for TCC-sensitive truth.
 - **"Model not found" is the #1 setup issue** — most people forget to run `minutes setup` after building.
 - **Config file is optional** — if `~/.config/minutes/config.toml` doesn't exist, that's fine. Minutes uses compiled defaults. Only flag it as "not configured" (informational), not as an error.
 
