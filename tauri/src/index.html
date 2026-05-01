@@ -2739,6 +2739,46 @@
       color: var(--orange);
     }
 
+    .dictation-recents {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .dictation-recent-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--neutral-tint);
+    }
+
+    .dictation-recent-text {
+      min-width: 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dictation-recent-meta {
+      margin-top: 3px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+      line-height: 1.35;
+    }
+
+    .dictation-recent-actions {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
     .about-link-row {
       display: flex;
       flex-wrap: wrap;
@@ -4583,6 +4623,15 @@
               <option value="3000">3 seconds</option>
               <option value="5000">5 seconds</option>
             </select>
+          </div>
+        </div>
+        <div class="about-controls">
+          <div class="about-controls-group">
+            <div class="about-controls-copy">Recent dictations</div>
+            <div class="dictation-recents" id="settings-dictation-recents">
+              <div class="about-controls-meta">Loading...</div>
+            </div>
+            <div class="about-controls-meta" id="settings-dictation-recents-status"></div>
           </div>
         </div>
       </div>
@@ -8002,9 +8051,106 @@
         }
       } catch (e) { console.error('loadSettings:', e); }
       // Always load these, even if other settings fail
+      loadRecentDictations();
       loadStorageStats();
       loadVaultStatus();
     }
+
+    function dictationRecentPreview(record) {
+      const text = (record.cleanedText || record.rawText || '').trim();
+      return text || '(empty dictation)';
+    }
+
+    function dictationRecentMeta(record) {
+      const parts = [];
+      if (record.capturedAt) {
+        const date = new Date(record.capturedAt);
+        if (!Number.isNaN(date.valueOf())) {
+          parts.push(date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }));
+        }
+      }
+      if (record.engineId) parts.push(record.engineId);
+      if (record.insertion?.outcome) parts.push(record.insertion.outcome.replaceAll('_', ' '));
+      if (record.targetContext?.appName) parts.push(record.targetContext.appName);
+      return parts.join(' · ');
+    }
+
+    async function loadRecentDictations() {
+      const root = document.getElementById('settings-dictation-recents');
+      const status = document.getElementById('settings-dictation-recents-status');
+      if (!root) return;
+      root.innerHTML = '<div class="about-controls-meta">Loading...</div>';
+      if (status) status.textContent = '';
+      try {
+        const records = await invoke('cmd_recent_dictations', { limit: 5 });
+        renderRecentDictations(records || []);
+      } catch (error) {
+        root.innerHTML = '<div class="about-controls-meta error">Could not load recent dictations.</div>';
+        if (status) status.textContent = String(error);
+      }
+    }
+
+    function renderRecentDictations(records) {
+      const root = document.getElementById('settings-dictation-recents');
+      if (!root) return;
+      if (!records.length) {
+        root._dictationRecords = [];
+        root.innerHTML = '<div class="about-controls-meta">No dictations yet.</div>';
+        return;
+      }
+
+      root.innerHTML = records.map((record) => {
+        const text = escapeHtml(dictationRecentPreview(record));
+        const meta = escapeHtml(dictationRecentMeta(record));
+        const openButton = record.filePath
+          ? `<button class="btn btn-secondary btn-sm" data-dictation-action="open" data-dictation-id="${escapeHtml(record.id)}">Open</button>`
+          : '';
+        return `
+          <div class="dictation-recent-item" data-dictation-id="${escapeHtml(record.id)}">
+            <div>
+              <div class="dictation-recent-text" title="${text}">${text}</div>
+              <div class="dictation-recent-meta">${meta}</div>
+            </div>
+            <div class="dictation-recent-actions">
+              <button class="btn btn-secondary btn-sm" data-dictation-action="copy" data-dictation-id="${escapeHtml(record.id)}">Copy</button>
+              <button class="btn btn-secondary btn-sm" data-dictation-action="paste" data-dictation-id="${escapeHtml(record.id)}">Paste</button>
+              ${openButton}
+            </div>
+          </div>
+        `;
+      }).join('');
+      root._dictationRecords = records;
+    }
+
+    document.getElementById('settings-dictation-recents')?.addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-dictation-action]');
+      if (!button) return;
+      const root = document.getElementById('settings-dictation-recents');
+      const status = document.getElementById('settings-dictation-recents-status');
+      const id = button.dataset.dictationId;
+      const action = button.dataset.dictationAction;
+      const record = (root._dictationRecords || []).find((item) => item.id === id);
+      if (!record) return;
+
+      button.disabled = true;
+      if (status) status.textContent = '';
+      try {
+        if (action === 'copy') {
+          const result = await invoke('cmd_copy_dictation', { id });
+          if (status) status.textContent = result?.message || 'Copied.';
+        } else if (action === 'paste') {
+          const result = await invoke('cmd_repaste_dictation', { id });
+          if (status) status.textContent = result?.message || 'Pasted.';
+        } else if (action === 'open' && record.filePath) {
+          await invoke('cmd_open_file', { path: record.filePath });
+          if (status) status.textContent = 'Opened dictation file.';
+        }
+      } catch (error) {
+        if (status) status.textContent = String(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
 
     async function loadVaultStatus() {
       try {

@@ -8024,12 +8024,7 @@ mod tests {
     #[test]
     fn desktop_settings_accept_dictation_backend_selection() {
         with_temp_home(|_| {
-            cmd_set_setting(
-                "dictation".into(),
-                "backend".into(),
-                "apple-speech".into(),
-            )
-            .unwrap();
+            cmd_set_setting("dictation".into(), "backend".into(), "apple-speech".into()).unwrap();
 
             let config = Config::load();
             assert_eq!(config.dictation.backend, "apple-speech");
@@ -9328,6 +9323,54 @@ pub fn cmd_start_dictation(
 }
 
 #[tauri::command]
+pub fn cmd_recent_dictations(
+    limit: Option<usize>,
+) -> Result<Vec<minutes_core::dictation_memory::DictationMemoryRecord>, String> {
+    minutes_core::dictation_memory::load_recent(limit.unwrap_or(6).clamp(1, 25))
+        .map_err(|error| format!("Could not load recent dictations: {error}"))
+}
+
+#[tauri::command]
+pub fn cmd_copy_dictation(
+    id: String,
+) -> Result<crate::text_insertion::TextInsertionResult, String> {
+    let record = minutes_core::dictation_memory::find_record(&id)
+        .map_err(|error| format!("Could not load dictation history: {error}"))?
+        .ok_or_else(|| "Dictation was not found in local history.".to_string())?;
+    Ok(crate::text_insertion::insert_text(
+        crate::text_insertion::TextInsertionRequest {
+            text: record.cleaned_text,
+            mode: crate::text_insertion::TextInsertionMode::CopyOnly,
+            restore_clipboard: false,
+            clipboard_snapshot: None,
+        },
+    ))
+}
+
+#[tauri::command]
+pub fn cmd_repaste_dictation(
+    id: String,
+) -> Result<crate::text_insertion::TextInsertionResult, String> {
+    let record = minutes_core::dictation_memory::find_record(&id)
+        .map_err(|error| format!("Could not load dictation history: {error}"))?
+        .ok_or_else(|| "Dictation was not found in local history.".to_string())?;
+    let config = Config::load();
+    let clipboard_snapshot = if config.dictation.auto_paste_restore {
+        crate::text_insertion::read_clipboard().ok()
+    } else {
+        None
+    };
+    Ok(crate::text_insertion::insert_text(
+        crate::text_insertion::TextInsertionRequest {
+            text: record.cleaned_text,
+            mode: crate::text_insertion::TextInsertionMode::BestEffortVerified,
+            restore_clipboard: config.dictation.auto_paste_restore,
+            clipboard_snapshot,
+        },
+    ))
+}
+
+#[tauri::command]
 pub fn cmd_stop_dictation(state: tauri::State<AppState>) -> Result<String, String> {
     if state.dictation_active.load(Ordering::Relaxed) {
         state.dictation_stop_flag.store(true, Ordering::Relaxed);
@@ -9998,6 +10041,69 @@ pub(crate) fn dictation_pid_active() -> bool {
         .is_some()
 }
 
+fn dictation_record_engine_id(config: &Config) -> String {
+    match config.dictation.backend.as_str() {
+        "whisper" | "" => format!("whisper:{}", config.dictation.model),
+        backend => backend.to_string(),
+    }
+}
+
+fn dictation_record_engine_descriptor(config: &Config) -> Option<String> {
+    match config.dictation.backend.as_str() {
+        "whisper" | "" => Some(config.dictation.model.clone()),
+        backend => Some(backend.to_string()),
+    }
+}
+
+fn dictation_insertion_memory(
+    insertion: &crate::text_insertion::TextInsertionResult,
+) -> minutes_core::dictation_memory::DictationInsertionMemory {
+    minutes_core::dictation_memory::DictationInsertionMemory {
+        outcome: insertion.outcome.as_str().into(),
+        method: insertion.method.as_str().into(),
+        verified: insertion.verified,
+        clipboard_restored: insertion.clipboard_restored,
+        message: insertion.message.clone(),
+    }
+}
+
+fn dictation_target_context(
+    insertion: &crate::text_insertion::TextInsertionResult,
+) -> Option<minutes_core::dictation_memory::DictationTargetContext> {
+    insertion.target_context.as_ref().map(|context| {
+        minutes_core::dictation_memory::DictationTargetContext {
+            platform: context.platform.clone(),
+            app_name: context.app_name.clone(),
+        }
+    })
+}
+
+fn record_dictation_memory(
+    config: &Config,
+    result: &minutes_core::dictation::DictationResult,
+    insertion: &crate::text_insertion::TextInsertionResult,
+) {
+    let record = minutes_core::dictation_memory::DictationMemoryRecord::new(
+        minutes_core::dictation_memory::DictationMemoryInput {
+            raw_text: result.raw_text.clone(),
+            cleaned_text: result.text.clone(),
+            duration_secs: result.duration_secs,
+            engine_id: dictation_record_engine_id(config),
+            engine_descriptor_version: dictation_record_engine_descriptor(config),
+            vocabulary_mode: None,
+            vocabulary_used: Vec::new(),
+            destination: result.destination.clone(),
+            insertion: dictation_insertion_memory(insertion),
+            target_context: dictation_target_context(insertion),
+            file_path: result.file_path.clone(),
+            daily_note_appended: result.daily_note_appended,
+        },
+    );
+    if let Err(error) = minutes_core::dictation_memory::append_record(record) {
+        tracing::warn!(error = %error, "failed to persist dictation memory record");
+    }
+}
+
 /// Public entry point for the shortcut manager to start a dictation session.
 pub fn start_dictation_session_public(
     app: &tauri::AppHandle,
@@ -10115,26 +10221,21 @@ fn start_dictation_session(
                     app_for_results
                         .emit("dictation:state", insertion.overlay_state())
                         .ok();
+                    record_dictation_memory(&config_for_results, &result, &insertion);
                 } else {
-                    #[cfg(target_os = "macos")]
-                    {
-                        let insertion = crate::text_insertion::insert_text(
-                            crate::text_insertion::TextInsertionRequest {
-                                text: result.text.clone(),
-                                mode: crate::text_insertion::TextInsertionMode::CopyOnly,
-                                restore_clipboard: false,
-                                clipboard_snapshot: None,
-                            },
-                        );
-                        app_for_results.emit("dictation:insertion", &insertion).ok();
-                        app_for_results
-                            .emit("dictation:state", insertion.overlay_state())
-                            .ok();
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        app_for_results.emit("dictation:state", "copied").ok();
-                    }
+                    let insertion = crate::text_insertion::insert_text(
+                        crate::text_insertion::TextInsertionRequest {
+                            text: result.text.clone(),
+                            mode: crate::text_insertion::TextInsertionMode::CopyOnly,
+                            restore_clipboard: false,
+                            clipboard_snapshot: None,
+                        },
+                    );
+                    app_for_results.emit("dictation:insertion", &insertion).ok();
+                    app_for_results
+                        .emit("dictation:state", insertion.overlay_state())
+                        .ok();
+                    record_dictation_memory(&config_for_results, &result, &insertion);
                 }
             },
         );

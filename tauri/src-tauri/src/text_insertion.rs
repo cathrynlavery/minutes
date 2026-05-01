@@ -25,12 +25,34 @@ pub enum InsertOutcome {
     Blocked,
 }
 
+impl InsertOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InsertOutcome::Typed => "typed",
+            InsertOutcome::Pasted => "pasted",
+            InsertOutcome::Copied => "copied",
+            InsertOutcome::Failed => "failed",
+            InsertOutcome::Blocked => "blocked",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InsertMethod {
     ClipboardOnly,
     ClipboardPaste,
     Unsupported,
+}
+
+impl InsertMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InsertMethod::ClipboardOnly => "clipboard_only",
+            InsertMethod::ClipboardPaste => "clipboard_paste",
+            InsertMethod::Unsupported => "unsupported",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

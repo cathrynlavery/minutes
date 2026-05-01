@@ -7671,6 +7671,43 @@ fn cmd_dictate(stdout: bool, note_only: bool, config: &Config) -> Result<()> {
             if let Some(ref path) = result.file_path {
                 eprintln!("[minutes] Saved: {}", path.display());
             }
+            let (outcome, method, message) = match result.destination.as_str() {
+                "stdout" => ("printed", "stdout", "Printed dictation to stdout."),
+                "daily_note" => ("saved", "daily_note", "Saved dictation to the daily note."),
+                _ => (
+                    "copied",
+                    "clipboard_only",
+                    "Copied dictation to the clipboard.",
+                ),
+            };
+            let record = minutes_core::dictation_memory::DictationMemoryRecord::new(
+                minutes_core::dictation_memory::DictationMemoryInput {
+                    raw_text: result.raw_text.clone(),
+                    cleaned_text: result.text.clone(),
+                    duration_secs: result.duration_secs,
+                    engine_id: match config.dictation.backend.as_str() {
+                        "whisper" | "" => format!("whisper:{}", config.dictation.model),
+                        backend => backend.to_string(),
+                    },
+                    engine_descriptor_version: Some(config.dictation.model.clone()),
+                    vocabulary_mode: None,
+                    vocabulary_used: Vec::new(),
+                    destination: result.destination.clone(),
+                    insertion: minutes_core::dictation_memory::DictationInsertionMemory {
+                        outcome: outcome.into(),
+                        method: method.into(),
+                        verified: true,
+                        clipboard_restored: false,
+                        message: message.into(),
+                    },
+                    target_context: None,
+                    file_path: result.file_path.clone(),
+                    daily_note_appended: result.daily_note_appended,
+                },
+            );
+            if let Err(error) = minutes_core::dictation_memory::append_record(record) {
+                eprintln!("[minutes] Could not update dictation history: {error}");
+            }
         },
     )?;
 

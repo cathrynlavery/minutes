@@ -134,10 +134,12 @@ fn return_model_to_cache(ctx: whisper_rs::WhisperContext, model_name: String) {
 /// Result from processing a single dictation utterance.
 #[derive(Debug, Clone)]
 pub struct DictationResult {
+    pub raw_text: String,
     pub text: String,
     pub duration_secs: f64,
     pub destination: String,
     pub file_path: Option<PathBuf>,
+    pub daily_note_appended: bool,
 }
 
 /// Callback for dictation events (used by Tauri UI).
@@ -772,10 +774,12 @@ fn prepare_result(text: &str, duration_secs: f64, config: &Config) -> Option<Dic
     );
 
     Some(DictationResult {
+        raw_text: text.clone(),
         text,
         duration_secs,
         destination: config.dictation.destination.clone(),
         file_path: None,
+        daily_note_appended: false,
     })
 }
 
@@ -794,7 +798,7 @@ fn write_result_outputs(mut result: DictationResult, config: &Config) -> Option<
     };
 
     if config.dictation.daily_note_log {
-        append_dictation_to_daily_note(&result.text, config);
+        result.daily_note_appended = append_dictation_to_daily_note(&result.text, config);
     }
 
     Some(result)
@@ -815,7 +819,7 @@ fn finish_session(results: &[DictationResult], config: &Config) -> Option<Dictat
     }
 
     if config.dictation.daily_note_log {
-        append_dictation_to_daily_note(&combined.text, config);
+        combined.daily_note_appended = append_dictation_to_daily_note(&combined.text, config);
     }
 
     Some(combined)
@@ -830,12 +834,19 @@ fn combine_results(results: &[DictationResult], config: &Config) -> Option<Dicta
     if parts.is_empty() {
         return None;
     }
+    let raw_parts: Vec<&str> = results
+        .iter()
+        .map(|result| result.raw_text.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
 
     Some(DictationResult {
+        raw_text: raw_parts.join(" "),
         text: parts.join(" "),
         duration_secs: results.iter().map(|result| result.duration_secs).sum(),
         destination: config.dictation.destination.clone(),
         file_path: None,
+        daily_note_appended: false,
     })
 }
 
@@ -1048,16 +1059,16 @@ fn write_dictation_file(text: &str, duration_secs: f64, config: &Config) -> Opti
 }
 
 /// Append a dictation entry to the daily note.
-fn append_dictation_to_daily_note(text: &str, config: &Config) {
+fn append_dictation_to_daily_note(text: &str, config: &Config) -> bool {
     use std::io::Write;
 
     if !config.daily_notes.enabled {
-        return;
+        return false;
     }
 
     let note_dir = &config.daily_notes.path;
     if std::fs::create_dir_all(note_dir).is_err() {
-        return;
+        return false;
     }
 
     let now = Local::now();
@@ -1067,7 +1078,7 @@ fn append_dictation_to_daily_note(text: &str, config: &Config) {
     if !note_path.exists() {
         if let Err(e) = std::fs::write(&note_path, format!("# {}\n", now.format("%Y-%m-%d"))) {
             tracing::error!("failed to create daily note: {}", e);
-            return;
+            return false;
         }
     }
 
@@ -1077,9 +1088,15 @@ fn append_dictation_to_daily_note(text: &str, config: &Config) {
         Ok(mut f) => {
             if let Err(e) = f.write_all(entry.as_bytes()) {
                 tracing::error!("failed to append to daily note: {}", e);
+                false
+            } else {
+                true
             }
         }
-        Err(e) => tracing::error!("failed to open daily note for append: {}", e),
+        Err(e) => {
+            tracing::error!("failed to open daily note for append: {}", e);
+            false
+        }
     }
 }
 
@@ -1148,16 +1165,20 @@ mod tests {
         let config = Config::default();
         let results = vec![
             DictationResult {
+                raw_text: "first sentence.".into(),
                 text: "first sentence.".into(),
                 duration_secs: 1.25,
                 destination: "clipboard".into(),
                 file_path: None,
+                daily_note_appended: false,
             },
             DictationResult {
+                raw_text: "second sentence.".into(),
                 text: "second sentence.".into(),
                 duration_secs: 2.75,
                 destination: "clipboard".into(),
                 file_path: None,
+                daily_note_appended: false,
             },
         ];
 
@@ -1185,16 +1206,20 @@ mod tests {
         let config = test_config(dir.path());
         let results = vec![
             DictationResult {
+                raw_text: "first sentence.".into(),
                 text: "first sentence.".into(),
                 duration_secs: 1.0,
                 destination: "daily_note".into(),
                 file_path: None,
+                daily_note_appended: false,
             },
             DictationResult {
+                raw_text: "second sentence.".into(),
                 text: "second sentence.".into(),
                 duration_secs: 2.0,
                 destination: "daily_note".into(),
                 file_path: None,
+                daily_note_appended: false,
             },
         ];
 
