@@ -549,6 +549,14 @@ fn linux_command_available(program: &str) -> bool {
 fn capture_target_context() -> Option<ActiveTargetContext> {
     #[cfg(target_os = "macos")]
     {
+        if let Ok(Some(identity)) = minutes_core::desktop_context::frontmost_app_identity() {
+            return Some(ActiveTargetContext {
+                platform: "macos".into(),
+                app_name: identity.app_name,
+                bundle_id: identity.bundle_id,
+            });
+        }
+
         let app_name = frontmost_app_name().ok();
         let bundle_id = frontmost_app_bundle_id().ok();
         Some(ActiveTargetContext {

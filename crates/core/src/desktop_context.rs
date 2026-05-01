@@ -37,8 +37,20 @@ struct PlatformSnapshot {
     accessibility_trusted: bool,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontmostAppIdentity {
+    pub app_name: Option<String>,
+    pub bundle_id: Option<String>,
+}
+
 pub fn capture_supported() -> bool {
     platform::capture_supported()
+}
+
+#[cfg(target_os = "macos")]
+pub fn frontmost_app_identity() -> Result<Option<FrontmostAppIdentity>, String> {
+    platform::frontmost_app_identity()
 }
 
 pub fn session_tracking_enabled(settings: &DesktopContextConfig) -> bool {
@@ -326,7 +338,7 @@ fn sleep_with_stop(stop: &AtomicBool, duration: Duration) {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::PlatformSnapshot;
+    use super::{FrontmostAppIdentity, PlatformSnapshot};
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSWorkspace;
 
@@ -382,6 +394,29 @@ mod platform {
 
     pub fn accessibility_trusted() -> bool {
         crate::hotkey_macos::is_accessibility_trusted()
+    }
+
+    pub fn frontmost_app_identity() -> Result<Option<FrontmostAppIdentity>, String> {
+        autoreleasepool(|_| {
+            let workspace = NSWorkspace::sharedWorkspace();
+            let Some(frontmost) = workspace.frontmostApplication() else {
+                return Ok(None);
+            };
+
+            let app_name = frontmost
+                .localizedName()
+                .map(|value| value.to_string())
+                .filter(|value| !value.trim().is_empty());
+            let bundle_id = frontmost
+                .bundleIdentifier()
+                .map(|value| value.to_string())
+                .filter(|value| !value.trim().is_empty());
+
+            Ok(Some(FrontmostAppIdentity {
+                app_name,
+                bundle_id,
+            }))
+        })
     }
 
     pub fn snapshot_frontmost_context() -> Result<Option<PlatformSnapshot>, String> {
