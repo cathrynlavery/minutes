@@ -60,6 +60,7 @@ impl InsertMethod {
 pub struct ActiveTargetContext {
     pub platform: String,
     pub app_name: Option<String>,
+    pub bundle_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,6 +126,23 @@ pub fn insert_text(request: TextInsertionRequest) -> TextInsertionResult {
     match request.mode {
         TextInsertionMode::CopyOnly => copy_only(&request.text, target_context),
         TextInsertionMode::BestEffortVerified => best_effort_verified(request, target_context),
+    }
+}
+
+pub fn capture_active_target_context() -> Option<ActiveTargetContext> {
+    capture_target_context()
+}
+
+pub fn restore_target_focus(context: &ActiveTargetContext) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        restore_macos_target_focus(context)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = context;
+        Ok(())
     }
 }
 
@@ -532,9 +550,11 @@ fn capture_target_context() -> Option<ActiveTargetContext> {
     #[cfg(target_os = "macos")]
     {
         let app_name = frontmost_app_name().ok();
+        let bundle_id = frontmost_app_bundle_id().ok();
         Some(ActiveTargetContext {
             platform: "macos".into(),
             app_name,
+            bundle_id,
         })
     }
 
@@ -543,6 +563,7 @@ fn capture_target_context() -> Option<ActiveTargetContext> {
         Some(ActiveTargetContext {
             platform: std::env::consts::OS.into(),
             app_name: None,
+            bundle_id: None,
         })
     }
 }
@@ -564,6 +585,87 @@ fn frontmost_app_name() -> Result<String, String> {
         Err("Frontmost app query returned no app.".into())
     } else {
         Ok(name)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_app_bundle_id() -> Result<String, String> {
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(
+            r#"tell application "System Events" to get bundle identifier of first application process whose frontmost is true"#,
+        )
+        .output()
+        .map_err(|error| format!("Could not query frontmost app bundle id: {error}"))?;
+    if !output.status.success() {
+        return Err("Could not query frontmost app bundle id.".into());
+    }
+    let bundle_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if bundle_id.is_empty() {
+        Err("Frontmost app query returned no bundle id.".into())
+    } else {
+        Ok(bundle_id)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_macos_target_focus(context: &ActiveTargetContext) -> Result<(), String> {
+    if let Some(bundle_id) = context
+        .bundle_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return run_macos_focus_script(
+            r#"on run argv
+  set targetId to item 1 of argv
+  tell application "System Events"
+    set frontmost of first application process whose bundle identifier is targetId to true
+  end tell
+end run"#,
+            bundle_id,
+        );
+    }
+
+    if let Some(app_name) = context
+        .app_name
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return run_macos_focus_script(
+            r#"on run argv
+  set targetName to item 1 of argv
+  tell application "System Events"
+    set frontmost of first application process whose name is targetName to true
+  end tell
+end run"#,
+            app_name,
+        );
+    }
+
+    Err("No target app was captured before dictation.".into())
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_focus_script(script: &str, target: &str) -> Result<(), String> {
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .arg(target)
+        .output()
+        .map_err(|error| format!("Could not restore focus to dictation target: {error}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(if stderr.trim().is_empty() {
+            "Could not restore focus to dictation target.".into()
+        } else {
+            format!(
+                "Could not restore focus to dictation target: {}",
+                stderr.trim()
+            )
+        })
     }
 }
 

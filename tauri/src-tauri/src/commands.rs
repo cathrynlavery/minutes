@@ -10104,6 +10104,22 @@ fn record_dictation_memory(
     }
 }
 
+fn restore_dictation_target_focus(
+    target_context: &Option<crate::text_insertion::ActiveTargetContext>,
+) {
+    let Some(context) = target_context else {
+        return;
+    };
+    if let Err(error) = crate::text_insertion::restore_target_focus(context) {
+        tracing::debug!(error = %error, "could not restore focus to dictation target");
+        return;
+    }
+
+    // Give the window server a beat before clipboard paste automation or overlay
+    // dismissal; otherwise macOS can keep Minutes as the active app.
+    std::thread::sleep(Duration::from_millis(120));
+}
+
 /// Public entry point for the shortcut manager to start a dictation session.
 pub fn start_dictation_session_public(
     app: &tauri::AppHandle,
@@ -10126,7 +10142,9 @@ fn start_dictation_session(
         return Err("Dictation is already in progress.".into());
     }
 
+    let dictation_target_context = crate::text_insertion::capture_active_target_context();
     show_dictation_overlay(app);
+    restore_dictation_target_focus(&dictation_target_context);
     app.emit("dictation:state", "loading").ok();
 
     state.dictation_stop_flag.store(false, Ordering::Relaxed);
@@ -10138,6 +10156,7 @@ fn start_dictation_session(
     let stop_flag = Arc::clone(&state.dictation_stop_flag);
     let dictation_active = Arc::clone(&state.dictation_active);
     let final_output_emitted = Arc::new(AtomicBool::new(false));
+    let dictation_target_context_for_thread = dictation_target_context.clone();
 
     std::thread::spawn(move || {
         let mut config = Config::load();
@@ -10155,6 +10174,7 @@ fn start_dictation_session(
         let app_for_results = app_clone.clone();
         let config_for_results = config.clone();
         let final_output_for_results = Arc::clone(&final_output_emitted);
+        let dictation_target_context_for_results = dictation_target_context_for_thread.clone();
 
         let result = minutes_core::dictation::run(
             stop_flag,
@@ -10209,6 +10229,7 @@ fn start_dictation_session(
                 app_for_results.emit("dictation:result", &result.text).ok();
                 if config_for_results.dictation.auto_paste {
                     app_for_results.emit("dictation:state", "inserting").ok();
+                    restore_dictation_target_focus(&dictation_target_context_for_results);
                     let insertion = crate::text_insertion::insert_text(
                         crate::text_insertion::TextInsertionRequest {
                             text: result.text.clone(),
@@ -10223,6 +10244,7 @@ fn start_dictation_session(
                         .ok();
                     record_dictation_memory(&config_for_results, &result, &insertion);
                 } else {
+                    restore_dictation_target_focus(&dictation_target_context_for_results);
                     let insertion = crate::text_insertion::insert_text(
                         crate::text_insertion::TextInsertionRequest {
                             text: result.text.clone(),
