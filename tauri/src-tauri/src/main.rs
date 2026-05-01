@@ -1849,6 +1849,7 @@ fn main() {
             commands::cmd_set_dictation_shortcut,
             commands::cmd_desktop_capabilities,
             commands::cmd_permission_center,
+            commands::cmd_macos_permission_rows,
             commands::cmd_recovery_items,
             commands::cmd_retry_recovery,
             commands::cmd_retry_processing_job,

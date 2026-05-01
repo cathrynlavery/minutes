@@ -5511,6 +5511,12 @@ pub fn cmd_permission_center() -> serde_json::Value {
 }
 
 #[tauri::command]
+pub fn cmd_macos_permission_rows() -> serde_json::Value {
+    serde_json::to_value(minutes_core::macos_permissions::permission_rows())
+        .unwrap_or(serde_json::json!([]))
+}
+
+#[tauri::command]
 pub fn cmd_desktop_capabilities() -> DesktopCapabilities {
     DesktopCapabilities {
         platform: current_platform().into(),
