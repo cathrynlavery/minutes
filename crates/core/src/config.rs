@@ -1489,6 +1489,24 @@ backend = "apple-speech"
         assert_eq!(config.transcription.engine, "whisper");
     }
 
+    #[test]
+    fn dictation_backend_accepts_parakeet_without_changing_batch_engine() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[dictation]
+backend = "parakeet"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_from(&config_path);
+        assert_eq!(config.dictation.backend, "parakeet");
+        assert_eq!(config.transcription.engine, "whisper");
+    }
+
     // ── Call detection: stop-when-call-ends opt-in ────────────
 
     #[test]

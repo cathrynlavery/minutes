@@ -7194,9 +7194,9 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
 
         // Dictation
         ("dictation", "backend") => {
-            if !["whisper", "apple-speech"].contains(&value.as_str()) {
+            if !["whisper", "apple-speech", "parakeet"].contains(&value.as_str()) {
                 return Err(format!(
-                    "unknown dictation backend '{}'. Valid: whisper, apple-speech",
+                    "unknown dictation backend '{}'. Valid: whisper, apple-speech, parakeet",
                     value
                 ));
             }
@@ -8033,6 +8033,12 @@ mod tests {
 
             let config = Config::load();
             assert_eq!(config.dictation.backend, "apple-speech");
+            assert_eq!(config.transcription.engine, "whisper");
+
+            cmd_set_setting("dictation".into(), "backend".into(), "parakeet".into()).unwrap();
+
+            let config = Config::load();
+            assert_eq!(config.dictation.backend, "parakeet");
             assert_eq!(config.transcription.engine, "whisper");
         });
     }

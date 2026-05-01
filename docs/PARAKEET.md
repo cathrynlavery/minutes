@@ -46,12 +46,22 @@ ensure `example-server` is discoverable (either on `PATH` or via
 `MINUTES_PARAKEET_SERVER_BINARY`). Without the warm sidecar, every live
 utterance incurs full subprocess startup, which makes live mode visibly slow.
 
-These paths still use Whisper today, even if the global transcription engine is set to `parakeet`:
+Dictation remains Whisper by default because its overlay depends on fast
+mid-utterance partials. You can opt into Parakeet for final utterance
+transcription with:
 
-- dictation (`minutes dictate` and the dictation hotkey) — deferred to a future RFC because dictation streams mid-utterance partials for the overlay typing effect, which requires a different socket integration than utterance-granular live mode
+```toml
+[dictation]
+backend = "parakeet"
+```
+
+In that mode, Whisper still powers progressive partial text while Parakeet is
+used at VAD-finalization when the installed/compiled backend is ready. If
+Parakeet is unavailable or fails for an utterance, dictation falls back to
+Whisper for that utterance.
 
 If Parakeet support is not compiled into the current build, Minutes logs a
-warning and falls back to Whisper for both live paths.
+warning and falls back to Whisper for live and dictation paths.
 
 Note: both live paths still require the `whisper` Cargo feature to be compiled
 in. Whisper is the runtime fallback when Parakeet fails mid-session (warmup

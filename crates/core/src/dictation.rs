@@ -159,6 +159,19 @@ pub enum DictationEvent {
     Yielded,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictationFinalBackend {
+    Whisper,
+    AppleSpeech,
+    Parakeet,
+}
+
+impl DictationFinalBackend {
+    fn needs_utterance_samples(self) -> bool {
+        matches!(self, Self::AppleSpeech | Self::Parakeet)
+    }
+}
+
 /// Run the dictation pipeline. Blocks until stopped or silence timeout.
 ///
 /// `stop_flag`: set to true to stop the session (Esc key, Ctrl-C, MCP stop).
@@ -261,9 +274,8 @@ where
 
         let mut vad = Vad::new();
         let mut streaming = StreamingWhisper::new(config.transcription.language.clone());
-        let apple_speech_enabled = apple_speech_dictation_enabled(config);
-        #[cfg(target_os = "macos")]
-        let mut apple_utterance_samples: Vec<f32> = Vec::new();
+        let final_backend = dictation_final_backend(config);
+        let mut final_utterance_samples: Vec<f32> = Vec::new();
         let mut accumulated_results: Vec<DictationResult> = Vec::new();
         let mut was_speaking = false;
         let mut has_spoken = false;
@@ -281,9 +293,8 @@ where
                     on_event(DictationEvent::Processing);
                     if let Some(sr) = finalize_dictation_transcription(
                         config,
-                        apple_speech_enabled,
-                        #[cfg(target_os = "macos")]
-                        &apple_utterance_samples,
+                        final_backend,
+                        &final_utterance_samples,
                         &mut streaming,
                         &whisper_ctx,
                     ) {
@@ -296,8 +307,7 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
-                    #[cfg(target_os = "macos")]
-                    apple_utterance_samples.clear();
+                    final_utterance_samples.clear();
                 }
                 flush_accumulated_results(config, &mut accumulated_results, on_event, on_result);
                 on_event(DictationEvent::Cancelled);
@@ -311,9 +321,8 @@ where
                     on_event(DictationEvent::Processing);
                     if let Some(sr) = finalize_dictation_transcription(
                         config,
-                        apple_speech_enabled,
-                        #[cfg(target_os = "macos")]
-                        &apple_utterance_samples,
+                        final_backend,
+                        &final_utterance_samples,
                         &mut streaming,
                         &whisper_ctx,
                     ) {
@@ -326,8 +335,7 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
-                    #[cfg(target_os = "macos")]
-                    apple_utterance_samples.clear();
+                    final_utterance_samples.clear();
                 }
                 flush_accumulated_results(config, &mut accumulated_results, on_event, on_result);
                 on_event(DictationEvent::Yielded);
@@ -392,9 +400,8 @@ where
                 was_speaking = true;
                 has_spoken = true;
                 utterance_samples += chunk.samples.len();
-                #[cfg(target_os = "macos")]
-                if apple_speech_enabled {
-                    apple_utterance_samples.extend_from_slice(&chunk.samples);
+                if final_backend.needs_utterance_samples() {
+                    final_utterance_samples.extend_from_slice(&chunk.samples);
                 }
 
                 // Feed to streaming whisper — may emit a partial result
@@ -408,9 +415,8 @@ where
                     on_event(DictationEvent::Processing);
                     if let Some(sr) = finalize_dictation_transcription(
                         config,
-                        apple_speech_enabled,
-                        #[cfg(target_os = "macos")]
-                        &apple_utterance_samples,
+                        final_backend,
+                        &final_utterance_samples,
                         &mut streaming,
                         &whisper_ctx,
                     ) {
@@ -423,8 +429,7 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
-                    #[cfg(target_os = "macos")]
-                    apple_utterance_samples.clear();
+                    final_utterance_samples.clear();
                     streaming.reset();
                     utterance_samples = 0;
                     was_speaking = false;
@@ -437,9 +442,8 @@ where
                     on_event(DictationEvent::Processing);
                     if let Some(sr) = finalize_dictation_transcription(
                         config,
-                        apple_speech_enabled,
-                        #[cfg(target_os = "macos")]
-                        &apple_utterance_samples,
+                        final_backend,
+                        &final_utterance_samples,
                         &mut streaming,
                         &whisper_ctx,
                     ) {
@@ -452,8 +456,7 @@ where
                         );
                         on_event(DictationEvent::Success);
                     }
-                    #[cfg(target_os = "macos")]
-                    apple_utterance_samples.clear();
+                    final_utterance_samples.clear();
                     streaming.reset();
                     utterance_samples = 0;
                     was_speaking = false;
@@ -498,15 +501,34 @@ where
     }
 }
 
-fn apple_speech_dictation_enabled(config: &Config) -> bool {
-    if !config
-        .dictation
-        .backend
-        .eq_ignore_ascii_case("apple-speech")
-    {
-        return false;
+fn dictation_final_backend(config: &Config) -> DictationFinalBackend {
+    match config.dictation.backend.as_str() {
+        "apple-speech" => {
+            if apple_speech_dictation_ready(config) {
+                DictationFinalBackend::AppleSpeech
+            } else {
+                DictationFinalBackend::Whisper
+            }
+        }
+        "parakeet" => {
+            if parakeet_dictation_ready(config) {
+                DictationFinalBackend::Parakeet
+            } else {
+                DictationFinalBackend::Whisper
+            }
+        }
+        "whisper" => DictationFinalBackend::Whisper,
+        other => {
+            tracing::warn!(
+                backend = other,
+                "unknown dictation backend; using whisper fallback"
+            );
+            DictationFinalBackend::Whisper
+        }
     }
+}
 
+fn apple_speech_dictation_ready(_config: &Config) -> bool {
     #[cfg(target_os = "macos")]
     {
         match crate::apple_speech::probe_capabilities() {
@@ -540,26 +562,48 @@ fn apple_speech_dictation_enabled(config: &Config) -> bool {
     }
 }
 
+fn parakeet_dictation_ready(config: &Config) -> bool {
+    let status = crate::transcription_coordinator::parakeet_backend_status(config);
+    if !status.ready {
+        tracing::warn!(
+            issues = %status.issues.join(", "),
+            "parakeet dictation requested but Parakeet is not ready; using whisper fallback"
+        );
+    }
+    status.ready
+}
+
 #[cfg(feature = "whisper")]
 fn finalize_dictation_transcription(
     config: &Config,
-    apple_speech_enabled: bool,
-    #[cfg(target_os = "macos")] apple_utterance_samples: &[f32],
+    final_backend: DictationFinalBackend,
+    final_utterance_samples: &[f32],
     streaming: &mut StreamingWhisper,
     whisper_ctx: &whisper_rs::WhisperContext,
 ) -> Option<StreamingResult> {
-    #[cfg(not(target_os = "macos"))]
-    let _ = apple_speech_enabled;
-
     #[cfg(target_os = "macos")]
-    if apple_speech_enabled {
-        match transcribe_utterance_with_apple_speech(apple_utterance_samples, config) {
+    if final_backend == DictationFinalBackend::AppleSpeech {
+        match transcribe_utterance_with_apple_speech(final_utterance_samples, config) {
             Ok(Some(result)) => return Some(result),
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(
                     error = %error,
                     "apple-speech dictation failed; using whisper fallback for this utterance"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "parakeet")]
+    if final_backend == DictationFinalBackend::Parakeet {
+        match transcribe_utterance_with_parakeet(final_utterance_samples, config) {
+            Ok(Some(result)) => return Some(result),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "parakeet dictation failed; using whisper fallback for this utterance"
                 );
             }
         }
@@ -606,6 +650,60 @@ fn transcribe_utterance_with_apple_speech(
         is_final: true,
         duration_secs: samples.len() as f64 / 16000.0,
     }))
+}
+
+#[cfg(feature = "parakeet")]
+fn transcribe_utterance_with_parakeet(
+    samples: &[f32],
+    config: &Config,
+) -> Result<Option<StreamingResult>, MinutesError> {
+    if samples.len() < 16000 {
+        return Ok(None);
+    }
+
+    let tmp_wav = tempfile::Builder::new()
+        .prefix("minutes-dictation-parakeet-")
+        .suffix(".wav")
+        .tempfile()
+        .map_err(TranscribeError::Io)?;
+    crate::transcribe::write_wav_16k_mono(tmp_wav.path(), samples)?;
+
+    let mut parakeet_config = config.clone();
+    parakeet_config.transcription.engine = "parakeet".into();
+    match crate::transcribe::transcribe(tmp_wav.path(), &parakeet_config) {
+        Ok(result) => {
+            let Some(text) = normalize_final_dictation_text(&result.text) else {
+                return Ok(None);
+            };
+            Ok(Some(StreamingResult {
+                text,
+                is_final: true,
+                duration_secs: samples.len() as f64 / 16000.0,
+            }))
+        }
+        Err(TranscribeError::EmptyAudio) | Err(TranscribeError::EmptyTranscript(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(any(test, feature = "parakeet"))]
+fn normalize_final_dictation_text(text: &str) -> Option<String> {
+    let text = text
+        .lines()
+        .filter_map(|line| {
+            let body = dictation_text_part(line).trim();
+            (!body.is_empty()).then(|| body.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!text.trim().is_empty()).then(|| text.trim().to_string())
+}
+
+#[cfg(any(test, feature = "parakeet"))]
+fn dictation_text_part(line: &str) -> &str {
+    line.find("] ")
+        .map(|index| &line[index + 2..])
+        .unwrap_or(line)
 }
 
 fn handle_utterance<G>(
@@ -1011,6 +1109,17 @@ mod tests {
         assert!((combined.duration_secs - 4.0).abs() < f64::EPSILON);
         assert_eq!(combined.destination, "clipboard");
         assert!(combined.file_path.is_none());
+    }
+
+    #[test]
+    fn normalize_final_dictation_text_flattens_timestamped_backend_output() {
+        let text = normalize_final_dictation_text("[0:00] hello\n[0:01] world").unwrap();
+        assert_eq!(text, "hello world");
+    }
+
+    #[test]
+    fn normalize_final_dictation_text_rejects_empty_timestamped_lines() {
+        assert_eq!(normalize_final_dictation_text("[0:00] \n\n"), None);
     }
 
     #[test]
