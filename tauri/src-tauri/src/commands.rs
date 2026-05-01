@@ -1991,10 +1991,20 @@ fn build_proactive_context_markdown(
     )
 }
 
+fn processing_job_title_fallback(mode: CaptureMode) -> &'static str {
+    match mode {
+        CaptureMode::Meeting => "Meeting recording",
+        CaptureMode::QuickThought => "Quick thought",
+        CaptureMode::Dictation => "Dictation",
+        CaptureMode::LiveTranscript => "Live transcript",
+    }
+}
+
 fn processing_job_view(job: minutes_core::jobs::ProcessingJob) -> ProcessingJobView {
+    let fallback_title = processing_job_title_fallback(job.mode);
     ProcessingJobView {
         id: job.id,
-        title: job.title.unwrap_or_else(|| "Queued recording".into()),
+        title: job.title.unwrap_or_else(|| fallback_title.into()),
         mode: match job.mode {
             CaptureMode::Meeting => "meeting".into(),
             CaptureMode::QuickThought => "quick-thought".into(),

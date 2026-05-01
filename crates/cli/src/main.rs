@@ -2222,7 +2222,12 @@ fn cmd_jobs(include_terminal: bool, json_mode: bool, limit: usize) -> Result<()>
             CaptureMode::Dictation => "dictation",
             CaptureMode::LiveTranscript => "live transcript",
         };
-        let title = job.title.unwrap_or_else(|| "Queued recording".into());
+        let title = job.title.unwrap_or_else(|| match job.mode {
+            CaptureMode::Meeting => "Meeting recording".into(),
+            CaptureMode::QuickThought => "Quick thought".into(),
+            CaptureMode::Dictation => "Dictation".into(),
+            CaptureMode::LiveTranscript => "Live transcript".into(),
+        });
         let state = match job.state {
             minutes_core::jobs::JobState::Queued => "queued",
             minutes_core::jobs::JobState::Transcribing => "transcribing",
