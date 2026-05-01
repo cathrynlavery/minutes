@@ -7748,58 +7748,6 @@
             hotkeyRecordBtn.textContent = keyName;
           }
         }
-        const dictationShortcutSettings = await invoke('cmd_dictation_shortcut_settings').catch(() => null);
-        const dictationShortcutSelect = document.getElementById('settings-dictation-shortcut-select');
-        if (dictationShortcutSelect) dictationShortcutSelect.replaceChildren();
-        if (dictationShortcutSettings && dictationShortcutSettings.choices && dictationShortcutSelect) {
-          for (const choice of dictationShortcutSettings.choices) {
-            const o = document.createElement('option');
-            o.value = choice.value;
-            o.textContent = choice.label;
-            dictationShortcutSelect.appendChild(o);
-          }
-          dictationShortcutSelect.value = s.dictation?.shortcut || dictationShortcutSettings.shortcut || '';
-          setSettingsToggle('settings-dictation-shortcut', Boolean(dictationShortcutSettings.enabled));
-          dictationShortcutActive = Boolean(dictationShortcutSettings.enabled);
-          dictationShortcutLabel = dictationShortcutSettings.enabled
-            ? `Dictate ${dictationShortcutSettings.shortcut}`
-            : 'Dictate';
-          renderDictationShortcutChip();
-          const dsStatus = document.getElementById('settings-dictation-shortcut-status');
-          if (dsStatus) dsStatus.textContent =
-            dictationShortcutSettings.enabled
-              ? `Active - ${dictationShortcutSettings.shortcut}`
-              : 'Uses the standard global shortcut system. Recommended for most users.';
-          if (s.dictation?.shortcut_enabled && !dictationShortcutSettings.enabled) {
-            const restored = await invoke('cmd_set_dictation_shortcut', {
-              enabled: true,
-              shortcut: s.dictation?.shortcut || dictationShortcutSettings.shortcut,
-            }).catch(() => null);
-            if (restored) {
-              setSettingsToggle('settings-dictation-shortcut', restored.enabled);
-              dictationShortcutActive = Boolean(restored.enabled);
-              dictationShortcutLabel = restored.enabled ? `Dictate ${restored.shortcut}` : 'Dictate';
-              renderDictationShortcutChip();
-              document.getElementById('settings-dictation-shortcut-status').textContent =
-                restored.enabled
-                  ? `Active - ${restored.shortcut}`
-                  : 'Uses the standard global shortcut system. Recommended for most users.';
-            }
-          }
-        }
-        const nativeDictationHotkey = await invoke('cmd_dictation_hotkey_status').catch(() => null);
-        if (nativeDictationHotkey) {
-          applyDictationHotkeyStatus(nativeDictationHotkey);
-          if (s.dictation?.hotkey_enabled && nativeDictationHotkey.state === 'disabled') {
-            const restored = await invoke('cmd_enable_dictation_hotkey', {
-              enabled: true,
-              keycode: dictationKeycode,
-            }).catch(() => null);
-            if (restored) {
-              applyDictationHotkeyStatus(restored);
-            }
-          }
-        }
       } catch (e) { console.error('loadSettings:', e); }
       // Always load these, even if other settings fail
       loadStorageStats();
@@ -8682,6 +8630,13 @@
         localStorage.setItem('minutes.globalHotkeyEnabled', status.enabled ? 'true' : 'false');
         if (status.shortcut) localStorage.setItem('minutes.globalHotkeyShortcut', status.shortcut);
       }
+      if (slot === 'dictation') {
+        dictationShortcutActive = Boolean(status.enabled);
+        dictationShortcutLabel = status.enabled
+          ? 'Dictate ' + shortcutDisplayLabel(status.shortcut, status.keycode)
+          : 'Dictate';
+        renderDictationShortcutChip();
+      }
 
       const recorder = document.getElementById('shortcut-recorder-' + slot);
       const statusEl = document.getElementById('shortcut-status-' + slot);
@@ -9127,6 +9082,7 @@
 
       const toggleBtn = document.getElementById('settings-dictation-hotkey');
       const statusEl = document.getElementById('settings-dictation-hotkey-status');
+      if (!toggleBtn || !statusEl) return;
 
       if (hotkeyRecordBtn) {
         hotkeyRecordBtn.textContent = dictationHotkeyLabel(dictationKeycode);

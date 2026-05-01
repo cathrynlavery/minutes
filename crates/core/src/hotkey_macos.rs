@@ -47,6 +47,7 @@ mod ffi {
     pub const kCGHIDEventTap: u32 = 0;
     pub const kCGHeadInsertEventTap: u32 = 0;
     pub const kCGEventTapOptionDefault: u32 = 0;
+    pub const kCGEventTapOptionListenOnly: u32 = 1;
     pub const kCGEventKeyDown: u32 = 10;
     pub const kCGEventKeyUp: u32 = 11;
     pub const kCGEventFlagsChanged: u32 = 12;
@@ -227,6 +228,10 @@ impl Drop for HotkeyMonitor {
     }
 }
 
+fn should_consume_matched_events(keycode: i64) -> bool {
+    keycode != KEYCODE_FN
+}
+
 /// Attempt to start the native macOS hotkey monitor and report whether the
 /// current process identity can create the CGEventTap successfully.
 pub fn probe_hotkey_monitor(keycode: i64, timeout: Duration) -> HotkeyProbeResult {
@@ -340,6 +345,7 @@ struct TapContext {
     callback: Box<dyn Fn(HotkeyEvent) + Send>,
     stop: Arc<AtomicBool>,
     key_is_down: AtomicBool,
+    consume_matched_events: bool,
 }
 
 fn run_event_tap(
@@ -348,6 +354,11 @@ fn run_event_tap(
     status_callback: Box<dyn Fn(HotkeyMonitorStatus) + Send>,
     stop: Arc<AtomicBool>,
 ) {
+    // `fn`/Globe is safe to observe without suppressing the key itself. Using
+    // listen-only keeps it on the Input Monitoring privilege path and avoids
+    // the more fragile modifying-tap behavior needed for Caps Lock suppression.
+    let consume_matched_events = should_consume_matched_events(target_keycode);
+
     // Event mask: keyDown + keyUp + flagsChanged (for modifier keys)
     let event_mask: u64 =
         (1 << ffi::kCGEventKeyDown) | (1 << ffi::kCGEventKeyUp) | (1 << ffi::kCGEventFlagsChanged);
@@ -357,6 +368,7 @@ fn run_event_tap(
         callback,
         stop: Arc::clone(&stop),
         key_is_down: AtomicBool::new(false),
+        consume_matched_events,
     });
     let context_ptr = Box::into_raw(context) as *mut std::ffi::c_void;
 
@@ -366,7 +378,11 @@ fn run_event_tap(
         let tap = ffi::CGEventTapCreate(
             ffi::kCGHIDEventTap,
             ffi::kCGHeadInsertEventTap,
-            ffi::kCGEventTapOptionDefault,
+            if consume_matched_events {
+                ffi::kCGEventTapOptionDefault
+            } else {
+                ffi::kCGEventTapOptionListenOnly
+            },
             event_mask,
             event_tap_callback,
             context_ptr,
@@ -453,12 +469,20 @@ unsafe extern "C" fn event_tap_callback(
             if !context.key_is_down.swap(true, Ordering::Relaxed) {
                 (context.callback)(HotkeyEvent::Press);
             }
-            std::ptr::null_mut() // Consume
+            if context.consume_matched_events {
+                std::ptr::null_mut()
+            } else {
+                event
+            }
         }
         ffi::kCGEventKeyUp => {
             context.key_is_down.store(false, Ordering::Relaxed);
             (context.callback)(HotkeyEvent::Release);
-            std::ptr::null_mut() // Consume
+            if context.consume_matched_events {
+                std::ptr::null_mut()
+            } else {
+                event
+            }
         }
         ffi::kCGEventFlagsChanged => {
             // Modifier keys (Caps Lock, fn) use FlagsChanged instead of keyDown/keyUp.
@@ -471,7 +495,11 @@ unsafe extern "C" fn event_tap_callback(
                 context.key_is_down.store(true, Ordering::Relaxed);
                 (context.callback)(HotkeyEvent::Press);
             }
-            std::ptr::null_mut() // Consume — prevent Caps Lock toggle
+            if context.consume_matched_events {
+                std::ptr::null_mut() // Consume — prevent Caps Lock toggle.
+            } else {
+                event
+            }
         }
         _ => event, // Unknown — pass through
     }
@@ -495,5 +523,11 @@ mod tests {
     fn constants_are_correct() {
         assert_eq!(KEYCODE_CAPS_LOCK, 57);
         assert_eq!(KEYCODE_FN, 63);
+    }
+
+    #[test]
+    fn fn_uses_listen_only_event_tap() {
+        assert!(!should_consume_matched_events(KEYCODE_FN));
+        assert!(should_consume_matched_events(KEYCODE_CAPS_LOCK));
     }
 }
