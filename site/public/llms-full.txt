@@ -2,7 +2,7 @@
 
 > Generated file. Do not edit by hand.
 > Source: manifest.json + crates/mcp/src/index.ts + site/lib/skills-catalog.json
-> Last generated: 2026-04-29
+> Last generated: 2026-05-01
 
 ## Product
 
@@ -10,9 +10,10 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 
 29 tools • 7 resources • Interactive MCP App dashboard • Prompt templates
 
-**What's new in 0.16.0:**
-• **Agent Event Bus v0.** Minutes now writes an append-only local event stream with stable sequence cursors. The CLI can follow it with `minutes events --follow`, MCP exposes `minutes://events/live`, and local agents can observe recording lifecycle events, meeting insights, and allowlisted `agent.annotation` entries without mutating human-authored meeting markdown.
-• **Fast local search.** Search now uses a SQLite FTS5-backed index. CLI search has explicit `--sync` and `--no-sync` controls, desktop search errors surface as banners, and large meeting archives no longer require a full file walk for every query.
+**What's new in 0.16.1:**
+• **The 0.16 story is visible again.** The desktop updater now preserves release notes for the post-update What's New screen and falls back to updater metadata when GitHub's release body is unavailable.
+• **Agent Event Bus v0.** Minutes writes an append-only local event stream with stable sequence cursors. The CLI can follow it with `minutes events --follow`, MCP exposes `minutes://events/live`, and local agents can observe recording lifecycle events, meeting insights, and allowlisted `agent.annotation` entries without mutating human-authored meeting markdown.
+• **Fast local search.** Search uses a SQLite FTS5-backed index. CLI search has explicit `--sync` and `--no-sync` controls, desktop search errors surface as banners, and large meeting archives no longer require a full file walk for every query.
 • **Calmer desktop recording.** Minutes re-heals stale device pins on every recording start, refuses unsafe mic-only routes when a call is active, prefers browser meeting detection over stale Slack fallback state, and isolates queued processing work so a long or silent-tail job does not freeze the GUI.
 • **Templates Phase 1.** Prompt-only templates let meeting, one-on-one, standup, and voice-memo captures produce more appropriate summaries without changing the core transcript pipeline.
 • **Design and packaging polish.** The lowercase italic `m` now carries through the dock icon, tray icon, favicon, DMG, and desktop surfaces. The DMG installer, MCP UI, call-detected card, toasts, Recall, and window persistence all received polish.
