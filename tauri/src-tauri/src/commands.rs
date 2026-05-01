@@ -135,7 +135,11 @@ fn dictation_focus_debug(
     main_window_hidden: Option<bool>,
     note: Option<&str>,
 ) {
-    let current_frontmost = crate::text_insertion::capture_active_target_context();
+    let current_frontmost = if dictation_focus_frontmost_debug_enabled() {
+        crate::text_insertion::capture_active_target_context()
+    } else {
+        None
+    };
     let payload = serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339(),
         "event": event,
@@ -164,6 +168,15 @@ fn dictation_focus_debug(
     {
         let _ = writeln!(file, "{payload}");
     }
+}
+
+fn dictation_focus_frontmost_debug_enabled() -> bool {
+    std::env::var("MINUTES_DICTATION_FOCUS_FRONTMOST")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        || Config::minutes_dir()
+            .join("dictation-focus-frontmost.enabled")
+            .exists()
 }
 
 fn permission_restart_safety_from_snapshot(
@@ -10112,12 +10125,13 @@ pub fn capture_pending_dictation_target(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
+    let capture_start = Instant::now();
     let target_context = crate::text_insertion::capture_active_target_context();
     dictation_focus_debug(
         "pending_target_captured",
         target_context.as_ref(),
         None,
-        None,
+        Some(format!("capture_ms={}", capture_start.elapsed().as_millis()).as_str()),
     );
     let pending = PendingDictationTarget {
         captured_at: Instant::now(),
