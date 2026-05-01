@@ -217,6 +217,159 @@ fn permission_restart_snapshot(state: &AppState) -> PermissionRestartSnapshot {
     }
 }
 
+const PERMISSION_MONITOR_INTERVAL: Duration = Duration::from_secs(15);
+const PERMISSION_MONITOR_LOSS_COOLDOWN_MS: u64 = 10_000;
+const PERMISSION_MONITOR_WAKE_GRACE_MS: u64 = 20_000;
+const PERMISSION_MONITOR_WAKE_GAP_MS: u64 = 45_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PermissionMonitorRowState {
+    kind: String,
+    usable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PermissionMonitorSnapshot {
+    signature: String,
+    rows: Vec<PermissionMonitorRowState>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPermissionLoss {
+    snapshot: PermissionMonitorSnapshot,
+    emit_after_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PermissionMonitorDecision {
+    reason: &'static str,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PermissionMonitorDedupe {
+    last_emitted: Option<PermissionMonitorSnapshot>,
+    pending_loss: Option<PendingPermissionLoss>,
+    wake_grace_until_ms: u64,
+    last_poll_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionMonitorEvent {
+    reason: &'static str,
+    rows: Vec<minutes_core::macos_permissions::MacPermissionRow>,
+}
+
+fn permission_monitor_snapshot_from_rows(
+    rows: &[minutes_core::macos_permissions::MacPermissionRow],
+) -> PermissionMonitorSnapshot {
+    PermissionMonitorSnapshot {
+        signature: serde_json::to_string(rows).unwrap_or_default(),
+        rows: rows
+            .iter()
+            .map(|row| PermissionMonitorRowState {
+                kind: format!("{:?}", row.kind),
+                usable: row.status.is_granted() && row.runtime_usable,
+            })
+            .collect(),
+    }
+}
+
+fn is_permission_loss(
+    previous: &PermissionMonitorSnapshot,
+    current: &PermissionMonitorSnapshot,
+) -> bool {
+    current.rows.iter().any(|current_row| {
+        !current_row.usable
+            && previous
+                .rows
+                .iter()
+                .any(|previous_row| previous_row.kind == current_row.kind && previous_row.usable)
+    })
+}
+
+impl PermissionMonitorDedupe {
+    fn observe(
+        &mut self,
+        snapshot: PermissionMonitorSnapshot,
+        now_ms: u64,
+    ) -> Option<PermissionMonitorDecision> {
+        if let Some(last_poll_ms) = self.last_poll_ms {
+            if now_ms.saturating_sub(last_poll_ms) > PERMISSION_MONITOR_WAKE_GAP_MS {
+                self.wake_grace_until_ms = now_ms.saturating_add(PERMISSION_MONITOR_WAKE_GRACE_MS);
+            }
+        }
+        self.last_poll_ms = Some(now_ms);
+
+        let Some(last_emitted) = self.last_emitted.clone() else {
+            self.last_emitted = Some(snapshot);
+            return None;
+        };
+
+        if snapshot.signature == last_emitted.signature {
+            self.pending_loss = None;
+            return None;
+        }
+
+        if is_permission_loss(&last_emitted, &snapshot) {
+            let emit_after_ms = now_ms
+                .saturating_add(PERMISSION_MONITOR_LOSS_COOLDOWN_MS)
+                .max(self.wake_grace_until_ms);
+            match &self.pending_loss {
+                Some(pending)
+                    if pending.snapshot.signature == snapshot.signature
+                        && now_ms >= pending.emit_after_ms =>
+                {
+                    self.last_emitted = Some(snapshot);
+                    self.pending_loss = None;
+                    Some(PermissionMonitorDecision {
+                        reason: "permission_loss",
+                    })
+                }
+                Some(pending) if pending.snapshot.signature == snapshot.signature => None,
+                _ => {
+                    self.pending_loss = Some(PendingPermissionLoss {
+                        snapshot,
+                        emit_after_ms,
+                    });
+                    None
+                }
+            }
+        } else {
+            self.last_emitted = Some(snapshot);
+            self.pending_loss = None;
+            Some(PermissionMonitorDecision {
+                reason: "permission_restored",
+            })
+        }
+    }
+}
+
+pub fn spawn_permission_monitor(app: tauri::AppHandle) {
+    std::thread::Builder::new()
+        .name("permission-monitor".into())
+        .spawn(move || {
+            let started_at = Instant::now();
+            let mut dedupe = PermissionMonitorDedupe::default();
+            loop {
+                let rows = minutes_core::macos_permissions::permission_rows();
+                let snapshot = permission_monitor_snapshot_from_rows(&rows);
+                let now_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                if let Some(decision) = dedupe.observe(snapshot, now_ms) {
+                    let _ = app.emit(
+                        "permissions:changed",
+                        PermissionMonitorEvent {
+                            reason: decision.reason,
+                            rows,
+                        },
+                    );
+                }
+                std::thread::sleep(PERMISSION_MONITOR_INTERVAL);
+            }
+        })
+        .ok();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CallEndCountdownTerminalState {
@@ -7208,6 +7361,93 @@ mod tests {
         assert!(safety.requires_confirmation);
         assert!(safety.blockers.is_empty());
         assert_eq!(safety.confirmations.len(), 1);
+    }
+
+    fn permission_monitor_snapshot_for_test(
+        signature: &str,
+        states: &[(&str, bool)],
+    ) -> PermissionMonitorSnapshot {
+        PermissionMonitorSnapshot {
+            signature: signature.into(),
+            rows: states
+                .iter()
+                .map(|(kind, usable)| PermissionMonitorRowState {
+                    kind: (*kind).into(),
+                    usable: *usable,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn permission_monitor_dedupes_identical_snapshots() {
+        let mut monitor = PermissionMonitorDedupe::default();
+        let ready = permission_monitor_snapshot_for_test("ready", &[("InputMonitoring", true)]);
+
+        assert!(monitor.observe(ready.clone(), 0).is_none());
+        assert!(monitor.observe(ready, 15_000).is_none());
+    }
+
+    #[test]
+    fn permission_monitor_delays_transient_loss() {
+        let mut monitor = PermissionMonitorDedupe::default();
+        let ready = permission_monitor_snapshot_for_test("ready", &[("InputMonitoring", true)]);
+        let denied = permission_monitor_snapshot_for_test("denied", &[("InputMonitoring", false)]);
+
+        assert!(monitor.observe(ready.clone(), 0).is_none());
+        assert!(monitor.observe(denied.clone(), 1_000).is_none());
+        assert!(monitor.observe(denied, 10_999).is_none());
+        assert!(monitor.observe(ready, 11_000).is_none());
+    }
+
+    #[test]
+    fn permission_monitor_emits_restore_promptly_after_reported_loss() {
+        let mut monitor = PermissionMonitorDedupe::default();
+        let ready = permission_monitor_snapshot_for_test("ready", &[("InputMonitoring", true)]);
+        let denied = permission_monitor_snapshot_for_test("denied", &[("InputMonitoring", false)]);
+
+        assert!(monitor.observe(ready.clone(), 0).is_none());
+        assert!(monitor.observe(denied.clone(), 1_000).is_none());
+        assert_eq!(
+            monitor
+                .observe(denied, 11_000)
+                .expect("persistent loss should emit")
+                .reason,
+            "permission_loss"
+        );
+        let decision = monitor
+            .observe(ready, 11_000)
+            .expect("restoration should emit immediately");
+        assert_eq!(decision.reason, "permission_restored");
+    }
+
+    #[test]
+    fn permission_monitor_emits_persistent_loss_after_cooldown() {
+        let mut monitor = PermissionMonitorDedupe::default();
+        let ready = permission_monitor_snapshot_for_test("ready", &[("Microphone", true)]);
+        let denied = permission_monitor_snapshot_for_test("denied", &[("Microphone", false)]);
+
+        assert!(monitor.observe(ready, 0).is_none());
+        assert!(monitor.observe(denied.clone(), 1_000).is_none());
+        let decision = monitor
+            .observe(denied, 11_000)
+            .expect("persistent loss should emit after cooldown");
+        assert_eq!(decision.reason, "permission_loss");
+    }
+
+    #[test]
+    fn permission_monitor_extends_loss_cooldown_after_wake_gap() {
+        let mut monitor = PermissionMonitorDedupe::default();
+        let ready = permission_monitor_snapshot_for_test("ready", &[("ScreenRecording", true)]);
+        let denied = permission_monitor_snapshot_for_test("denied", &[("ScreenRecording", false)]);
+
+        assert!(monitor.observe(ready, 0).is_none());
+        assert!(monitor.observe(denied.clone(), 60_000).is_none());
+        assert!(monitor.observe(denied.clone(), 75_000).is_none());
+        let decision = monitor
+            .observe(denied, 80_000)
+            .expect("loss should emit after wake grace expires");
+        assert_eq!(decision.reason, "permission_loss");
     }
 
     #[test]

@@ -1212,6 +1212,7 @@ fn main() {
 
             // Create main window on launch
             show_main_window(app.handle());
+            commands::spawn_permission_monitor(app.handle().clone());
 
             if minutes_core::jobs::active_job_count() > 0 {
                 commands::spawn_processing_worker(

@@ -6750,6 +6750,9 @@
     readinessOverlay.addEventListener('click', (e) => {
       if (e.target === readinessOverlay) closeReadiness();
     });
+    currentWindow.listen('permissions:changed', () => {
+      loadReadinessItems();
+    });
 
     jobsButton.addEventListener('click', () => {
       loadProcessingJobsCenter();
