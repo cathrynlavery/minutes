@@ -24,7 +24,7 @@ approval-bypass flags that belong to other agents.
 
 Pi owns provider auth and model selection. Use Pi's interactive `/login` and
 `/model` flows, or explicit Pi flags such as `--model <provider/model>`, to
-choose the model. If a GitHub Copilot model such as `github-copilot/gpt-5.4`
+choose the model. If a GitHub Copilot model such as `github-copilot/gpt-5.5`
 fails with "Personal Access Tokens are not supported for this endpoint", refresh
 Pi's GitHub Copilot login with `/login`; do not paste a GitHub PAT into Minutes.
 

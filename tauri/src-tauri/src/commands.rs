@@ -7018,12 +7018,12 @@ mod tests {
         let args = vec![
             "--dangerously-skip-permissions".to_string(),
             "--model".to_string(),
-            "openai/gpt-5.4".to_string(),
+            "openai/gpt-5.5".to_string(),
         ];
 
         assert_eq!(
             filtered_agent_args("opencode", &args),
-            vec!["--model".to_string(), "openai/gpt-5.4".to_string()]
+            vec!["--model".to_string(), "openai/gpt-5.5".to_string()]
         );
         assert_eq!(filtered_agent_args("claude", &args), args);
     }
