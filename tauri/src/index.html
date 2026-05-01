@@ -264,20 +264,22 @@
     .split-handle::after {
       content: '';
       position: absolute;
-      top: 50%;
+      top: 0;
+      bottom: 0;
       left: 50%;
-      transform: translate(-50%, -50%);
-      width: 3px;
-      height: 40px;
-      border-radius: 2px;
+      transform: translateX(-50%);
+      width: 1px;
+      height: auto;
+      border-radius: 0;
       background: var(--surface-stroke-subtle);
+      opacity: 0.45;
       transition: background 150ms ease, height 150ms ease;
     }
 
     .split-handle:hover::after,
     .split-handle.dragging::after {
       background: var(--text-tertiary);
-      height: 64px;
+      opacity: 0.65;
     }
 
     .split-handle.visible {
@@ -291,7 +293,7 @@
       overflow: hidden;
       display: flex;
       flex-direction: column;
-      border-left: 1px solid var(--surface-stroke-subtle);
+      border-left: none;
       background: var(--bg);
       opacity: 0;
       transition: opacity 100ms ease-out;
@@ -446,10 +448,10 @@
       flex: 1;
       min-height: 0;
       overflow: hidden;
-      margin: 6px 0;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: var(--bg-elevated);
+      margin: 0;
+      border-radius: 0;
+      border: none;
+      background: var(--bg);
     }
 
     .recall-terminal .xterm-screen {
@@ -1326,9 +1328,10 @@
     .meetings-scroll {
       flex: 1;
       overflow-y: auto;
-      padding: 0 16px;
-      mask-image: linear-gradient(transparent, black 8px, black calc(100% - 8px), transparent);
-      -webkit-mask-image: linear-gradient(transparent, black 8px, black calc(100% - 8px), transparent);
+      padding: 0 16px 18px;
+      scroll-padding-bottom: 18px;
+      mask-image: linear-gradient(transparent, black 8px, black calc(100% - 18px), transparent);
+      -webkit-mask-image: linear-gradient(transparent, black 8px, black calc(100% - 18px), transparent);
     }
 
     .meetings-scroll::-webkit-scrollbar {
@@ -2997,6 +3000,8 @@
       padding: 8px 12px 12px;
       border-top: 1px solid var(--border);
       position: relative;
+      z-index: 2;
+      background: var(--bg);
     }
 
     .footer-actions {
@@ -3036,6 +3041,8 @@
       width: 100%;
       min-width: 0;
       box-sizing: border-box;
+      padding-left: 10px;
+      padding-right: 10px;
       border-radius: var(--radius);
       font-size: 12px;
       white-space: nowrap;
@@ -3829,7 +3836,7 @@
     }
 
     .recall-panel {
-      border-radius: 16px;
+      border-radius: 0;
       padding: 16px;
       gap: 12px;
     }
@@ -3839,7 +3846,7 @@
     }
 
     .recall-terminal {
-      border-radius: 14px;
+      border-radius: 0;
       gap: 12px;
     }
 
