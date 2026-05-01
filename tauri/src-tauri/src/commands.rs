@@ -3290,16 +3290,16 @@ fn model_status(config: &Config) -> ReadinessItem {
     }
 }
 
-fn microphone_status() -> ReadinessItem {
+fn audio_input_status() -> ReadinessItem {
     let devices = minutes_core::capture::list_input_devices();
     let has_devices = !devices.is_empty();
 
     ReadinessItem {
-        label: "Microphone & audio input".into(),
+        label: "Audio input device".into(),
         state: if has_devices { "ready" } else { "attention" }.into(),
         detail: if has_devices {
             format!(
-                "{} audio input device{} detected. Minutes may still prompt for microphone access the first time you record.",
+                "{} audio input device{} detected. Microphone permission is reported separately.",
                 devices.len(),
                 if devices.len() == 1 { "" } else { "s" }
             )
@@ -3316,7 +3316,7 @@ fn call_capture_status() -> ReadinessItem {
             label: "Call capture".into(),
             state: "ready".into(),
             detail: format!(
-                "Native call capture is available via {}. Screen Recording permission will be requested when capture actually starts if macOS still needs it.",
+                "Native call capture backend is available via {}. Screen Recording permission is reported separately.",
                 backend
             ),
             optional: true,
@@ -5500,7 +5500,7 @@ pub fn cmd_permission_center() -> serde_json::Value {
     let config = Config::load();
     let items = vec![
         model_status(&config),
-        microphone_status(),
+        audio_input_status(),
         call_capture_status(),
         calendar_status(),
         watcher_status(&config),

@@ -2813,6 +2813,13 @@
       letter-spacing: 0.15px;
     }
 
+    .readiness-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
     /* ── Recovery view ── */
     .recovery-overlay {
       position: fixed;
@@ -6222,9 +6229,45 @@
       recoveryOverlay.classList.remove('active');
     }
 
+    function permissionReadinessState(row) {
+      if (!row) return 'attention';
+      if (row.status === 'unsupported') return 'unsupported';
+      if (row.status === 'not_needed' || row.runtimeUsable) return 'ready';
+      return 'attention';
+    }
+
+    function permissionReadinessDetail(row) {
+      const parts = [];
+      if (row && row.detail) parts.push(row.detail);
+      if (row && Array.isArray(row.requiredFor) && row.requiredFor.length) {
+        parts.push(`Used for: ${row.requiredFor.join(', ')}.`);
+      }
+      if (row && row.status === 'granted' && !row.runtimeUsable) {
+        parts.push('macOS reports this as granted, but the current process cannot use it yet.');
+      }
+      return parts.join(' ');
+    }
+
+    function permissionRowToReadinessItem(row) {
+      return {
+        label: `${row.label} permission`,
+        state: permissionReadinessState(row),
+        detail: permissionReadinessDetail(row),
+        optional: !!row.optional,
+        settingsUrl: row.settingsUrl || null
+      };
+    }
+
     async function loadReadinessItems() {
       try {
-        readinessItems = await invoke('cmd_permission_center');
+        const [items, permissionRows] = await Promise.all([
+          invoke('cmd_permission_center'),
+          invoke('cmd_macos_permission_rows')
+        ]);
+        const permissionItems = Array.isArray(permissionRows)
+          ? permissionRows.map(permissionRowToReadinessItem)
+          : [];
+        readinessItems = [...permissionItems, ...(Array.isArray(items) ? items : [])];
       } catch (e) {
         console.error('Readiness items:', e);
         readinessItems = [];
@@ -6264,6 +6307,21 @@
           optional.className = 'readiness-optional';
           optional.textContent = 'Optional';
           card.appendChild(optional);
+        }
+
+        if (item.settingsUrl) {
+          const actions = document.createElement('div');
+          actions.className = 'readiness-actions';
+          const openSettings = document.createElement('button');
+          openSettings.type = 'button';
+          openSettings.className = 'btn btn-secondary btn-sm';
+          openSettings.textContent = 'System Settings';
+          openSettings.addEventListener('click', (event) => {
+            event.stopPropagation();
+            window.__TAURI__.shell.open(item.settingsUrl);
+          });
+          actions.appendChild(openSettings);
+          card.appendChild(actions);
         }
 
         list.appendChild(card);
