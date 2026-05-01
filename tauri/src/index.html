@@ -9379,9 +9379,9 @@
 
     const COLLAPSED_WIDTH = 520;
     const EXPANDED_WIDTH = 960;
-    const DEFAULT_RECALL_RATIO = 0.42;
-    const MIN_RECALL_WIDTH = 320;
-    const MIN_LEFT_WIDTH_WITH_RECALL = 540;
+    const DEFAULT_RECALL_RATIO = 0.5;
+    const MIN_RECALL_RATIO = 0.25;
+    const MAX_RECALL_RATIO = 0.667;
     const SESSION_ID = 'assistant';
 
     let recallExpanded = false;
@@ -9397,11 +9397,7 @@
 
     // ── Draggable split handle ──
     function clampRecallRatio(ratio) {
-      const bodyW = document.body.clientWidth || EXPANDED_WIDTH;
-      const minRatio = Math.min(0.5, MIN_RECALL_WIDTH / bodyW);
-      const maxRatioForLeft = (bodyW - MIN_LEFT_WIDTH_WITH_RECALL) / bodyW;
-      const maxRatio = Math.max(minRatio, Math.min(0.62, maxRatioForLeft));
-      return Math.min(maxRatio, Math.max(minRatio, ratio));
+      return Math.min(MAX_RECALL_RATIO, Math.max(MIN_RECALL_RATIO, ratio));
     }
 
     function getStoredRecallRatio() {
