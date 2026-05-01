@@ -8046,7 +8046,16 @@
       }
     });
 
-    function setSettingsToggle(id, on) { const b = document.getElementById(id); b.textContent = on ? 'On' : 'Off'; b.style.opacity = on ? '1' : '0.5'; }
+    function setSettingsToggle(id, on) {
+      const b = document.getElementById(id);
+      if (!b) {
+        console.warn('setSettingsToggle: missing element', id);
+        return false;
+      }
+      b.textContent = on ? 'On' : 'Off';
+      b.style.opacity = on ? '1' : '0.5';
+      return true;
+    }
     function desktopContextStateLabel(state, filtered = false, limited = false) {
       if (state === 'unsupported') {
         if (filtered) return 'Enabled in config, but unavailable on this platform right now. Saved app filters will apply once desktop-context capture is supported.';
