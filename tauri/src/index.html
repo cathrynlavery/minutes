@@ -6259,19 +6259,26 @@
     }
 
     async function loadReadinessItems() {
-      try {
-        const [items, permissionRows] = await Promise.all([
-          invoke('cmd_permission_center'),
-          invoke('cmd_macos_permission_rows')
-        ]);
-        const permissionItems = Array.isArray(permissionRows)
-          ? permissionRows.map(permissionRowToReadinessItem)
-          : [];
-        readinessItems = [...permissionItems, ...(Array.isArray(items) ? items : [])];
-      } catch (e) {
-        console.error('Readiness items:', e);
-        readinessItems = [];
+      const [itemsResult, permissionRowsResult] = await Promise.allSettled([
+        invoke('cmd_permission_center'),
+        invoke('cmd_macos_permission_rows')
+      ]);
+
+      let items = [];
+      if (itemsResult.status === 'fulfilled' && Array.isArray(itemsResult.value)) {
+        items = itemsResult.value;
+      } else if (itemsResult.status === 'rejected') {
+        console.error('Readiness items:', itemsResult.reason);
       }
+
+      let permissionItems = [];
+      if (permissionRowsResult.status === 'fulfilled' && Array.isArray(permissionRowsResult.value)) {
+        permissionItems = permissionRowsResult.value.map(permissionRowToReadinessItem);
+      } else if (permissionRowsResult.status === 'rejected') {
+        console.error('macOS permission rows:', permissionRowsResult.reason);
+      }
+
+      readinessItems = [...permissionItems, ...items];
 
       readinessScroll.replaceChildren();
       const list = document.createElement('div');

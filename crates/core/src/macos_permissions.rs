@@ -83,6 +83,14 @@ impl MacPermissionRow {
             restart_blocked_by: Vec::new(),
         }
     }
+
+    fn mark_runtime_unusable(&mut self, detail: &str) {
+        self.runtime_usable = false;
+        self.restart_recommended = true;
+        if !detail.is_empty() {
+            self.detail = format!("{} {}", self.detail, detail);
+        }
+    }
 }
 
 pub fn permission_rows() -> Vec<MacPermissionRow> {
@@ -164,7 +172,7 @@ pub fn screen_recording_row() -> MacPermissionRow {
 
 pub fn input_monitoring_row() -> MacPermissionRow {
     let status = platform::input_monitoring_status();
-    MacPermissionRow::new(MacPermissionRowSpec {
+    let mut row = MacPermissionRow::new(MacPermissionRowSpec {
         kind: MacPermissionKind::InputMonitoring,
         label: "Input Monitoring",
         status,
@@ -192,7 +200,15 @@ pub fn input_monitoring_row() -> MacPermissionRow {
         },
         settings_url: platform::INPUT_MONITORING_SETTINGS_URL,
         can_request: true,
-    })
+    });
+
+    if status == MacPermissionStatus::Granted {
+        if let Some(detail) = platform::input_monitoring_runtime_issue() {
+            row.mark_runtime_unusable(detail);
+        }
+    }
+
+    row
 }
 
 pub fn accessibility_row() -> MacPermissionRow {
@@ -237,15 +253,16 @@ pub fn automation_row() -> MacPermissionRow {
         optional: true,
         required_for: &["browser tab detection", "calendar suggestions"],
         detail: match status {
+            MacPermissionStatus::NotNeeded => {
+                "Automation is target-app specific and checked only when a feature asks another app."
+                    .into()
+            }
             MacPermissionStatus::NotDetermined => {
                 "Automation permission is granted per target app when Minutes first asks.".into()
             }
-            MacPermissionStatus::NotNeeded => {
-                "This platform does not require a separate Automation permission.".into()
-            }
             _ => "Automation permission is target-app specific and checked at point of use.".into(),
         },
-        settings_url: platform::AUTOMATION_SETTINGS_URL,
+        settings_url: None,
         can_request: false,
     })
 }
@@ -254,6 +271,7 @@ pub fn automation_row() -> MacPermissionRow {
 mod platform {
     use super::MacPermissionStatus;
     use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+    use std::time::Duration;
 
     pub const MICROPHONE_SETTINGS_URL: Option<&str> =
         Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
@@ -263,9 +281,6 @@ mod platform {
         Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
     pub const ACCESSIBILITY_SETTINGS_URL: Option<&str> =
         Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
-    pub const AUTOMATION_SETTINGS_URL: Option<&str> =
-        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation");
-
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         fn CGPreflightScreenCaptureAccess() -> bool;
@@ -304,6 +319,18 @@ mod platform {
         }
     }
 
+    pub fn input_monitoring_runtime_issue() -> Option<&'static str> {
+        let probe = crate::hotkey_macos::probe_hotkey_monitor(
+            crate::hotkey_macos::KEYCODE_FN,
+            Duration::from_millis(250),
+        );
+        if probe.status == "active" {
+            None
+        } else {
+            Some("macOS reports Input Monitoring as granted, but this running process could not start the native event tap. Restart Minutes and confirm the enabled System Settings entry matches this app copy.")
+        }
+    }
+
     pub fn accessibility_status() -> MacPermissionStatus {
         if crate::hotkey_macos::is_accessibility_trusted() {
             MacPermissionStatus::Granted
@@ -313,7 +340,7 @@ mod platform {
     }
 
     pub fn automation_status() -> MacPermissionStatus {
-        MacPermissionStatus::NotDetermined
+        MacPermissionStatus::NotNeeded
     }
 }
 
@@ -325,7 +352,6 @@ mod platform {
     pub const SCREEN_RECORDING_SETTINGS_URL: Option<&str> = None;
     pub const INPUT_MONITORING_SETTINGS_URL: Option<&str> = None;
     pub const ACCESSIBILITY_SETTINGS_URL: Option<&str> = None;
-    pub const AUTOMATION_SETTINGS_URL: Option<&str> = None;
 
     pub fn microphone_status() -> MacPermissionStatus {
         MacPermissionStatus::NotNeeded
@@ -337,6 +363,10 @@ mod platform {
 
     pub fn input_monitoring_status() -> MacPermissionStatus {
         MacPermissionStatus::NotNeeded
+    }
+
+    pub fn input_monitoring_runtime_issue() -> Option<&'static str> {
+        None
     }
 
     pub fn accessibility_status() -> MacPermissionStatus {
@@ -385,6 +415,36 @@ mod tests {
             can_request: true,
         });
         assert!(!denied.runtime_usable);
+    }
+
+    #[test]
+    fn row_can_represent_granted_but_runtime_unusable() {
+        let mut row = MacPermissionRow::new(MacPermissionRowSpec {
+            kind: MacPermissionKind::InputMonitoring,
+            label: "Input Monitoring",
+            status: MacPermissionStatus::Granted,
+            optional: true,
+            required_for: &["dictation"],
+            detail: "granted".into(),
+            settings_url: Some("settings://example"),
+            can_request: true,
+        });
+
+        row.mark_runtime_unusable("restart needed");
+
+        assert_eq!(row.status, MacPermissionStatus::Granted);
+        assert!(!row.runtime_usable);
+        assert!(row.restart_recommended);
+        assert!(row.detail.contains("restart needed"));
+    }
+
+    #[test]
+    fn automation_is_not_a_global_actionable_permission() {
+        let row = automation_row();
+        assert_eq!(row.status, MacPermissionStatus::NotNeeded);
+        assert!(row.runtime_usable);
+        assert!(!row.can_open_settings);
+        assert!(!row.can_request);
     }
 
     #[test]

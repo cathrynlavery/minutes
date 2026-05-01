@@ -3335,7 +3335,17 @@ fn call_capture_status() -> ReadinessItem {
     }
 }
 
-fn calendar_status() -> ReadinessItem {
+fn calendar_status(config: &Config) -> ReadinessItem {
+    if !config.calendar.enabled {
+        return ReadinessItem {
+            label: "Calendar suggestions".into(),
+            state: "ready".into(),
+            detail: "Calendar suggestions are disabled. No Calendar access check will run from Settings."
+                .into(),
+            optional: true,
+        };
+    }
+
     #[cfg(not(target_os = "macos"))]
     {
         return ReadinessItem {
@@ -3346,43 +3356,14 @@ fn calendar_status() -> ReadinessItem {
         };
     }
 
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(r#"tell application "Calendar" to get name of every calendar"#)
-        .output();
-
-    match output {
-        Ok(result) if result.status.success() => ReadinessItem {
+    #[cfg(target_os = "macos")]
+    {
+        ReadinessItem {
             label: "Calendar suggestions".into(),
             state: "ready".into(),
-            detail: "Calendar access is available for upcoming-meeting suggestions.".into(),
+            detail: "Calendar suggestions are enabled. Minutes checks Calendar access only when it needs upcoming-meeting context, not from Settings.".into(),
             optional: true,
-        },
-        Ok(result) => {
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            ReadinessItem {
-                label: "Calendar suggestions".into(),
-                state: "attention".into(),
-                detail: if stderr.trim().is_empty() {
-                    "Calendar access is unavailable right now. Suggestions will stay hidden until access is granted.".into()
-                } else {
-                    format!(
-                        "Calendar access is unavailable right now ({}). Suggestions will stay hidden until access is granted.",
-                        stderr.trim()
-                    )
-                },
-                optional: true,
-            }
         }
-        Err(e) => ReadinessItem {
-            label: "Calendar suggestions".into(),
-            state: "attention".into(),
-            detail: format!(
-                "Calendar checks are unavailable right now ({}). Suggestions will stay hidden.",
-                e
-            ),
-            optional: true,
-        },
     }
 }
 
@@ -5495,7 +5476,7 @@ pub fn cmd_permission_center() -> serde_json::Value {
         model_status(&config),
         audio_input_status(),
         call_capture_status(),
-        calendar_status(),
+        calendar_status(&config),
         watcher_status(&config),
         output_dir_status(&config),
         vault_status(&config),
