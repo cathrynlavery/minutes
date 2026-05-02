@@ -653,10 +653,10 @@
     .header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-start;
       gap: 12px;
       min-height: 40px;
-      padding: 0 16px;
+      padding: 0;
       margin: 14px 16px 12px;
       -webkit-app-region: drag;
       position: relative;
@@ -667,13 +667,7 @@
 
     html[data-platform="macos"] .header {
       min-height: 40px;
-    }
-
-    html[data-platform="macos"] .header::before {
-      content: "";
-      flex: 0 0 76px;
-      height: 1px;
-      pointer-events: none;
+      margin-top: 32px;
     }
 
     .brand {
