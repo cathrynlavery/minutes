@@ -86,19 +86,22 @@ fn home_dir() -> PathBuf {
 /// Check if a path is inside a macOS TCC-protected directory.
 pub fn is_tcc_protected(path: &Path) -> bool {
     let home = home_dir();
-    // Canonicalize home so all prefix comparisons resolve /Users → /private/Users
-    // consistently on macOS. Falls back to the raw home if canonicalize fails.
+    // Canonicalize home so /Users → /private/Users is resolved on macOS.
     let home_real = home.canonicalize().unwrap_or_else(|_| home.clone());
 
-    let protected = [
-        home_real.join("Documents"),
-        home_real.join("Desktop"),
-        home_real.join("Downloads"),
-    ];
+    let names = ["Documents", "Desktop", "Downloads"];
+    // Include protected dirs anchored to both the raw home and the canonical home.
+    // When a deep path doesn't exist (e.g. CI runner where ~/Documents is absent),
+    // we can't canonicalize any ancestor, so the fallback raw path must still match
+    // against the raw protected dirs.
+    let mut protected: Vec<PathBuf> = names.iter().map(|n| home_real.join(n)).collect();
+    if home_real != home {
+        protected.extend(names.iter().map(|n| home.join(n)));
+    }
 
     // Normalize the input path. Resolve symlinks when the path exists; otherwise
-    // canonicalize the parent so /Users vs /private/Users is handled even for
-    // paths that don't exist yet (e.g. a planned vault location on a CI runner).
+    // canonicalize the immediate parent so /Users vs /private/Users is handled for
+    // paths one level deep (e.g. ~/Documents itself on a CI runner).
     let normalized = if let Ok(c) = path.canonicalize() {
         c
     } else if let Some(parent) = path.parent() {
@@ -111,7 +114,7 @@ pub fn is_tcc_protected(path: &Path) -> bool {
     };
 
     protected.iter().any(|dir| {
-        // Fast path: normalized path starts with the home-relative protected dir.
+        // Fast path: normalized path is under a known protected dir.
         if normalized.starts_with(dir) {
             return true;
         }
