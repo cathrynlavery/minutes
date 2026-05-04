@@ -1,12 +1,12 @@
 # Minutes 0.16.1: vocabulary, dictation engine, and macOS reliability
 
-Minutes 0.16.1 ships a batch of dictation improvements, proper-noun vocabulary context for transcription, a rebuilt macOS permission center, main-window chrome integration, and a set of fixes — including a Windows agent-spawn regression (os error 193) reported in #205.
+Minutes 0.16.1 ships a batch of dictation improvements, proper-noun vocabulary context for transcription, a rebuilt macOS permission center, main-window chrome integration, and a set of fixes (including a Windows agent-spawn regression, os error 193, reported in #205).
 
 ## What changed
 
 ### Local vocabulary (`minutes vocabulary`)
 
-Add your own proper nouns — people's names, product names, project code names, uncommon acronyms — and Minutes passes them as a weighted hint to the transcription model before each segment. The result: names you care about are spelled correctly the first time.
+Add your own proper nouns (people's names, product names, project code names, uncommon acronyms) and Minutes passes them as a weighted hint to the transcription model before each segment. Names you care about are spelled correctly the first time.
 
 ```bash
 minutes vocabulary add --person "Dieter Plaetinck" --alias "Dieter"
@@ -19,8 +19,8 @@ The vocabulary store lives at `~/.minutes/vocabulary.toml` and feeds both batch 
 
 ### Dictation engine upgrades
 
-- **Parakeet final backend.** Dictation can now use parakeet.cpp as its transcription engine. Lower WER than Whisper at equivalent model sizes, Metal-accelerated on Apple Silicon. Opt in via Settings → Dictation → Backend.
-- **Apple Speech backend gate.** On macOS, on-device Apple Speech Recognition is available as a zero-model-download option for dictation. Opt in via Settings → Dictation → Backend.
+- **Parakeet final backend.** Dictation can now use parakeet.cpp as its transcription engine. Lower WER than Whisper at equivalent model sizes, Metal-accelerated on Apple Silicon. Opt in via Settings -> Dictation -> Backend.
+- **Apple Speech backend gate.** On macOS, on-device Apple Speech Recognition is available as a zero-model-download option for dictation. Opt in via Settings -> Dictation -> Backend.
 - **Linux clipboard insertion.** Dictation now works on Linux via `xdotool`/`xclip`, completing the cross-platform story.
 - **Local recents memory.** Dictation accumulates a local recents log so frequently dictated phrases surface faster.
 - **macOS focus and overlay reliability.** Six targeted fixes to restore the target app's focus after dictation ends, prevent the overlay from re-showing on the next recording, and ensure cleanup is single-use. Fast-path target capture now runs before the native shortcut fires, cutting perceived latency.
@@ -35,7 +35,7 @@ The macOS app integrates proper window chrome: compact header layout, brand mark
 
 ### Windows agent-spawn fix (issue #205)
 
-On Windows, npm installs Claude Code as both `claude` (a Unix shebang script) and `claude.cmd` (the proper CMD wrapper). The Recall agent finder was returning the bare `claude` file first, which `CreateProcessW` can't execute — producing `os error 193: not a valid Win32 application`. The fallback search now tries `.cmd` and `.exe` before the bare name, so Recall reliably finds `claude.cmd`.
+On Windows, npm installs Claude Code as both `claude` (a Unix shebang script) and `claude.cmd` (the proper CMD wrapper). The Recall agent finder was returning the bare `claude` file first, which `CreateProcessW` can't execute, producing `os error 193: not a valid Win32 application`. The fallback search now tries `.cmd` and `.exe` before the bare name, so Recall reliably finds `claude.cmd`.
 
 ### Other fixes and cleanup
 
@@ -49,17 +49,17 @@ On Windows, npm installs Claude Code as both `claude` (a Unix shebang script) an
 
 ## Who should care
 
-- **Everyone on macOS** — permission center, focus reliability, main-window chrome.
-- **Windows users** — the os error 193 Recall crash is fixed. The v0.16.1 Windows setup installer is now available.
-- **Dictation users** — new backends (Parakeet, Apple Speech), Linux support, faster focus restore.
-- **Anyone transcribing proper nouns** — vocabulary context brings first-transcription accuracy to names and terms you care about.
-- **Linux users** — dictation clipboard insertion path is now wired.
+- **Everyone on macOS:** permission center, focus reliability, main-window chrome.
+- **Windows users:** the os error 193 Recall crash is fixed. The v0.16.1 Windows setup installer is now available.
+- **Dictation users:** new backends (Parakeet, Apple Speech), Linux support, faster focus restore.
+- **Anyone transcribing proper nouns:** vocabulary context brings first-transcription accuracy to names and terms you care about.
+- **Linux users:** dictation clipboard insertion path is now wired.
 
 ## CLI / MCP / desktop impact
 
 - **CLI:** `minutes vocabulary` is a new top-level command (list, add, remove, suggest, rebuild). No existing command syntax changed.
 - **MCP / agent integrations:** no MCP tool contract changes.
-- **Desktop:** Settings → Dictation exposes backend selection. Permission center is new. Main-window behavior improved on macOS.
+- **Desktop:** Settings -> Dictation exposes backend selection. Permission center is new. Main-window behavior improved on macOS.
 
 ## Breaking changes or migration notes
 
