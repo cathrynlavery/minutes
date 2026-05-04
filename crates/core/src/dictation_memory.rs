@@ -125,7 +125,7 @@ fn load_recent_from(path: &Path, limit: usize) -> io::Result<Vec<DictationMemory
 
     let mut records: Vec<DictationMemoryRecord> = serde_json::from_str(&data)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    records.sort_by(|a, b| b.captured_at.cmp(&a.captured_at));
+    records.sort_by_key(|r| std::cmp::Reverse(r.captured_at));
     if limit > 0 && records.len() > limit {
         records.truncate(limit);
     }
@@ -140,7 +140,7 @@ fn append_record_to(
     let mut records = load_recent_from(path, max_records.max(1)).unwrap_or_default();
     records.retain(|existing| existing.id != record.id);
     records.insert(0, record);
-    records.sort_by(|a, b| b.captured_at.cmp(&a.captured_at));
+    records.sort_by_key(|r| std::cmp::Reverse(r.captured_at));
     if records.len() > max_records {
         records.truncate(max_records);
     }
