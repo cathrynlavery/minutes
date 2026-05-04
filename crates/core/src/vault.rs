@@ -103,9 +103,12 @@ pub fn is_tcc_protected(path: &Path) -> bool {
         .unwrap_or_else(|_| path.to_path_buf());
 
     protected.iter().any(|dir| {
-        dir.canonicalize()
-            .map(|d| canonical.starts_with(&d))
-            .unwrap_or(false)
+        if let Ok(d) = dir.canonicalize() {
+            canonical.starts_with(&d)
+        } else {
+            // Directory doesn't exist (e.g. CI runners) — compare raw paths
+            canonical.starts_with(dir)
+        }
     })
 }
 

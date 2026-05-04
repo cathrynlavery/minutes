@@ -1120,12 +1120,12 @@ agent_args = []           # Optional extra args, e.g. ["--dangerously-skip-permi
 ```
 minutes/
 ├── crates/core/          45 Rust modules — the engine (shared by all interfaces)
-├── crates/cli/           CLI binary — 49 commands (recording, search, health, templates, workflows)
+├── crates/cli/           CLI binary — 50 commands (recording, search, health, templates, workflows)
 ├── crates/whisper-guard/ Anti-hallucination toolkit (VAD gating, dedup, noise trimming)
 ├── crates/reader/        Lightweight read-only meeting parser (no audio deps)
 ├── crates/assets/        Bundled assets (demo.wav)
 ├── crates/sdk/           TypeScript SDK — `npm install minutes-sdk` (query meetings programmatically)
-├── crates/mcp/           MCP server — 29 tools + 6 resources + interactive dashboard
+├── crates/mcp/           MCP server — 29 tools + 7 resources + interactive dashboard
 │   └── ui/               MCP App dashboard (vanilla TS → single-file HTML)
 ├── tauri/                Menu bar app — system tray, recording UI, singleton AI Assistant
 └── .claude/plugins/minutes/   Claude Code plugin — 19 skills + 1 agent + 2 hooks

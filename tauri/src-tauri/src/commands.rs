@@ -6660,8 +6660,11 @@ pub fn find_agent_binary(name: &str) -> Option<PathBuf> {
         }
     }
 
+    // On Windows, npm installs a bare extensionless shebang script alongside
+    // the .cmd wrapper. Try .cmd/.exe first so we never hand a shebang script
+    // to CreateProcessW (os error 193 "not a valid Win32 application").
     let exts: &[&str] = if cfg!(windows) {
-        &["", "cmd", "exe", "bat"]
+        &["cmd", "exe", "bat", ""]
     } else {
         &[""]
     };
@@ -7308,15 +7311,6 @@ pub fn cmd_set_setting(section: String, key: String, value: String) -> Result<St
             config.dictation.shortcut_enabled = value == "true";
         }
         ("dictation", "shortcut") => config.dictation.shortcut = value.clone(),
-        ("dictation", "hotkey_enabled") => {
-            config.dictation.hotkey_enabled = value == "true";
-        }
-        ("dictation", "hotkey_keycode") => {
-            config.dictation.hotkey_keycode = value
-                .parse()
-                .map_err(|_| "hotkey_keycode must be a number")?;
-        }
-
         // Live transcript
         ("live_transcript", "backend") => {
             if !VALID_LIVE_TRANSCRIPT_BACKENDS.contains(&value.as_str()) {
@@ -7729,7 +7723,6 @@ mod tests {
         // future UI row.
         ("dictation", "accumulate"),
         ("dictation", "auto_paste"),
-        ("dictation", "backend"),
         ("dictation", "cleanup_engine"),
         ("dictation", "destination"),
         // dictation.shortcut_enabled is written directly by cmd_set_shortcut
