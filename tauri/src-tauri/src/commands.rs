@@ -2984,6 +2984,22 @@ fn output_notice_from_job(job: &minutes_core::jobs::ProcessingJob) -> Option<Out
     }
 }
 
+fn startup_retryable_output_notice_from_job(
+    job: &minutes_core::jobs::ProcessingJob,
+) -> Option<OutputNotice> {
+    let mut notice = output_notice_from_job(job)?;
+    notice.detail = match job.state {
+        minutes_core::jobs::JobState::NeedsReview => {
+            "Previous transcript needs review. Raw capture is preserved and can be retried.".into()
+        }
+        minutes_core::jobs::JobState::Failed => {
+            "Previous processing failed. Raw capture is preserved and can be retried.".into()
+        }
+        _ => notice.detail,
+    };
+    Some(notice)
+}
+
 fn latest_retryable_output_notice() -> Option<OutputNotice> {
     let mut jobs = minutes_core::jobs::list_jobs()
         .into_iter()
@@ -3003,7 +3019,7 @@ fn latest_retryable_output_notice() -> Option<OutputNotice> {
 
     jobs.into_iter()
         .next()
-        .and_then(|job| output_notice_from_job(&job))
+        .and_then(|job| startup_retryable_output_notice_from_job(&job))
 }
 
 pub fn seed_latest_retryable_output(latest_output: &Arc<Mutex<Option<OutputNotice>>>) {
@@ -8676,6 +8692,7 @@ mod tests {
             speaker_map: vec![],
             template: None,
             filter_diagnosis: None,
+            recording_health: None,
         };
         let sections = vec![MeetingSection {
             heading: "Summary".into(),
@@ -8732,6 +8749,7 @@ mod tests {
             speaker_map: vec![],
             template: None,
             filter_diagnosis: None,
+            recording_health: None,
         };
         let sections = vec![MeetingSection {
             heading: "Summary".into(),
@@ -8779,6 +8797,7 @@ mod tests {
             speaker_map: vec![],
             template: None,
             filter_diagnosis: None,
+            recording_health: None,
         };
         let sections = vec![MeetingSection {
             heading: "Summary".into(),
@@ -9047,6 +9066,46 @@ mod tests {
         assert_eq!(notice.kind, "preserved-capture");
         assert_eq!(notice.path, "/tmp/interview.wav");
         assert!(notice.detail.contains("silence strip"));
+    }
+
+    #[test]
+    fn startup_retryable_notices_do_not_surface_stale_failure_details() {
+        let job = minutes_core::jobs::ProcessingJob {
+            id: "job-failed".into(),
+            title: Some("Legacy Method Agent Capacity".into()),
+            mode: CaptureMode::Meeting,
+            content_type: ContentType::Meeting,
+            state: minutes_core::jobs::JobState::Failed,
+            stage: minutes_core::jobs::JobState::Failed.default_stage(),
+            output_path: None,
+            audio_path: "/tmp/capture.wav".into(),
+            error: Some("engine 'parakeet' not compiled in".into()),
+            created_at: chrono::Local::now(),
+            started_at: None,
+            finished_at: Some(chrono::Local::now()),
+            recording_started_at: None,
+            recording_finished_at: None,
+            context_session_id: None,
+            user_notes: None,
+            pre_context: None,
+            calendar_event: None,
+            template_slug: None,
+            word_count: Some(0),
+            owner_pid: None,
+        };
+
+        let live_notice = output_notice_from_job(&job).expect("live failed notice");
+        assert!(live_notice.detail.contains("parakeet"));
+
+        let startup_notice =
+            startup_retryable_output_notice_from_job(&job).expect("startup retryable notice");
+        assert_eq!(startup_notice.kind, "preserved-capture");
+        assert_eq!(startup_notice.path, "/tmp/capture.wav");
+        assert_eq!(
+            startup_notice.detail,
+            "Previous processing failed. Raw capture is preserved and can be retried."
+        );
+        assert!(!startup_notice.detail.contains("parakeet"));
     }
 
     #[test]

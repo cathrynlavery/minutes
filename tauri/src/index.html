@@ -7141,15 +7141,27 @@
     });
 
     document.getElementById('btn-retry-output')?.addEventListener('click', async (e) => {
-      const jobId = e.currentTarget.dataset.jobId;
+      const retryBtn = e.currentTarget;
+      const jobId = retryBtn.dataset.jobId;
       if (!jobId) return;
-      await dismissOutputNotice();
+      const originalText = retryBtn.textContent;
+      retryBtn.disabled = true;
+      retryBtn.textContent = 'Retrying';
       try {
         await invoke('cmd_retry_processing_job', { jobId });
+        await dismissOutputNotice();
         if (typeof loadProcessingJobsCenter === 'function') await loadProcessingJobsCenter();
         if (typeof startFastPoll === 'function') startFastPoll();
       } catch (err) {
         console.error('Retry from toast:', err);
+        const message = err?.message || String(err || 'Unknown error');
+        retryBtn.disabled = false;
+        retryBtn.textContent = originalText || 'Retry';
+        updateOutputNotice({
+          ...(latestOutput || { kind: 'preserved-capture', title: 'Retry failed', path: '', jobId }),
+          detail: `Retry failed: ${message}`,
+          jobId,
+        });
       }
     });
 
