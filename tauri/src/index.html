@@ -682,41 +682,44 @@
       flex-shrink: 0;
     }
 
-    /* Brand mark: italic m from Cathryn's app icon, with a small recording dot
-       in the upper-right corner. CSS-rendered (no image asset) so the chrome
-       around it serves as the container — no warm-dark square that vanishes
-       against dark mode. The red dot is semantic per DESIGN.md (recording state).
-       Container is intentionally larger than the m's bounding box so the dot has
-       clear breathing room and reads as a corner badge, not part of the letter. */
     .brand-mark {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 32px;
-      height: 24px;
+      display: block;
+      width: 34px;
+      height: 34px;
       flex-shrink: 0;
     }
-    .brand-mark-letter {
-      font-family: var(--font-display);
-      font-style: italic;
-      font-weight: 400;
-      font-size: 28px;
-      line-height: 1;
-      color: var(--text);
-      letter-spacing: 0;
-      /* Anchor the m to the left of the wider container so the corner above
-         and to the right is clear space for the dot. */
-      margin-right: auto;
+
+    .brand-mark img {
+      display: block;
+      width: 100%;
+      height: 100%;
     }
-    .brand-mark-dot {
-      position: absolute;
-      top: 0;
-      right: 0;
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--red, #FF453A);
+
+    .brand-mark-light {
+      display: none;
+    }
+
+    .brand-mark-dark {
+      display: block;
+      border-radius: 8px;
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme='dark']) .brand-mark-light {
+        display: block;
+      }
+
+      :root:not([data-theme='dark']) .brand-mark-dark {
+        display: none;
+      }
+    }
+
+    :root[data-theme='light'] .brand-mark-light {
+      display: block;
+    }
+
+    :root[data-theme='light'] .brand-mark-dark {
+      display: none;
     }
 
     .brand-copy {
@@ -4079,8 +4082,8 @@
     <div class="header">
       <div class="brand">
         <span class="brand-mark" role="img" aria-label="Minutes">
-          <span class="brand-mark-letter" aria-hidden="true">m</span>
-          <span class="brand-mark-dot" aria-hidden="true"></span>
+          <img class="brand-mark-light" src="assets/app-mark-light.png" alt="" aria-hidden="true">
+          <img class="brand-mark-dark" src="assets/app-icon.png" alt="" aria-hidden="true">
         </span>
         <div class="brand-copy">
           <div class="brand-sub">Conversation memory for humans and agents</div>
@@ -4157,6 +4160,7 @@
           <div class="output-notice-path" id="output-notice-path"></div>
           <div class="output-notice-actions">
             <button class="btn btn-secondary btn-sm" id="btn-open-output">Open</button>
+            <button class="btn btn-secondary btn-sm" id="btn-retry-output" hidden>Retry</button>
             <button class="btn btn-secondary btn-sm" id="btn-dismiss-output" hidden>Dismiss</button>
           </div>
         </div>
@@ -6223,12 +6227,17 @@
         clearOutputNoticeAutoDismiss();
         outputNotice.classList.remove('active', 'capture');
         lastOutputKey = null;
+        const retryBtn = document.getElementById('btn-retry-output');
+        if (retryBtn) {
+          retryBtn.hidden = true;
+          retryBtn.dataset.jobId = '';
+        }
         return;
       }
 
       const isCapture = notice.kind === 'preserved-capture';
       const isSaved = notice.kind === 'saved';
-      const nextKey = `${notice.kind}:${notice.path}`;
+      const nextKey = `${notice.kind}:${notice.path}:${notice.jobId || ''}`;
       const isNewNotice = nextKey !== lastOutputKey;
       if (isNewNotice) {
         playCue(isSaved ? 'complete' : 'error');
@@ -6246,6 +6255,12 @@
       // user to acknowledge it explicitly, so show a Dismiss button for those cases.
       const dismissBtn = document.getElementById('btn-dismiss-output');
       if (dismissBtn) dismissBtn.hidden = isSaved;
+      const retryBtn = document.getElementById('btn-retry-output');
+      if (retryBtn) {
+        const showRetry = !!notice.jobId && notice.kind === 'preserved-capture';
+        retryBtn.hidden = !showRetry;
+        retryBtn.dataset.jobId = notice.jobId || '';
+      }
       if (isSaved) {
         markActivationNudgeShown('saved-artifact-draft');
       }
@@ -6883,6 +6898,19 @@
       // Visible only for non-saved notices (preserved-capture, error, etc.) where
       // auto-dismiss would hide attention-needed information.
       await dismissOutputNotice();
+    });
+
+    document.getElementById('btn-retry-output')?.addEventListener('click', async (e) => {
+      const jobId = e.currentTarget.dataset.jobId;
+      if (!jobId) return;
+      await dismissOutputNotice();
+      try {
+        await invoke('cmd_retry_processing_job', { jobId });
+        if (typeof loadProcessingJobsCenter === 'function') await loadProcessingJobsCenter();
+        if (typeof startFastPoll === 'function') startFastPoll();
+      } catch (err) {
+        console.error('Retry from toast:', err);
+      }
     });
 
     document.getElementById('btn-create-artifact').addEventListener('click', async () => {

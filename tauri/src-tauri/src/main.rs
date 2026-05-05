@@ -1327,6 +1327,7 @@ fn main() {
             }
 
             // Create main window on launch
+            commands::seed_latest_retryable_output(&latest_output);
             show_main_window(app.handle());
             commands::spawn_permission_monitor(app.handle().clone());
 

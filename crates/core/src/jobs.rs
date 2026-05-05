@@ -487,6 +487,10 @@ pub fn requeue_job(job_id: &str) -> std::io::Result<Option<ProcessingJob>> {
         return Ok(None);
     };
 
+    if !matches!(job.state, JobState::Failed | JobState::NeedsReview) {
+        return Ok(None);
+    }
+
     let audio_path = PathBuf::from(&job.audio_path);
     if !audio_path.exists() {
         return Err(std::io::Error::new(
@@ -496,6 +500,9 @@ pub fn requeue_job(job_id: &str) -> std::io::Result<Option<ProcessingJob>> {
     }
 
     let Some(requeued) = update_job_state(job_id, |job| {
+        if !matches!(job.state, JobState::Failed | JobState::NeedsReview) {
+            return;
+        }
         job.state = JobState::Queued;
         job.stage = JobState::Queued.default_stage();
         job.started_at = None;
@@ -506,6 +513,11 @@ pub fn requeue_job(job_id: &str) -> std::io::Result<Option<ProcessingJob>> {
     else {
         return Ok(None);
     };
+
+    if requeued.state != JobState::Queued {
+        return Ok(None);
+    }
+
     sync_processing_status();
     Ok(Some(requeued))
 }
@@ -1139,6 +1151,47 @@ mod tests {
             assert_eq!(requeued.state, JobState::Queued);
             assert_eq!(requeued.error, None);
             assert_eq!(requeued.finished_at, None);
+        });
+    }
+
+    #[test]
+    fn requeue_job_rejects_non_retryable_state() {
+        with_temp_home(|dir| {
+            let audio_path = dir.path().join("fake.wav");
+            fs::write(&audio_path, b"fake-wav").unwrap();
+
+            let job = ProcessingJob {
+                id: "job-complete".into(),
+                mode: CaptureMode::Meeting,
+                content_type: ContentType::Meeting,
+                title: Some("done".into()),
+                audio_path: audio_path.display().to_string(),
+                output_path: Some(dir.path().join("done.md").display().to_string()),
+                state: JobState::Complete,
+                stage: None,
+                created_at: Local::now(),
+                started_at: Some(Local::now()),
+                finished_at: Some(Local::now()),
+                recording_started_at: None,
+                recording_finished_at: None,
+                context_session_id: None,
+                user_notes: None,
+                pre_context: None,
+                calendar_event: None,
+                template_slug: None,
+                word_count: Some(42),
+                error: None,
+                owner_pid: None,
+            };
+            write_job(&job).unwrap();
+
+            let requeued = requeue_job(&job.id).unwrap();
+            assert!(requeued.is_none());
+
+            let unchanged = load_job(&job.id).unwrap();
+            assert_eq!(unchanged.state, JobState::Complete);
+            assert_eq!(unchanged.output_path, job.output_path);
+            assert_eq!(unchanged.finished_at, job.finished_at);
         });
     }
 

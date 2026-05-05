@@ -4943,9 +4943,15 @@ fn cmd_setup_parakeet(model: &str) -> Result<()> {
         );
         eprintln!();
         eprintln!("  Step 3: Convert to safetensors");
+        let convert_model_arg = match model {
+            "tdt-ctc-110m" => "110m-tdt-ctc",
+            "tdt-600m" => "600m-tdt",
+            _ => unreachable!(),
+        };
         eprintln!(
-            "    python scripts/convert_nemo.py *.nemo -o {}",
-            dest_model.display()
+            "    python scripts/convert_nemo.py *.nemo -o {} --model {}",
+            dest_model.display(),
+            convert_model_arg
         );
         eprintln!();
         eprintln!("  Step 4: Extract the SentencePiece tokenizer vocab");
