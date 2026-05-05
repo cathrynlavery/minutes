@@ -2,7 +2,7 @@
 
 > Generated file. Do not edit by hand.
 > Source: manifest.json + crates/mcp/src/index.ts + site/lib/skills-catalog.json
-> Last generated: 2026-05-01
+> Last generated: 2026-05-04
 
 ## Product
 
@@ -11,13 +11,11 @@ Minutes is an open-source meeting corpus you own. Record, transcribe, search, an
 29 tools • 7 resources • Interactive MCP App dashboard • Prompt templates
 
 **What's new in 0.16.1:**
-• **The 0.16 story is visible again.** The desktop updater now preserves release notes for the post-update What's New screen and falls back to updater metadata when GitHub's release body is unavailable.
-• **Agent Event Bus v0.** Minutes writes an append-only local event stream with stable sequence cursors. The CLI can follow it with `minutes events --follow`, MCP exposes `minutes://events/live`, and local agents can observe recording lifecycle events, meeting insights, and allowlisted `agent.annotation` entries without mutating human-authored meeting markdown.
-• **Fast local search.** Search uses a SQLite FTS5-backed index. CLI search has explicit `--sync` and `--no-sync` controls, desktop search errors surface as banners, and large meeting archives no longer require a full file walk for every query.
-• **Calmer desktop recording.** Minutes re-heals stale device pins on every recording start, refuses unsafe mic-only routes when a call is active, prefers browser meeting detection over stale Slack fallback state, and isolates queued processing work so a long or silent-tail job does not freeze the GUI.
-• **Templates Phase 1.** Prompt-only templates let meeting, one-on-one, standup, and voice-memo captures produce more appropriate summaries without changing the core transcript pipeline.
-• **Design and packaging polish.** The lowercase italic `m` now carries through the dock icon, tray icon, favicon, DMG, and desktop surfaces. The DMG installer, MCP UI, call-detected card, toasts, Recall, and window persistence all received polish.
-• **Safer distribution.** MCPB bundle checks are stricter, the Claude-specific MCPB manifest is used for the desktop extension package, MCP auto-install verifies downloaded CLI checksums, and `whisper-guard` 0.2.1 is published for downstream Rust users.
+• **Local vocabulary.** Add proper nouns, names, and acronyms to `~/.minutes/vocabulary.toml`. Minutes passes them as weighted hints before transcription — names you care about are spelled right the first time. Manage with `minutes vocabulary add/list/suggest`.
+• **Dictation engine upgrades.** Parakeet and Apple Speech are now available as dictation backends alongside Whisper. Linux clipboard insertion via xdotool/xclip. Local recents memory for faster repeat phrases. Six macOS focus-reliability fixes so the target app regains focus cleanly after every dictation.
+• **macOS permission center.** The desktop app surfaces microphone, screen-recording, and accessibility entitlements in a dedicated settings panel, monitors for live permission changes, and opens the relevant System Settings pane on click.
+• **macOS main-window chrome.** Compact header, brand mark aligned with sidebar, window restored on dock-click, clean app quit through the Tauri runtime (no more macOS crash reports).
+• **Windows Recall fix.** The agent finder no longer picks the bare Unix shebang `claude` file over `claude.cmd` on Windows, fixing the os error 193 CreateProcessW crash in Recall (issue #205).
 
 **Setup:** `npx minutes-mcp` gets you search, browsing, and the dashboard right away. For recording and transcription, Minutes can auto-install the CLI on first use, or you can install it yourself with `brew install silverstein/tap/minutes` or `cargo install minutes-cli`, then run `minutes setup --model tiny`, `minutes setup --parakeet`, or `minutes setup --demo`.
 

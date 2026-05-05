@@ -12,6 +12,37 @@ export CXXFLAGS="-I$(xcrun --show-sdk-path)/usr/include/c++/v1"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 MINUTES_BUILD_FEATURES="${MINUTES_BUILD_FEATURES:-parakeet,metal}"
 
+# Ensure cargo runs through rustup so rust-toolchain.toml is honored.
+# Without this, a system Homebrew rustc (e.g. /opt/homebrew/bin/cargo)
+# silently ignores the pin and produces local-vs-CI drift on clippy lints
+# that fire only on the pinned version. PR #206's CI failure was exactly
+# this: Rust 1.95 lint fired on CI, Homebrew's 1.94 ignored it locally.
+#
+# Detection uses `rustup which cargo` rather than a hardcoded path so
+# CARGO_HOME / non-default rustup install locations work too.
+RUSTUP_CARGO=""
+if command -v rustup >/dev/null 2>&1; then
+    RUSTUP_CARGO="$(rustup which cargo 2>/dev/null || true)"
+fi
+if [[ -n "$RUSTUP_CARGO" ]]; then
+    RUSTUP_CARGO_DIR="$(dirname "$RUSTUP_CARGO")"
+    export PATH="$RUSTUP_CARGO_DIR:$PATH"
+fi
+ACTIVE_CARGO="$(command -v cargo || true)"
+if [[ -z "$ACTIVE_CARGO" ]]; then
+    echo "Error: no cargo on PATH. Install rustup from https://rustup.rs and re-run."
+    exit 1
+fi
+if [[ -n "$RUSTUP_CARGO" && "$ACTIVE_CARGO" != "$RUSTUP_CARGO" ]]; then
+    echo "Warning: cargo at $ACTIVE_CARGO is not the rustup-managed cargo ($RUSTUP_CARGO)."
+    echo "         rust-toolchain.toml may be silently ignored, causing local-vs-CI clippy drift."
+    echo "         Fix: prepend rustup's bin dir to PATH in your shell, or 'brew uninstall rust' if installed via Homebrew."
+fi
+if [[ -z "$RUSTUP_CARGO" ]]; then
+    echo "Note: rustup not found; using cargo at $ACTIVE_CARGO directly."
+    echo "      rust-toolchain.toml requires rustup to be honored — install from https://rustup.rs for full reproducibility."
+fi
+
 # Code signing + notarization are optional for local source builds.
 # Maintainers can export APPLE_SIGNING_IDENTITY / APPLE_API_* when they want
 # cargo-tauri to produce a signed + notarized bundle.
@@ -32,6 +63,13 @@ if ! cargo build --release -p minutes-cli --features "$MINUTES_BUILD_FEATURES" 2
 fi
 rm -f "$_build_tmp"
 
+echo "=== Staging CLI as Tauri sidecar ==="
+# v1: aarch64-only sidecars. x86_64 cross-compile is a v2 follow-up. The Tauri
+# sidecar convention requires an arch-suffixed filename.
+HOST_TARGET="$(rustc -Vv | awk '/host:/ {print $2}')"
+mkdir -p tauri/src-tauri/bin
+cp -f target/release/minutes "tauri/src-tauri/bin/minutes-${HOST_TARGET}"
+
 echo "=== Building Tauri app ==="
 # The calendar-events Swift helper is compiled and staged into
 # tauri/src-tauri/resources/ by tauri/src-tauri/build.rs, and Tauri bundles it
@@ -42,6 +80,33 @@ if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
     TAURI_BUILD_ARGS+=(--no-sign)
 fi
 "${TAURI_BUILD_ARGS[@]}"
+
+echo "=== Re-signing bundled CLI sidecar with its own entitlements ==="
+# The CLI sidecar needs `com.apple.security.device.audio-input` so `minutes record`
+# from a terminal hits the macOS TCC mic prompt instead of silently failing. The
+# outer `cargo tauri build` (with `--deep` under the hood) clobbers any nested
+# entitlements, so we explicitly re-sign the sidecar AFTER the bundle is built.
+#
+# Ad-hoc signing fallback for OSS contributors: TCC entitlements are largely
+# ignored without a Team ID, so contributor builds will still see the TCC denial
+# on first terminal `minutes record`. The setup UI surfaces this when the
+# running bundle is ad-hoc-signed (detected via codesign -dv).
+SIGN_ID="${APPLE_SIGNING_IDENTITY:-${MINUTES_DEV_SIGNING_IDENTITY:--}}"
+APP_BUNDLE="target/release/bundle/macos/Minutes.app"
+# Tauri's bundler strips the target-triple suffix from externalBin names when
+# copying into the .app — the on-disk filename is `minutes`, not
+# `minutes-${HOST_TARGET}`. Both the package input ($HOST_TARGET file in
+# tauri/src-tauri/bin/) and the bundled output (plain `minutes`) are required.
+SIDECAR="${APP_BUNDLE}/Contents/MacOS/minutes"
+if [[ -f "$SIDECAR" ]]; then
+    codesign --force --options runtime \
+        --entitlements tauri/src-tauri/minutes-cli.entitlements \
+        --sign "$SIGN_ID" \
+        "$SIDECAR"
+    echo "  Signed sidecar with identity: $SIGN_ID"
+else
+    echo "  WARNING: expected sidecar not found at $SIDECAR — skipping re-sign."
+fi
 
 APP_VERSION="$(python3 - <<'PY'
 import json

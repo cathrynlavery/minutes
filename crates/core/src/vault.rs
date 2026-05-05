@@ -86,25 +86,42 @@ fn home_dir() -> PathBuf {
 /// Check if a path is inside a macOS TCC-protected directory.
 pub fn is_tcc_protected(path: &Path) -> bool {
     let home = home_dir();
-    let protected = [
-        home.join("Documents"),
-        home.join("Desktop"),
-        home.join("Downloads"),
-    ];
-    let canonical = path
-        .canonicalize()
-        .or_else(|_| {
-            // Path may not exist yet — try resolving the parent
-            path.parent()
-                .and_then(|p| p.canonicalize().ok())
-                .map(|p| p.join(path.file_name().unwrap_or_default()))
-                .ok_or_else(|| std::io::Error::other("no parent"))
-        })
-        .unwrap_or_else(|_| path.to_path_buf());
+    // Canonicalize home so /Users → /private/Users is resolved on macOS.
+    let home_real = home.canonicalize().unwrap_or_else(|_| home.clone());
+
+    let names = ["Documents", "Desktop", "Downloads"];
+    // Include protected dirs anchored to both the raw home and the canonical home.
+    // When a deep path doesn't exist (e.g. CI runner where ~/Documents is absent),
+    // we can't canonicalize any ancestor, so the fallback raw path must still match
+    // against the raw protected dirs.
+    let mut protected: Vec<PathBuf> = names.iter().map(|n| home_real.join(n)).collect();
+    if home_real != home {
+        protected.extend(names.iter().map(|n| home.join(n)));
+    }
+
+    // Normalize the input path. Resolve symlinks when the path exists; otherwise
+    // canonicalize the immediate parent so /Users vs /private/Users is handled for
+    // paths one level deep (e.g. ~/Documents itself on a CI runner).
+    let normalized = if let Ok(c) = path.canonicalize() {
+        c
+    } else if let Some(parent) = path.parent() {
+        parent
+            .canonicalize()
+            .map(|p| p.join(path.file_name().unwrap_or_default()))
+            .unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
 
     protected.iter().any(|dir| {
+        // Fast path: normalized path is under a known protected dir.
+        if normalized.starts_with(dir) {
+            return true;
+        }
+        // Slow path: the protected dir may itself be a symlink (e.g. iCloud syncs
+        // ~/Desktop to ~/Library/Mobile Documents/…). Resolve and compare again.
         dir.canonicalize()
-            .map(|d| canonical.starts_with(&d))
+            .map(|d| normalized.starts_with(&d))
             .unwrap_or(false)
     })
 }

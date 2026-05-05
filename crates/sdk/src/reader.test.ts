@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import {
   splitFrontmatter,
   parseFrontmatter,
+  parseAttributionSource,
   listMeetings,
   searchMeetings,
   getMeeting,
@@ -432,6 +433,45 @@ SPEAKER_0: hello
     const result = parseFrontmatter(sketchy, "/t/m.md");
     expect(result?.frontmatter.speaker_map?.[0].confidence).toBe("medium");
     expect(result?.frontmatter.speaker_map?.[0].source).toBe("llm");
+  });
+
+  it("parses new attribution sources explicitly", () => {
+    expect(parseAttributionSource("ml-bleed-degraded")).toBe("ml-bleed-degraded");
+    expect(parseAttributionSource("stem-recovery")).toBe("stem-recovery");
+    expect(parseAttributionSource("aliens")).toBe("llm");
+  });
+
+  it("preserves recording_health enum fields", () => {
+    const content = MEETING_WITH_SPEAKERS.replace(
+      "speaker_map:",
+      `recording_health:
+  voice_stem_active_ratio: 0.31
+  system_stem_active_ratio: 0
+  system_dominant_ratio: 0.12
+  capture_warnings:
+    - kind: silent
+      source: system
+      message: System audio was silent during capture.
+      diagnostic_confidence: inferred
+  diarization_path: ml-bleed-degraded
+speaker_map:`
+    );
+    const result = parseFrontmatter(content, "/t/m.md");
+
+    expect(result?.frontmatter.recording_health).toEqual({
+      voice_stem_active_ratio: 0.31,
+      system_stem_active_ratio: 0,
+      system_dominant_ratio: 0.12,
+      capture_warnings: [
+        {
+          kind: "silent",
+          source: "system",
+          message: "System audio was silent during capture.",
+          diagnostic_confidence: "inferred",
+        },
+      ],
+      diarization_path: "ml-bleed-degraded",
+    });
   });
 });
 

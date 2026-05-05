@@ -32,6 +32,64 @@ pub enum OutputStatus {
     TranscriptOnly,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RecordingHealth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_stem_active_ratio: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_stem_active_ratio: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_dominant_ratio: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_warnings: Vec<CaptureWarning>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diarization_path: Option<DiarizationPath>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiarizationPath {
+    StemEnergy,
+    Ml,
+    MlBleedDegraded,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CaptureWarning {
+    pub kind: crate::diarize::FailureKind,
+    pub source: crate::diarize::CaptureSource,
+    pub message: String,
+    pub diagnostic_confidence: crate::diarize::DiagnosticConfidence,
+}
+
+impl From<crate::diarize::DegradedCapture> for RecordingHealth {
+    fn from(reason: crate::diarize::DegradedCapture) -> Self {
+        let message = match &reason.failure_kind {
+            crate::diarize::FailureKind::Silent => {
+                "System audio was silent during capture; transcript was left unlabeled.".to_string()
+            }
+            crate::diarize::FailureKind::Sparse => {
+                "System audio did not contain sustained transcript-aligned remote speech; transcript was left unlabeled.".to_string()
+            }
+            _ => "Capture health degraded diarization; transcript was left unlabeled.".to_string(),
+        };
+
+        RecordingHealth {
+            voice_stem_active_ratio: reason.voice_active_ratio,
+            system_stem_active_ratio: reason.system_active_ratio,
+            system_dominant_ratio: None,
+            capture_warnings: vec![CaptureWarning {
+                kind: reason.failure_kind,
+                source: reason.capture_source,
+                message,
+                diagnostic_confidence: reason.diagnostic_confidence,
+            }],
+            diarization_path: Some(DiarizationPath::None),
+        }
+    }
+}
+
 /// Frontmatter for a meeting/memo markdown file.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Frontmatter {
@@ -73,6 +131,8 @@ pub struct Frontmatter {
     pub visibility: Option<Visibility>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub speaker_map: Vec<crate::diarize::SpeakerAttribution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_health: Option<RecordingHealth>,
     /// Slug of the template applied to this recording, if any.
     /// Recorded so a Phase 2 reprocessor knows which template produced the
     /// summary. `None` means no template was passed (legacy / default flow).
@@ -793,6 +853,7 @@ mod tests {
             recorded_by: None,
             visibility: None,
             speaker_map: vec![],
+            recording_health: None,
             template: None,
             filter_diagnosis: None,
         }
@@ -859,10 +920,7 @@ mod tests {
     #[test]
     fn json_schema_generates_valid_schema() {
         let schema = schemars::schema_for!(Frontmatter);
-        let json = serde_json::to_string_pretty(&schema).unwrap();
-        assert!(json.contains("Frontmatter"));
-        assert!(json.contains("recorded_by"));
-        assert!(json.contains("visibility"));
+        insta::assert_json_snapshot!(schema);
     }
 
     #[test]
@@ -891,6 +949,56 @@ mod tests {
             content.contains("deterministic"),
             "source should be lowercase"
         );
+    }
+
+    #[test]
+    fn recording_health_absent_roundtrips_as_omitted() {
+        let input = "---\ntitle: Test Meeting\ntype: meeting\ndate: 2026-03-17T12:00:00-07:00\nduration: 5m\nstatus: complete\n---\n\n## Transcript\n\nHello.\n";
+        let (fm, body) = split_frontmatter(input);
+        let frontmatter: Frontmatter = serde_yaml::from_str(fm).unwrap();
+        assert!(frontmatter.recording_health.is_none());
+
+        let yaml = serde_yaml::to_string(&frontmatter).unwrap();
+        let output = format!("---\n{}---\n{}", yaml, body);
+
+        assert!(!yaml.contains("recording_health"));
+        assert_eq!(split_frontmatter(&output).1.as_bytes(), body.as_bytes());
+    }
+
+    #[test]
+    fn recording_health_populated_roundtrips_structurally() {
+        let input = "---\ntitle: Test Meeting\ntype: meeting\ndate: 2026-03-17T12:00:00-07:00\nduration: 5m\nrecording_health:\n  voice_stem_active_ratio: 0.31\n  system_stem_active_ratio: 0.0\n  system_dominant_ratio: 0.12\n  capture_warnings:\n    - kind: silent\n      source: system\n      message: System audio was silent during capture.\n      diagnostic_confidence: inferred\n  diarization_path: ml-bleed-degraded\n---\n\n## Transcript\n\nHello.\n";
+        let (fm, body) = split_frontmatter(input);
+        let frontmatter: Frontmatter = serde_yaml::from_str(fm).unwrap();
+        let health = frontmatter.recording_health.as_ref().unwrap();
+
+        assert_eq!(health.voice_stem_active_ratio, Some(0.31));
+        assert_eq!(health.system_stem_active_ratio, Some(0.0));
+        assert_eq!(health.system_dominant_ratio, Some(0.12));
+        assert_eq!(
+            health.diarization_path,
+            Some(DiarizationPath::MlBleedDegraded)
+        );
+        assert_eq!(health.capture_warnings.len(), 1);
+        assert_eq!(
+            health.capture_warnings[0].kind,
+            crate::diarize::FailureKind::Silent
+        );
+        assert_eq!(
+            health.capture_warnings[0].source,
+            crate::diarize::CaptureSource::System
+        );
+        assert_eq!(
+            health.capture_warnings[0].diagnostic_confidence,
+            crate::diarize::DiagnosticConfidence::Inferred
+        );
+
+        let yaml = serde_yaml::to_string(&frontmatter).unwrap();
+        let output = format!("---\n{}---\n{}", yaml, body);
+        let reparsed: Frontmatter = serde_yaml::from_str(split_frontmatter(&output).0).unwrap();
+
+        assert_eq!(reparsed.recording_health, frontmatter.recording_health);
+        assert_eq!(split_frontmatter(&output).1.as_bytes(), body.as_bytes());
     }
 
     #[test]
